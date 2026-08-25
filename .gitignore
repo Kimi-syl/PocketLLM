@@ -1,0 +1,14 @@
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild/
+.cxx/
+.kotlin/
+local.properties
+app/src/main/cpp/llama.cpp/
+build-native/
+*.log
