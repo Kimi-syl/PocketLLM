@@ -58,10 +58,12 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ## Quick start
 
-1. Open **Models** tab, search/download a GGUF model, then load it.
-2. Open **Server** tab and start the server.
-3. Open **Keys** tab and create an API key (if key auth is enabled).
-4. Point your OpenAI client to the phone.
+1. Download the latest prebuilt APK from **Releases**: https://github.com/Kimi-syl/PocketLLM/releases/latest
+2. Install the APK on your device.
+3. Open **Models** tab, search/download a GGUF model, then load it.
+4. Open **Server** tab and start the server.
+5. Open **Keys** tab and create an API key (if key auth is enabled).
+6. Point your OpenAI client to the phone.
 
 Example:
 
@@ -92,6 +94,35 @@ For on-device clients, use `http://127.0.0.1:8080/v1`.
 - Long prompts/conversations may be truncated to fit context window
 - No foreground service yet, so long operations may be interrupted if app/process is killed
 - Current packaged ABI target is arm64-v8a
+
+## Building on-device (Termux + proot, no Android Studio)
+
+PocketLLM can be compiled directly on an ARM64 Android phone from Termux/proot, without Android Studio.
+
+Typical toolchain locations:
+
+| Path | Purpose |
+|---|---|
+| `/opt/tusr` | Termux clang/lld clone (avoids proot self-exec shim issues) |
+| `/opt/jdk17` | JDK 17 for Gradle/AGP |
+| `/opt/gradle` | Gradle runtime |
+| `/opt/android-sdk` | Android cmdline-tools + SDK/platform packages |
+| `/opt/aapt2arm` | static aarch64 aapt2 binary |
+
+Example rebuild flow:
+
+```bash
+. /opt/tenv.sh
+cd ~/pocketllm
+cmake -S app/src/main/cpp -B build-native -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DGGML_OPENMP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF \
+  -DLLAMA_BUILD_TOOLS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
+cmake --build build-native -j6
+cp build-native/libpocketllm.so app/src/main/jniLibs/arm64-v8a/
+cp /opt/tusr/lib/libc++_shared.so app/src/main/jniLibs/arm64-v8a/
+JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :app:assembleDebug
+```
 
 ## Roadmap
 
