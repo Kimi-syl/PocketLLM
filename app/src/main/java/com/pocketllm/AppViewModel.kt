@@ -18,6 +18,8 @@ import com.pocketllm.server.ApiServer
 import com.pocketllm.server.ServerLog
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
+import com.pocketllm.usage.UsageRecord
+import com.pocketllm.usage.UsageRepository
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
@@ -37,7 +39,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val apiKeyRepo = ApiKeyRepository(context)
     private val hfClient = HuggingFaceClient { settings.current().hfToken }
     private val modelRepo = ModelRepository(context) { settings.current().hfToken }
-    val server = ApiServer(settings, apiKeyRepo)
+    private val usageRepo = UsageRepository(context)
+    val server = ApiServer(settings, apiKeyRepo, usageRepo) { refreshUsage() }
 
     private val _models = MutableStateFlow<List<GgufModel>>(emptyList())
     val models: StateFlow<List<GgufModel>> = _models
@@ -74,10 +77,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _generating = MutableStateFlow(false)
     val generating: StateFlow<Boolean> = _generating
 
+    private val _usageRecords = MutableStateFlow<List<UsageRecord>>(emptyList())
+    val usageRecords: StateFlow<List<UsageRecord>> = _usageRecords
+
     init {
         refreshModels()
         refreshKeys()
+        refreshUsage()
         _currentSettings.value = settings.current()
+    }
+
+    fun refreshUsage() {
+        viewModelScope.launch { _usageRecords.value = usageRepo.list() }
+    }
+
+    fun clearUsage() {
+        viewModelScope.launch {
+            usageRepo.clear()
+            refreshUsage()
+        }
     }
 
     fun refreshModels() {
@@ -232,6 +250,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val history = _chatMessages.value + ChatUiMessage("user", trimmed)
                 _chatMessages.value = history + ChatUiMessage("assistant", "")
                 val replyIndex = _chatMessages.value.lastIndex
+                val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
                 val prompt = engine.chatPrompt(_chatMessages.value.take(replyIndex).map { it.role to it.content })
                 if (prompt == null) {
                     _chatMessages.update { list ->
@@ -239,12 +258,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@launch
                 }
-                engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
+                val result = engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
                     _chatMessages.update { list ->
                         list.toMutableList().also {
                             it[replyIndex] = it[replyIndex].copy(content = it[replyIndex].content + token)
                         }
                     }
+                }
+                result?.let {
+                    usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat", modelName, it.promptTokens, it.generatedTokens))
+                    refreshUsage()
                 }
             } finally {
                 _generating.value = false

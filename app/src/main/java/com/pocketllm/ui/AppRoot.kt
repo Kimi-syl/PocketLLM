@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material3.Icon
@@ -22,16 +23,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import com.pocketllm.AppViewModel
 
 private enum class Tab(val label: String, val icon: ImageVector) {
-    MODELS("Models", Icons.Outlined.Folder),
     CHAT("Chat", Icons.AutoMirrored.Outlined.Chat),
+    MODELS("Models", Icons.Outlined.Folder),
     SERVER("Server", Icons.Outlined.Public),
+    USAGE("Usage", Icons.Outlined.Insights),
     KEYS("Keys", Icons.Outlined.Key),
 }
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
-    var selected by rememberSaveable { mutableStateOf(Tab.MODELS.name) }
-    val current = runCatching { Tab.valueOf(selected) }.getOrDefault(Tab.MODELS)
+    var selected by rememberSaveable { mutableStateOf(Tab.CHAT.name) }
+    val current = runCatching { Tab.valueOf(selected) }.getOrDefault(Tab.CHAT)
 
     Scaffold(
         bottomBar = {
@@ -52,6 +54,7 @@ fun AppRoot(vm: AppViewModel) {
                 Tab.MODELS -> ModelsScreen(vm)
                 Tab.CHAT -> ChatScreen(vm)
                 Tab.SERVER -> ServerScreen(vm)
+                Tab.USAGE -> UsageScreen(vm)
                 Tab.KEYS -> KeysScreen(vm)
             }
         }

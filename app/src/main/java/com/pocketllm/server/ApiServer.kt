@@ -5,6 +5,8 @@ import com.pocketllm.llm.EngineState
 import com.pocketllm.llm.GenParams
 import com.pocketllm.llm.LlamaEngine
 import com.pocketllm.settings.SettingsRepository
+import com.pocketllm.usage.UsageRecord
+import com.pocketllm.usage.UsageRepository
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -37,6 +39,8 @@ private val json = Json {
 class ApiServer(
     private val settings: SettingsRepository,
     private val apiKeys: ApiKeyRepository,
+    private val usageRepo: UsageRepository,
+    private val onUsageChanged: () -> Unit = {},
 ) {
 
     private val llama get() = LlamaEngine
@@ -56,7 +60,7 @@ class ApiServer(
                     call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
                 }
                 get("/v1/models") {
-                    if (!call.authorized()) return@get
+                    if (call.authorized() == null) return@get
                     val ready = llama.state.value as? EngineState.Ready
                     call.respond(
                         ModelListResponse(
@@ -78,23 +82,30 @@ class ApiServer(
         ServerLog.log("API stopped")
     }
 
-    private suspend fun ApplicationCall.authorized(): Boolean {
-        if (!settings.current().requireApiKey) return true
+    private suspend fun ApplicationCall.authorized(): String? {
+        if (!settings.current().requireApiKey) return "no-auth"
         val token = request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.trim()
         val entry = apiKeys.validate(token)
         if (entry == null) {
             ServerLog.log("401 from ${request.origin.remoteHost}")
             respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorBody("Invalid or missing API key", "authentication_error")))
-            return false
+            return null
         }
-        return true
+        return entry.name
+    }
+
+    private suspend fun recordUsage(source: String, model: String, result: com.pocketllm.llm.GenResult?) {
+        if (result != null) {
+            usageRepo.add(UsageRecord(System.currentTimeMillis(), source, model, result.promptTokens, result.generatedTokens))
+            onUsageChanged()
+        }
     }
 
     private fun readyModelOrNull(): EngineState.Ready? =
         llama.state.value as? EngineState.Ready
 
     private suspend fun handleChat(call: ApplicationCall) {
-        if (!call.authorized()) return
+        val source = call.authorized() ?: return
         val req = call.receiveNullable<ChatCompletionRequest>()
         if (req == null || req.messages.isEmpty()) {
             call.respondError(HttpStatusCode.BadRequest, "messages is required")
@@ -148,6 +159,7 @@ class ApiServer(
                 send(Delta(), finishReason)
                 write("data: [DONE]\n\n")
                 flush()
+                recordUsage(source, modelId, result)
                 ServerLog.log("chat done tokens=${result?.generatedTokens ?: 0} chars=${collected.length}")
             }
         } else {
@@ -159,6 +171,7 @@ class ApiServer(
             }
             val finishReason =
                 if (result.stoppedByUser || result.generatedTokens >= params.maxTokens) "length" else "stop"
+            recordUsage(source, modelId, result)
             call.respond(
                 ChatCompletion(
                     id = completionId,
@@ -178,7 +191,7 @@ class ApiServer(
     }
 
     private suspend fun handleCompletion(call: ApplicationCall) {
-        if (!call.authorized()) return
+        val source = call.authorized() ?: return
         val req = call.receiveNullable<CompletionRequest>()
         if (req == null || req.prompt.isBlank()) {
             call.respondError(HttpStatusCode.BadRequest, "prompt is required")
@@ -228,6 +241,7 @@ class ApiServer(
                 send(null, finishReason)
                 write("data: [DONE]\n\n")
                 flush()
+                recordUsage(source, modelId, result)
             }
         } else {
             val collected = StringBuilder()
@@ -238,6 +252,7 @@ class ApiServer(
             }
             val finishReason =
                 if (result.stoppedByUser || result.generatedTokens >= params.maxTokens) "length" else "stop"
+            recordUsage(source, modelId, result)
             call.respond(
                 TextCompletion(
                     id = completionId,

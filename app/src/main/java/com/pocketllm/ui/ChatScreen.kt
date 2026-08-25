@@ -114,9 +114,10 @@ private fun Bubble(message: ChatUiMessage) {
                 .background(
                     color = if (isUser) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = if (isUser) RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
+                    else RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp),
                 )
-                .padding(10.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             Text(message.content.ifEmpty { "…" }, style = MaterialTheme.typography.bodyMedium)
         }
