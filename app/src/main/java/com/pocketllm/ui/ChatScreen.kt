@@ -1,5 +1,6 @@
 package com.pocketllm.ui
 
+import android.util.TypedValue
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Public
@@ -16,6 +17,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -33,7 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import io.noties.markwon.Markwon
+import io.noties.markwon.ext.latex.JLatexMathPlugin
+import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import com.pocketllm.AppViewModel
 import com.pocketllm.ChatUiMessage
 import com.pocketllm.llm.EngineState
@@ -141,7 +149,47 @@ private fun Bubble(message: ChatUiMessage) {
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            Text(message.content.ifEmpty { "…" }, style = MaterialTheme.typography.bodyMedium)
+            if (message.content.isBlank()) {
+                Text("…", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                MarkdownMessage(message.content)
+            }
         }
+    }
+}
+
+@Composable
+private fun MarkdownMessage(content: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val textColor = LocalTextStyle.current.color.toArgb()
+    val markwon = remember(context) {
+        val textSizePx = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            16f,
+            context.resources.displayMetrics,
+        )
+        Markwon.builder(context)
+            .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(
+                JLatexMathPlugin.create(textSizePx) { builder ->
+                    builder.inlinesEnabled(true)
+                },
+            )
+            .build()
+    }
+    SelectionContainer {
+        AndroidView(
+            modifier = Modifier.fillMaxWidth(),
+            factory = { ctx ->
+                android.widget.TextView(ctx).apply {
+                    textSize = 16f
+                    setTextIsSelectable(true)
+                }
+            },
+            update = { textView ->
+                textView.setTextColor(textColor)
+                markwon.setMarkdown(textView, content)
+            },
+        )
     }
 }

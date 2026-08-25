@@ -1,150 +1,119 @@
 # PocketLLM
 
-Run LLMs fully offline on your Android phone with llama.cpp — and expose them through an
-**OpenAI-compatible HTTP API protected by API keys**, so any app on the device (or on your
-Wi-Fi network) can use your phone as a tiny local AI server.
-
-Think PocketPal, but it *serves* an API instead of just chatting.
+Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenAI-compatible API for on-device apps and LAN clients.
 
 ## Features
 
-- **llama.cpp inference** compiled natively via NDK (arm64-v8a; x86_64 for emulator)
-- **OpenAI-compatible endpoints**
-  - `GET  /v1/models`
+- Native **llama.cpp** inference via JNI/NDK with **Vulkan GPU offload** (**arm64-v8a** build target)
+- **OpenAI-compatible API**
+  - `GET /v1/models`
   - `POST /v1/chat/completions` (streaming SSE + JSON)
   - `POST /v1/completions` (streaming SSE + JSON)
-  - `GET  /health`
-- **API keys**: generate/revoke/toggle keys in-app; requests authenticated via
-  `Authorization: Bearer sk-…` (can be disabled for localhost-only testing)
-- **Hugging Face integration**: search GGUF models by downloads, browse a repo's `.gguf`
-  files with sizes, one-tap download
-- **Resumable segmented downloader**: up to 4 parallel range requests, writes directly into
-  a preallocated file at final offsets (no concatenation pass), survives process death via
-  an ETag-validated metadata sidecar, cancel button included
-- **Chat tester** screen streaming tokens from the loaded model
-- **Server dashboard**: start/stop, port, context size, request log, LAN endpoint URLs
-- Correct **chat template application** using `llama_chat_apply_template` (template is read
-  from GGUF metadata — Qwen, Llama 3, Mistral, Gemma, etc.)
-- UTF-8-safe token streaming (multi-byte characters never split mid-chunk)
-- big.LITTLE-aware thread count (threads = big cores)
+  - `GET /health`
+- In-app **API key management** (create/revoke/enable/disable, last-used tracking)
+- **Hugging Face model discovery** and GGUF browsing/download
+- **Resumable segmented downloader** with retry support and persisted metadata
+- Built-in **chat screen** with **Markdown + LaTeX** rendering
+- Optional **web search augmentation** (DuckDuckGo, Brave, Tavily, Bing, Firecrawl)
+- Optional **auto-speak** responses using Android TTS
+- **Usage logging and analytics** in-app
+- Optional **HTTPS** with generated self-signed certificate and fingerprint display
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Compose UI (Models / Chat / Server / Keys)              │
-│                 AppViewModel                            │
-├───────────────────┬─────────────────┬───────────────────┤
-│ ModelRepository   │ ApiKeyRepository│ SettingsRepository│
-│ (HF search +      │ (sk-… keys,     │ (port, ctx, token)│
-│  resumable dl)    │  JSON persisted)│                   │
-├───────────────────┴─────────────────┼───────────────────┤
-│ Ktor CIO server (OpenAI routes+auth)│ LlamaEngine       │
-├─────────────────────────────────────┼───────────────────┤
-│                                     │ LlamaBridge (JNI) │
-│                                     │ llama_jni.cpp     │
-│                                     └──► libllama.so    │
-└─────────────────────────────────────┴───────────────────┘
+Compose UI + AppViewModel
+├─ ModelRepository (HF search/download)
+├─ ApiKeyRepository (local API key persistence)
+├─ SettingsRepository (server, search, TTS, TLS settings)
+├─ UsageRepository (JSONL usage logs)
+├─ ApiServer (Ktor OpenAI-compatible routes)
+└─ LlamaEngine → LlamaBridge (JNI) → llama_jni.cpp
 ```
 
-Generation runs on a dedicated single thread; all entry points serialize through one mutex,
-so the chat UI and the HTTP API can share the loaded model safely.
+Generation is serialized through a dedicated single-thread path with synchronization, so one inference runs at a time.
 
-## Building
+## Requirements
 
-Requirements: Android Studio (Ladybug or newer), SDK 35, NDK, CMake 3.22.1.
+- Android Studio (recent stable)
+- Android SDK 35
+- Java 17
+- Android NDK + CMake (3.22.1)
+- Device/emulator API 26+
+
+## Build
 
 ```bash
-# from the repo root
+# from repo root (needed on fresh clones because llama.cpp is not committed)
 git clone --depth 1 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
 
-# then open the project in Android Studio and run
 ./gradlew :app:assembleDebug
 ```
 
-The vendored `app/src/main/cpp/llama.cpp` is already included if you received this project
-as-is; the clone step is only needed for a fresh checkout.
-
-Install on device:
+Install:
 
 ```bash
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Using the API
+## Quick start
 
-1. Models tab → Hugging Face → search (e.g. "Qwen2.5 3B") → download a `Q4_K_M` GGUF
-2. On device tab → Load
-3. Server tab → Start server
-4. Keys tab → create a key
-5. From any OpenAI client pointed at the phone:
+1. Download the latest prebuilt APK from **Releases**: https://github.com/Kimi-syl/PocketLLM/releases/latest
+2. Install the APK on your device.
+3. Open **Models** tab, search/download a GGUF model, then load it.
+4. Open **Server** tab and start the server.
+5. Open **Keys** tab and create an API key (if key auth is enabled).
+6. Point your OpenAI client to the phone.
+
+Example:
 
 ```bash
 curl http://<phone-ip>:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-YOUR-KEY" \
+  -H "Authorization: ******" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen2.5-3b-instruct",
+    "model": "your-model-name",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
 ```
 
-On-device apps can use `http://127.0.0.1:8080/v1`. The response format (including SSE
-chunk shape and `[DONE]` sentinel) matches OpenAI closely enough for standard SDKs.
+For on-device clients, use `http://127.0.0.1:8080/v1`.
 
-## Performance notes
+## Security notes
 
-| Setting | Guidance |
-|---|---|
-| Quantization | `Q4_K_M` is the sweet spot on mobile |
-| Model size | ≤3B params on 6 GB devices, ≤8B on 12 GB+ |
-| Context | 2048 default; each doubling costs KV-cache RAM |
-| Threads | auto-set to big cores; more threads ≠ faster on little cores |
-
-Native-side tuning already applied: `n_batch=1024 / n_ubatch=512` prefill pipeline,
-flash-attention left on AUTO so ggml picks the best kernel per backend.
-
-## Security
-
-- The server binds `0.0.0.0`, so anything on your Wi-Fi can reach it. Keep
-  **Require API key** enabled when not testing.
-- Keys are stored in app-private storage (`filesDir/api_keys.json`).
-- An optional Hugging Face token (for gated repos) is stored locally and only sent to
-  huggingface.co.
-- There is no TLS — treat this like a dev tool on trusted networks.
-
-## Roadmap
-
-- Foreground service so downloads/inference survive backgrounding
-- Vulkan/OpenCL GPU offload builds of llama.cpp
-- Per-key usage stats surfaced in the UI
-- GGUF metadata reader for pre-load RAM estimation
-- mDNS advertisement (`_llm._tcp`) for zero-config client discovery
+- Server binds to `0.0.0.0`; LAN clients can reach it when enabled.
+- Keep **Require API key** on for non-local testing.
+- API keys are stored in app-private storage.
+- HTTPS is optional and uses a self-signed certificate (clients must trust/allow it, e.g. `curl -k`).
+- Cleartext HTTP remains available for trusted local/dev networks.
 
 ## Known limitations
 
-- One model loaded at a time (requests queue on a mutex)
-- Long conversations are truncated front-first when exceeding context
-- Downloads require the screen/app to stay alive (no foreground service yet)
+- One loaded model/inference stream at a time (requests serialize)
+- Long prompts/conversations may be truncated to fit context window
+- No foreground service yet, so long operations may be interrupted if app/process is killed
+- Current packaged ABI target is arm64-v8a
 
 ## Building on-device (Termux + proot, no Android Studio)
 
-This project builds entirely on an ARM64 phone. The toolchain lives in `/opt`:
+PocketLLM can be compiled directly on an ARM64 Android phone from Termux/proot, without Android Studio.
+
+Typical toolchain locations:
 
 | Path | Purpose |
 |---|---|
-| `/opt/tusr` | Termux clang/lld clone (bypasses the proot self-exec shim) |
-| `/opt/jdk17` | Temurin JDK 17 (Gradle/AGP runtime) |
-| `/opt/gradle` | Gradle 8.10.2 |
-| `/opt/android-sdk` | cmdline-tools + `platforms;android-35` |
-| `/opt/aapt2arm` | static aarch64 aapt2 (lzhiyong/android-sdk-tools) |
+| `/opt/tusr` | Termux clang/lld clone (avoids proot self-exec shim issues) |
+| `/opt/jdk17` | JDK 17 for Gradle/AGP |
+| `/opt/gradle` | Gradle runtime |
+| `/opt/android-sdk` | Android cmdline-tools + SDK/platform packages |
+| `/opt/aapt2arm` | static aarch64 aapt2 binary |
 
-Rebuild native engine + APK:
+Example rebuild flow:
 
 ```bash
 . /opt/tenv.sh
-cd ~/pocketllm   # or wherever the project lives
+cd ~/pocketllm
 cmake -S app/src/main/cpp -B build-native -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DGGML_OPENMP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF \
@@ -155,4 +124,10 @@ cp /opt/tusr/lib/libc++_shared.so app/src/main/jniLibs/arm64-v8a/
 JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :app:assembleDebug
 ```
 
-Install from Termux (host session): `termux-open ~/PocketLLM.apk`
+## Roadmap
+
+- Foreground service for more robust background download/inference
+- GPU offload variants (Vulkan/OpenCL)
+- Expanded per-key analytics
+- Better model metadata/RAM estimation
+- Service discovery (mDNS)

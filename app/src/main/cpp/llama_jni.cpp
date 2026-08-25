@@ -70,7 +70,7 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
     std::string path = toStdString(env, jPath);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = 99;
     llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
     if (model == nullptr) return -1;
 
