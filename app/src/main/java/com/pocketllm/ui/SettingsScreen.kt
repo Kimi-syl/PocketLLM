@@ -28,12 +28,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.pocketllm.AppViewModel
+import com.pocketllm.util.WebSearch
 
 @Composable
 fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -> Unit = {}) {
     val settings by vm.currentSettings.collectAsState()
     val running by vm.serverRunning.collectAsState()
     val keys by vm.apiKeys.collectAsState()
+    val tlsFingerprint by vm.tlsFingerprint.collectAsState()
+    val ttsReady by vm.ttsReady.collectAsState()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
@@ -82,6 +85,39 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            SectionCard("Web search") {
+                Text("Engine used when the globe toggle is on in chat", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WebSearch.engines.forEach { (id, label) ->
+                        FilterChip(
+                            selected = settings.searchEngine == id,
+                            onClick = { vm.updateSearchEngine(id) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                if (WebSearch.requiresKey(settings.searchEngine)) {
+                    var keyText by remember(settings.searchEngine, settings.hfToken) {
+                        mutableStateOf(currentKeyFor(settings.searchEngine, settings))
+                    }
+                    OutlinedTextField(
+                        value = keyText,
+                        onValueChange = { keyText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("${labelFor(settings.searchEngine)} API key") },
+                        singleLine = true,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(
+                            onClick = { vm.updateEngineKey(settings.searchEngine, keyText) },
+                            enabled = keyText != currentKeyFor(settings.searchEngine, settings),
+                        ) { Text("Save key") }
+                    }
+                }
+            }
+        }
+
+        item {
             SectionCard("Chat") {
                 var promptText by remember(settings.startupPrompt) { mutableStateOf(settings.startupPrompt) }
                 OutlinedTextField(
@@ -107,6 +143,22 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Read replies aloud")
+                        Text(
+                            if (ttsReady) "Speaks each finished reply using the system TTS engine"
+                            else "No text-to-speech engine available on this device",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.ttsAutoSpeak,
+                        onCheckedChange = { vm.updateTtsAutoSpeak(it) },
+                        enabled = ttsReady,
+                    )
+                }
             }
         }
 
@@ -151,6 +203,24 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     }
                     Switch(checked = settings.requireApiKey, onCheckedChange = { vm.updateRequireApiKey(it) })
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("HTTPS (self-signed TLS)")
+                        Text(
+                            "Clients must accept the self-signed certificate (e.g. curl -k). Restarts the server.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = settings.httpsEnabled, onCheckedChange = { vm.updateHttps(it) })
+                }
+                if (settings.httpsEnabled && tlsFingerprint != null) {
+                    Text(
+                        "Cert SHA-256:\n$tlsFingerprint",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 TextButton(onClick = { onOpenTab(Tab.SERVER) }) { Text("Open Server dashboard →") }
             }
         }
@@ -193,3 +263,15 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         }
     }
 }
+
+
+private fun currentKeyFor(engine: String, settings: com.pocketllm.settings.AppSettings): String = when (engine) {
+    "brave" -> settings.braveKey
+    "tavily" -> settings.tavilyKey
+    "bing" -> settings.bingKey
+    "firecrawl" -> settings.firecrawlKey
+    else -> ""
+}
+
+private fun labelFor(engine: String): String =
+    WebSearch.engines.firstOrNull { it.first == engine }?.second ?: engine

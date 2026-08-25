@@ -18,6 +18,13 @@ data class AppSettings(
     val themeMode: String = "system",
     val dynamicColor: Boolean = true,
     val startupPrompt: String = "",
+    val httpsEnabled: Boolean = false,
+    val searchEngine: String = "duckduckgo",
+    val braveKey: String = "",
+    val tavilyKey: String = "",
+    val bingKey: String = "",
+    val firecrawlKey: String = "",
+    val ttsAutoSpeak: Boolean = false,
 )
 
 class SettingsRepository(context: Context) {

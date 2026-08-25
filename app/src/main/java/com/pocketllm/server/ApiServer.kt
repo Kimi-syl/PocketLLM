@@ -7,6 +7,9 @@ import com.pocketllm.llm.LlamaEngine
 import com.pocketllm.settings.SettingsRepository
 import com.pocketllm.usage.UsageRecord
 import com.pocketllm.usage.UsageRepository
+import com.pocketllm.util.TlsCertManager
+import java.io.File
+import android.content.Context
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -14,9 +17,12 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
-import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.applicationEnvironment
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.sslConnector
+import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.origin
 import io.ktor.server.request.receiveNullable
@@ -37,6 +43,7 @@ private val json = Json {
 }
 
 class ApiServer(
+    private val context: Context,
     private val settings: SettingsRepository,
     private val apiKeys: ApiKeyRepository,
     private val usageRepo: UsageRepository,
@@ -52,27 +59,75 @@ class ApiServer(
 
     fun start() {
         if (server != null) return
-        val port = settings.current().port
-        server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
-            install(ContentNegotiation) { json(json) }
-            routing {
-                get("/health") {
-                    call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
-                }
-                get("/v1/models") {
-                    if (call.authorized() == null) return@get
-                    val ready = llama.state.value as? EngineState.Ready
-                    call.respond(
-                        ModelListResponse(
-                            data = listOfNotNull(ready?.let { ModelInfo(id = it.modelName) }),
-                        )
-                    )
-                }
-                post("/v1/chat/completions") { handleChat(call) }
-                post("/v1/completions") { handleCompletion(call) }
+        val settingsSnapshot = settings.current()
+        val port = settingsSnapshot.port
+        val tlsInfo = if (settingsSnapshot.httpsEnabled) {
+            TlsCertManager.ensureKeystore(context.filesDir, localIps()).getOrElse { ex ->
+                ServerLog.log("TLS cert generation failed (falling back to HTTP): ${ex.message}")
+                null
             }
-        }.start(wait = false)
-        ServerLog.log("API listening on 0.0.0.0:$port")
+        } else null
+
+        val tlsInfoResolved = tlsInfo
+        val keystore = if (tlsInfoResolved != null) TlsCertManager.loadKeystore(context.filesDir) else null
+
+        server = embeddedServer(
+            Netty,
+            environment = applicationEnvironment { },
+            configure = {
+                if (tlsInfoResolved != null && keystore != null) {
+                    sslConnector(
+                        keystore,
+                        tlsInfoResolved.alias,
+                        { tlsInfoResolved.password },
+                        { tlsInfoResolved.password },
+                    ) {
+                        this.port = port
+                        this.host = "0.0.0.0"
+                    }
+                    ServerLog.log("API listening on https://0.0.0.0:$port (self-signed TLS)")
+                    ServerLog.log("Cert SHA-256: ${tlsInfoResolved.fingerprint}")
+                } else {
+                    if (tlsInfoResolved != null) ServerLog.log("TLS unavailable, serving plain HTTP")
+                    connector {
+                        this.port = port
+                        this.host = "0.0.0.0"
+                    }
+                    ServerLog.log("API listening on http://0.0.0.0:$port")
+                }
+            },
+            module = { installRoutes() },
+        ).start(wait = false)
+    }
+
+    private fun localIps(): List<String> =
+        runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                .flatMap { it.inetAddresses.asSequence() }
+                .filterIsInstance<java.net.Inet4Address>()
+                .filter { !it.isLoopbackAddress }
+                .mapNotNull { it.hostAddress }
+                .toList()
+        }.getOrDefault(emptyList())
+
+    private fun Application.installRoutes() {
+        install(ContentNegotiation) { json(json) }
+        routing {
+            get("/health") {
+                call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
+            }
+            get("/v1/models") {
+                if (call.authorized() == null) return@get
+                val ready = llama.state.value as? EngineState.Ready
+                call.respond(
+                    ModelListResponse(
+                        data = listOfNotNull(ready?.let { ModelInfo(id = it.modelName) }),
+                    )
+                )
+            }
+            post("/v1/chat/completions") { handleChat(call) }
+            post("/v1/completions") { handleCompletion(call) }
+        }
     }
 
     fun stop() {

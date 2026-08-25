@@ -18,6 +18,7 @@ import com.pocketllm.server.ApiServer
 import com.pocketllm.server.ServerLog
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
+import com.pocketllm.util.TtsManager
 import com.pocketllm.util.WebSearch
 import com.pocketllm.usage.UsageRecord
 import com.pocketllm.usage.UsageRepository
@@ -43,7 +44,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val hfClient = HuggingFaceClient { settings.current().hfToken }
     private val modelRepo = ModelRepository(context) { settings.current().hfToken }
     private val usageRepo = UsageRepository(context)
-    val server = ApiServer(settings, apiKeyRepo, usageRepo) { refreshUsage() }
+    private val tlsInfo = MutableStateFlow<String?>(null)
+    val tlsFingerprint: StateFlow<String?> = tlsInfo
+
+    private val tts = TtsManager(context)
+
+    val ttsReady: StateFlow<Boolean> = tts.ready
+    val ttsSpeaking: StateFlow<Boolean> = tts.speaking
+
+    val server = ApiServer(context, settings, apiKeyRepo, usageRepo) { refreshUsage() }
+
+    fun speakOrStop(text: String) {
+        if (tts.speaking.value) tts.stop() else tts.speak(text)
+    }
+
+    
 
     private val _models = MutableStateFlow<List<GgufModel>>(emptyList())
     val models: StateFlow<List<GgufModel>> = _models
@@ -95,6 +110,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshKeys()
         refreshUsage()
         _currentSettings.value = settings.current()
+        tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
     }
 
     fun refreshUsage() {
@@ -246,6 +262,46 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(startupPrompt = prompt) }
     }
 
+    fun updateHttps(enabled: Boolean) {
+        viewModelScope.launch {
+            settings.update { it.copy(httpsEnabled = enabled) }
+            _currentSettings.value = settings.current()
+            if (server.isRunning) {
+                server.stop()
+                server.start()
+                _serverRunning.value = server.isRunning
+            }
+            if (!enabled) {
+                com.pocketllm.util.TlsCertManager.deleteTlsFiles(context.filesDir)
+                tlsInfo.value = null
+            } else {
+                tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
+            }
+        }
+    }
+
+    fun updateSearchEngine(engine: String) {
+        updateSettings { it.copy(searchEngine = engine) }
+    }
+
+    fun updateEngineKey(engine: String, key: String) {
+        updateSettings { current ->
+            when (engine) {
+                "brave" -> current.copy(braveKey = key.trim())
+                "tavily" -> current.copy(tavilyKey = key.trim())
+                "bing" -> current.copy(bingKey = key.trim())
+                "firecrawl" -> current.copy(firecrawlKey = key.trim())
+                else -> current
+            }
+        }
+    }
+
+    fun updateTtsAutoSpeak(enabled: Boolean) {
+        updateSettings { it.copy(ttsAutoSpeak = enabled) }
+    }
+
+    fun stopSpeaking() = tts.stop()
+
     private fun updateSettings(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             settings.update(transform)
@@ -283,7 +339,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 var webContext: String? = null
                 if (_webSearchEnabled.value) {
                     setReply("\uD83D\uDD0E Searching the web…")
-                    val results = WebSearch.search(trimmed)
+                    val snap = _currentSettings.value
+                    val keyForEngine = when (snap.searchEngine) {
+                        "brave" -> snap.braveKey; "tavily" -> snap.tavilyKey
+                        "bing" -> snap.bingKey; "firecrawl" -> snap.firecrawlKey; else -> ""
+                    }
+                    val results = WebSearch.search(trimmed, snap.searchEngine, keyForEngine.ifBlank { null })
                     webContext = if (results.isEmpty()) null else buildString {
                         appendLine("Web search results for \"${trimmed}\":")
                         results.forEachIndexed { i, r ->
@@ -318,6 +379,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 result?.let {
                     usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat", modelName, it.promptTokens, it.generatedTokens))
                     refreshUsage()
+                    if (_currentSettings.value.ttsAutoSpeak && !tts.speaking.value) {
+                        val full = _chatMessages.value.getOrNull(replyIndex)?.content.orEmpty()
+                        if (full.isNotBlank()) tts.speak(full)
+                    }
                 }
             } finally {
                 _generating.value = false
