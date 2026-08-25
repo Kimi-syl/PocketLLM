@@ -15,6 +15,9 @@ data class AppSettings(
     val requireApiKey: Boolean = true,
     val contextSize: Int = 2048,
     val hfToken: String = "",
+    val themeMode: String = "system",
+    val dynamicColor: Boolean = true,
+    val startupPrompt: String = "",
 )
 
 class SettingsRepository(context: Context) {

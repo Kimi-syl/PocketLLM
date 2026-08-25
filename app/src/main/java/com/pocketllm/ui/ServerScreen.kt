@@ -38,7 +38,7 @@ import com.pocketllm.llm.CpuInfo
 import com.pocketllm.server.ServerLog
 
 @Composable
-fun ServerScreen(vm: AppViewModel) {
+fun ServerScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val running by vm.serverRunning.collectAsState()
     val settings by vm.currentSettings.collectAsState()
     val logs by ServerLog.lines.collectAsState()
@@ -50,6 +50,7 @@ fun ServerScreen(vm: AppViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item { ScreenHeader("Server", onMenu) }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

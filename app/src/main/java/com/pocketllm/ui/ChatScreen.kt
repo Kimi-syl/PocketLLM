@@ -34,7 +34,7 @@ import com.pocketllm.ChatUiMessage
 import com.pocketllm.llm.EngineState
 
 @Composable
-fun ChatScreen(vm: AppViewModel) {
+fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val messages by vm.chatMessages.collectAsState()
     val generating by vm.generating.collectAsState()
     val engineState by vm.engine.state.collectAsState()
@@ -48,6 +48,7 @@ fun ChatScreen(vm: AppViewModel) {
     }
 
     Column(Modifier.fillMaxSize()) {
+        ScreenHeader("Chat", onMenu)
         if (!ready) {
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Text(

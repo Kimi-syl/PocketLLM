@@ -52,7 +52,7 @@ private fun dayStart(): Long {
 }
 
 @Composable
-fun UsageScreen(vm: AppViewModel) {
+fun UsageScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val records by vm.usageRecords.collectAsState()
 
     val today = UsageRepository.aggregate(records, dayStart())
@@ -66,14 +66,7 @@ fun UsageScreen(vm: AppViewModel) {
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Usage", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Tokens served by your phone",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                ScreenHeader("Usage", onMenu, subtitle = "Tokens served by your phone")
                 IconButton(onClick = { vm.clearUsage() }) {
                     Icon(Icons.Outlined.DeleteSweep, contentDescription = "Clear usage")
                 }

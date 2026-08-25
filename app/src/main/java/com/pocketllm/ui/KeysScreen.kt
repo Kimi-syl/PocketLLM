@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -43,7 +44,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun KeysScreen(vm: AppViewModel) {
+fun KeysScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val keys by vm.apiKeys.collectAsState()
     var showCreate by remember { mutableStateOf(false) }
     var revealed by remember { mutableStateOf<ApiKeyEntry?>(null) }
@@ -54,9 +55,12 @@ fun KeysScreen(vm: AppViewModel) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 2.dp, end = 16.dp, top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Menu")
+            }
             Column(Modifier.weight(1f)) {
                 Text("API keys", style = MaterialTheme.typography.titleLarge)
                 Text(

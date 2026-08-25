@@ -224,6 +224,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(hfToken = token.trim()) }
     }
 
+    fun updateThemeMode(mode: String) {
+        updateSettings { it.copy(themeMode = mode) }
+    }
+
+    fun updateDynamicColor(enabled: Boolean) {
+        updateSettings { it.copy(dynamicColor = enabled) }
+    }
+
+    fun updateStartupPrompt(prompt: String) {
+        updateSettings { it.copy(startupPrompt = prompt) }
+    }
+
     private fun updateSettings(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             settings.update(transform)
@@ -247,17 +259,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _generating.value = true
             try {
-                val history = _chatMessages.value + ChatUiMessage("user", trimmed)
-                _chatMessages.value = history + ChatUiMessage("assistant", "")
+                val systemPrompt = _currentSettings.value.startupPrompt.trim()
+                val visibleHistory = _chatMessages.value + ChatUiMessage("user", trimmed)
+                _chatMessages.value = visibleHistory + ChatUiMessage("assistant", "")
                 val replyIndex = _chatMessages.value.lastIndex
-                val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
-                val prompt = engine.chatPrompt(_chatMessages.value.take(replyIndex).map { it.role to it.content })
+                val promptMessages = buildList {
+                    if (systemPrompt.isNotEmpty()) add("system" to systemPrompt)
+                    addAll(visibleHistory.map { it.role to it.content })
+                }
+                val prompt = engine.chatPrompt(promptMessages)
                 if (prompt == null) {
                     _chatMessages.update { list ->
                         list.toMutableList().also { it[replyIndex] = ChatUiMessage("assistant", "[no model loaded]") }
                     }
                     return@launch
                 }
+                val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
                 val result = engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
                     _chatMessages.update { list ->
                         list.toMutableList().also {

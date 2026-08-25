@@ -46,7 +46,7 @@ import com.pocketllm.llm.EngineState
 import com.pocketllm.models.GgufModel
 
 @Composable
-fun ModelsScreen(vm: AppViewModel) {
+fun ModelsScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     var tab by remember { mutableIntStateOf(0) }
 
     Column(Modifier.fillMaxSize()) {
@@ -55,13 +55,13 @@ fun ModelsScreen(vm: AppViewModel) {
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Hugging Face") })
         }
         Box(Modifier.weight(1f)) {
-            if (tab == 0) LocalModelsList(vm) else HfSearchSection(vm)
+            if (tab == 0) LocalModelsList(vm, onMenu) else HfSearchSection(vm)
         }
     }
 }
 
 @Composable
-private fun LocalModelsList(vm: AppViewModel) {
+private fun LocalModelsList(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val models by vm.models.collectAsState()
     val engineState by vm.engine.state.collectAsState()
     val loadedFile = vm.loadedFileName()
@@ -75,6 +75,7 @@ private fun LocalModelsList(vm: AppViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item { ScreenHeader("Models", onMenu) }
         item {
             val stateLabel = when (val s = engineState) {
                 is EngineState.Loading -> "Loading ${s.fileName}…"
