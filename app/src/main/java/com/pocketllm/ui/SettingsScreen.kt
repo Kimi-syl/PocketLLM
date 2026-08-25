@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.pocketllm.AppViewModel
 
 @Composable
-fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit) {
+fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -> Unit = {}) {
     val settings by vm.currentSettings.collectAsState()
     val running by vm.serverRunning.collectAsState()
     val keys by vm.apiKeys.collectAsState()
@@ -48,7 +48,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { ScreenHeader("Settings", onMenuClick = { onOpenTab(Tab.SETTINGS) }) }
+        item { ScreenHeader("Settings", onMenuClick = onMenu) }
 
         item {
             SectionCard("Appearance") {

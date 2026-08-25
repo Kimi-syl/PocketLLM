@@ -18,6 +18,7 @@ import com.pocketllm.server.ApiServer
 import com.pocketllm.server.ServerLog
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
+import com.pocketllm.util.WebSearch
 import com.pocketllm.usage.UsageRecord
 import com.pocketllm.usage.UsageRepository
 import java.net.Inet4Address
@@ -25,8 +26,10 @@ import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class ChatUiMessage(val role: String, val content: String)
 
@@ -76,6 +79,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _generating = MutableStateFlow(false)
     val generating: StateFlow<Boolean> = _generating
+
+    private val _webSearchEnabled = MutableStateFlow(false)
+    val webSearchEnabled: StateFlow<Boolean> = _webSearchEnabled
+
+    fun toggleWebSearch() {
+        _webSearchEnabled.value = !_webSearchEnabled.value
+    }
 
     private val _usageRecords = MutableStateFlow<List<UsageRecord>>(emptyList())
     val usageRecords: StateFlow<List<UsageRecord>> = _usageRecords
@@ -263,8 +273,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val visibleHistory = _chatMessages.value + ChatUiMessage("user", trimmed)
                 _chatMessages.value = visibleHistory + ChatUiMessage("assistant", "")
                 val replyIndex = _chatMessages.value.lastIndex
+
+                fun setReply(text: String) {
+                    _chatMessages.update { list ->
+                        list.toMutableList().also { it[replyIndex] = it[replyIndex].copy(content = text) }
+                    }
+                }
+
+                var webContext: String? = null
+                if (_webSearchEnabled.value) {
+                    setReply("\uD83D\uDD0E Searching the web…")
+                    val results = WebSearch.search(trimmed)
+                    webContext = if (results.isEmpty()) null else buildString {
+                        appendLine("Web search results for \"${trimmed}\":")
+                        results.forEachIndexed { i, r ->
+                            appendLine("\${i + 1}. \${r.title} — \${r.snippet} (\${r.url})")
+                        }
+                        append("Use these results when answering the user's question.")
+                    }
+                    ServerLog.log("Web search: ${'$'}{results.size} results for \"${'$'}trimmed\"")
+                    setReply("")
+                }
+
                 val promptMessages = buildList {
                     if (systemPrompt.isNotEmpty()) add("system" to systemPrompt)
+                    if (webContext != null) add("system" to webContext!!)
                     addAll(visibleHistory.map { it.role to it.content })
                 }
                 val prompt = engine.chatPrompt(promptMessages)

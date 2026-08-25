@@ -1,6 +1,8 @@
 package com.pocketllm.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -28,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.pocketllm.AppViewModel
 import com.pocketllm.ChatUiMessage
@@ -38,6 +43,7 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val messages by vm.chatMessages.collectAsState()
     val generating by vm.generating.collectAsState()
     val engineState by vm.engine.state.collectAsState()
+    val webSearchEnabled by vm.webSearchEnabled.collectAsState()
 
     val ready = engineState is EngineState.Ready
     var input by remember { mutableStateOf("") }
@@ -72,6 +78,14 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
             }
         }
 
+        if (webSearchEnabled && !generating) {
+            Text(
+                "\uD83C\uDF10 Web search on \u2014 next question will include fresh results",
+                Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -79,6 +93,13 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            IconButton(onClick = { vm.toggleWebSearch() }, enabled = ready || !generating) {
+                Icon(
+                    Icons.Outlined.Public,
+                    contentDescription = "Toggle web search",
+                    tint = if (webSearchEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                )
+            }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
