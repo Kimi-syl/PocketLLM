@@ -14,6 +14,7 @@ Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenA
 - **Hugging Face model discovery** and GGUF browsing/download
 - **Resumable segmented downloader** with retry support and persisted metadata
 - Built-in **chat screen** for local testing
+- Built-in **chat screen** with **Markdown + LaTeX** rendering
 - Optional **web search augmentation** (DuckDuckGo, Brave, Tavily, Bing, Firecrawl)
 - Optional **auto-speak** responses using Android TTS
 - **Usage logging and analytics** in-app
