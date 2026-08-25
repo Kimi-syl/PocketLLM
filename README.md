@@ -4,7 +4,7 @@ Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenA
 
 ## Features
 
-- Native **llama.cpp** inference via JNI/NDK (**arm64-v8a** build target)
+- Native **llama.cpp** inference via JNI/NDK with **Vulkan GPU offload** (**arm64-v8a** build target)
 - **OpenAI-compatible API**
   - `GET /v1/models`
   - `POST /v1/chat/completions` (streaming SSE + JSON)
@@ -13,7 +13,6 @@ Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenA
 - In-app **API key management** (create/revoke/enable/disable, last-used tracking)
 - **Hugging Face model discovery** and GGUF browsing/download
 - **Resumable segmented downloader** with retry support and persisted metadata
-- Built-in **chat screen** for local testing
 - Built-in **chat screen** with **Markdown + LaTeX** rendering
 - Optional **web search augmentation** (DuckDuckGo, Brave, Tavily, Bing, Firecrawl)
 - Optional **auto-speak** responses using Android TTS
