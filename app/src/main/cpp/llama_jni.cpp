@@ -66,11 +66,12 @@ Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath,
-                                             jint contextSize, jint batchSize, jint threads) {
+                                             jint contextSize, jint batchSize, jint threads,
+                                             jint gpuLayers) {
     std::string path = toStdString(env, jPath);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 99;
+    mparams.n_gpu_layers = static_cast<int>(gpuLayers);
     llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
     if (model == nullptr) return -1;
 

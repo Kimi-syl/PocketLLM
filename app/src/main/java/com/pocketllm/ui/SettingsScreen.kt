@@ -118,6 +118,39 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            SectionCard("Inference") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("GPU offload (Vulkan)")
+                        Text(
+                            if (settings.gpuOffload) "Layers run on the GPU for faster inference"
+                            else "CPU only — lower power use, slower generation",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.gpuOffload,
+                        onCheckedChange = { vm.updateGpuOffload(it) },
+                    )
+                }
+                Text(
+                    "Takes effect the next time a model is loaded. Unload and reload the model to apply.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val loaded by vm.engine.state.collectAsState()
+                if (loaded is com.pocketllm.llm.EngineState.Ready) {
+                    Text(
+                        "A model is currently loaded with ${if (settings.gpuOffload) "GPU offload" else "CPU only"}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
             SectionCard("Chat") {
                 var promptText by remember(settings.startupPrompt) { mutableStateOf(settings.startupPrompt) }
                 OutlinedTextField(

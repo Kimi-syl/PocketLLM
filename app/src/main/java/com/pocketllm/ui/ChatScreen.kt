@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.latex.JLatexMathPlugin
+import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
+import io.noties.markwon.tables.TablePlugin
 import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import com.pocketllm.AppViewModel
 import com.pocketllm.ChatUiMessage
@@ -170,6 +172,11 @@ private fun MarkdownMessage(content: String) {
         )
         Markwon.builder(context)
             .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(StrikethroughPlugin.create())
+            .usePlugin(TablePlugin.create { theme ->
+                theme.tableEvenRowBackgroundColor(android.graphics.Color.parseColor("#1A000000"))
+                    .tableHeaderRowBackgroundColor(android.graphics.Color.parseColor("#33888888"))
+            })
             .usePlugin(
                 JLatexMathPlugin.create(textSizePx) { builder ->
                     builder.inlinesEnabled(true)

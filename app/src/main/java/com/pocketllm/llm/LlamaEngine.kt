@@ -50,13 +50,19 @@ object LlamaEngine {
         LlamaBridge.backendInit()
     }
 
-    suspend fun load(file: File, contextSize: Int, threads: Int) {
+    suspend fun load(file: File, contextSize: Int, threads: Int, gpuOffload: Boolean = true) {
         mutex.withLock {
             unloadInternal()
             _state.value = EngineState.Loading(file.name)
             val threadCount = threads.coerceIn(1, 8)
             val h = withContext(dispatcher) {
-                LlamaBridge.loadModel(file.absolutePath, contextSize, 1024, threadCount)
+                LlamaBridge.loadModel(
+                    file.absolutePath,
+                    contextSize,
+                    1024,
+                    threadCount,
+                    if (gpuOffload) 99 else 0,
+                )
             }
             if (h < 0L) {
                 _state.value = EngineState.Error("Failed to load ${file.name}")
