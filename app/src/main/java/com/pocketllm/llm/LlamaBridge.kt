@@ -10,7 +10,8 @@ object LlamaBridge {
     }
 
     external fun backendInit()
-    external fun loadModel(path: String, contextSize: Int, batchSize: Int, threads: Int): Long
+    external fun supportsGpuOffload(): Boolean
+    external fun loadModel(path: String, contextSize: Int, batchSize: Int, threads: Int, gpuLayers: Int): Long
     external fun freeModel(handle: Long)
     external fun contextLength(handle: Long): Int
     external fun applyChatTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String

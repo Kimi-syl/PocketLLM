@@ -121,6 +121,51 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            SectionCard("Inference") {
+                val loaded by vm.engine.state.collectAsState()
+                val gpuSupported = remember { com.pocketllm.llm.LlamaBridge.supportsGpuOffload() }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("GPU offload")
+                        Text(
+                            when {
+                                !gpuSupported -> "This build has no GPU backend — CPU only"
+                                settings.gpuOffload -> "Layers run on the GPU for faster inference"
+                                else -> "CPU only — lower power use, slower generation"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.gpuOffload && gpuSupported,
+                        onCheckedChange = { vm.updateGpuOffload(it) },
+                        enabled = gpuSupported,
+                    )
+                }
+                Text(
+                    "Takes effect the next time a model is loaded. Unload and reload the model to apply.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!gpuSupported && loaded is com.pocketllm.llm.EngineState.Ready) {
+                    Text(
+                        "Loaded model runs on CPU.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (loaded is com.pocketllm.llm.EngineState.Ready) {
+                    Text(
+                        "A model is currently loaded with ${if (settings.gpuOffload) "GPU offload" else "CPU only"}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
             SectionCard("Chat") {
                 var promptText by remember(settings.startupPrompt) { mutableStateOf(settings.startupPrompt) }
                 OutlinedTextField(

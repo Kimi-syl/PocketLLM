@@ -72,4 +72,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.okhttp)
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.ext.latex)
+    implementation(libs.markwon.inline.parser)
+    implementation(libs.markwon.tables)
+    implementation(libs.markwon.strikethrough)
 }

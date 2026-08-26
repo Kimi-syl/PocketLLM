@@ -174,7 +174,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun loadModel(name: String) {
         val file = modelRepo.file(name) ?: return
         viewModelScope.launch {
-            engine.load(file, settings.current().contextSize, CpuInfo.recommendedThreads())
+            engine.load(file, settings.current().contextSize, CpuInfo.recommendedThreads(), settings.current().gpuOffload)
             refreshModels()
         }
     }
@@ -320,6 +320,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
         }.onFailure { return false }
         return true
+    }
+
+    fun updateGpuOffload(enabled: Boolean) {
+        updateSettings { it.copy(gpuOffload = enabled) }
     }
 
     fun stopSpeaking() = tts.stop()

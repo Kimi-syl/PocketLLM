@@ -64,13 +64,19 @@ Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
     llama_backend_init();
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_pocketllm_llm_LlamaBridge_supportsGpuOffload(JNIEnv*, jobject) {
+    return llama_supports_gpu_offload() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath,
-                                             jint contextSize, jint batchSize, jint threads) {
+                                             jint contextSize, jint batchSize, jint threads,
+                                             jint gpuLayers) {
     std::string path = toStdString(env, jPath);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = static_cast<int>(gpuLayers);
     llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
     if (model == nullptr) return -1;
 

@@ -12,3 +12,8 @@ local.properties
 app/src/main/cpp/llama.cpp/
 build-native/
 *.log
+
+# Native libraries
+app/src/main/jniLibs/
+*.apk
+build-native/
