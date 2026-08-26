@@ -37,6 +37,9 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
     val keys by vm.apiKeys.collectAsState()
     val tlsFingerprint by vm.tlsFingerprint.collectAsState()
     val ttsReady by vm.ttsReady.collectAsState()
+    val exportMessage by vm.exportMessage.collectAsState()
+
+    var _localInstallHint by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
@@ -220,6 +223,23 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        "Browsers will show a one-time warning until this certificate is trusted on the client device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { vm.exportCertificate() }) { Text("Save .crt to Downloads") }
+                        TextButton(
+                            onClick = { if (!vm.installCertificateOnDevice()) _localInstallHint = "No certificate yet" }
+                        ) { Text("Trust on this device") }
+                    }
+                    if (_localInstallHint != null) {
+                        Text(_localInstallHint!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    exportMessage?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
                 TextButton(onClick = { onOpenTab(Tab.SERVER) }) { Text("Open Server dashboard →") }
             }

@@ -113,6 +113,16 @@ class ApiServer(
     private fun Application.installRoutes() {
         install(ContentNegotiation) { json(json) }
         routing {
+            get("/") {
+                call.respondText(
+                    """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PocketLLM</title>
+<style>body{font-family:sans-serif;background:#10131A;color:#E2E6EE;display:flex;min-height:100vh;align-items:center;justify-content:center}div{max-width:480px;padding:2rem}h1{margin:0 0 .5rem}code{background:#232936;padding:.15rem .4rem;border-radius:6px}a{color:#9ABFFF}</style></head>
+<body><div><h1>🤖 PocketLLM</h1><p>This phone is running a local LLM server.</p>
+<p>Point any OpenAI-compatible client at <code>/v1</code> on this address.</p>
+<p><a href="https://github.com/Kimi-syl/PocketLLM">Documentation on GitHub</a></p></div></body></html>""",
+                    ContentType.Text.Html
+                )
+            }
             get("/health") {
                 call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
             }

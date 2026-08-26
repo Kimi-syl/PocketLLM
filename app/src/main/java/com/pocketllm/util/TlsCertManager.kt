@@ -1,7 +1,12 @@
 package com.pocketllm.util
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
+import android.content.Context
+import android.content.ContentValues
+import android.content.Intent
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.security.KeyChain
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.asn1.x509.GeneralName
@@ -33,6 +38,7 @@ object TlsCertManager {
 
     private const val ALIAS = "pocketllm"
     private const val PASSWORD = "pocketllm-local"
+    private const val CERT_FILE_NAME = "pocketllm.crt"
 
     fun ensureKeystore(filesDir: File, sanIps: List<String>): Result<TlsKeystoreInfo> = runCatching {
         val ksFile = File(filesDir, "tls.p12")
@@ -73,7 +79,7 @@ object TlsCertManager {
         val certificate: X509Certificate =
             JcaX509CertificateConverter().getCertificate(certHolder)
 
-        val keyStore = KeyStore.getInstance("PKCS12").apply { load(null, null) }
+        val keyStore = newEmptyStore()
         keyStore.setKeyEntry(ALIAS, keyPair.private, PASSWORD.toCharArray(), arrayOf<Certificate>(certificate))
 
         FileOutputStream(ksFile).use { out -> keyStore.store(out, PASSWORD.toCharArray()) }
@@ -107,4 +113,41 @@ object TlsCertManager {
         File(filesDir, "tls.p12").delete()
         File(filesDir, "tls.fingerprint").delete()
     }
+
+    fun getCertificateDer(context: Context): ByteArray? {
+        val keystore = loadKeystore(context.filesDir) ?: return null
+        return keystore.getCertificate(ALIAS)?.encoded
+    }
+
+    fun createInstallIntent(context: Context): Intent? {
+        val der = getCertificateDer(context) ?: return null
+        return Intent("android.credentials.INSTALL").apply {
+            putExtra(KeyChain.EXTRA_CERTIFICATE, der)
+            putExtra(KeyChain.EXTRA_NAME, "PocketLLM Local Server")
+        }
+    }
+
+    fun exportCertificateToDownloads(context: Context): Result<String> = runCatching {
+        val der = getCertificateDer(context) ?: error("No certificate yet. Enable HTTPS first.")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, CERT_FILE_NAME)
+                put(MediaStore.Downloads.MIME_TYPE, "application/x-x509-ca-cert")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Could not create file in Downloads")
+            context.contentResolver.openOutputStream(uri)?.use { out -> out.write(der) }
+                ?: error("Could not open output stream")
+            "Saved to Downloads/$CERT_FILE_NAME"
+        } else {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            dir.mkdirs()
+            val outFile = File(dir, CERT_FILE_NAME)
+            FileOutputStream(outFile).use { it.write(der) }
+            "Saved to ${outFile.absolutePath}"
+        }
+    }
+
+    private fun newEmptyStore(): KeyStore = KeyStore.getInstance("PKCS12").apply { load(null, null) }
 }

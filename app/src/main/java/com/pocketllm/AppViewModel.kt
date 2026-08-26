@@ -300,6 +300,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(ttsAutoSpeak = enabled) }
     }
 
+    private val _exportMessage = MutableStateFlow<String?>(null)
+    val exportMessage: StateFlow<String?> = _exportMessage
+
+    fun exportCertificate() {
+        viewModelScope.launch {
+            com.pocketllm.util.TlsCertManager.exportCertificateToDownloads(context)
+                .onSuccess { msg ->
+                    _exportMessage.value = msg
+                    ServerLog.log(msg)
+                }
+                .onFailure { _exportMessage.value = "Export failed: ${it.message}" }
+        }
+    }
+
+    fun installCertificateOnDevice(): Boolean {
+        val intent = com.pocketllm.util.TlsCertManager.createInstallIntent(context) ?: return false
+        runCatching {
+            context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { return false }
+        return true
+    }
+
     fun stopSpeaking() = tts.stop()
 
     private fun updateSettings(transform: (AppSettings) -> AppSettings) {
