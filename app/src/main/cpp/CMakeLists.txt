@@ -6,14 +6,16 @@ set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(llama.cpp)
 
-# Reduce optimization for ggml-vulkan.cpp to lower peak memory during compilation
-if(TARGET ggml-vulkan)
-    target_compile_options(ggml-vulkan PRIVATE -O0)
-endif()
+# Override versioned SONAMEs from llama.cpp — Android only loads *.so files
+foreach(_tgt llama ggml ggml-base ggml-cpu ggml-vulkan)
+    if(TARGET ${_tgt})
+        set_target_properties(${_tgt} PROPERTIES VERSION "" SOVERSION "")
+    endif()
+endforeach()
 
 add_library(${CMAKE_PROJECT_NAME} SHARED llama_jni.cpp)
 
