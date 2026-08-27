@@ -372,20 +372,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     val results = WebSearch.search(trimmed, snap.searchEngine, keyForEngine.ifBlank { null })
                     webContext = if (results.isEmpty()) null else buildString {
-                        appendLine("Web search results for \"${trimmed}\":")
+                        appendLine("[Web search results for \"${trimmed}\":")
                         results.forEachIndexed { i, r ->
-                            appendLine("\${i + 1}. \${r.title} — \${r.snippet} (\${r.url})")
+                            appendLine("${i + 1}. ${r.title} - ${r.snippet} (${r.url})")
                         }
-                        append("Use these results when answering the user's question.")
+                        appendLine("Use the above web search results to answer the user's question. Do not say you cannot access the internet.]")
                     }
                     ServerLog.log("Web search: ${results.size} results for \"${trimmed}\"")
                     setReply("")
                 }
 
+                val userMessage = if (webContext != null) {
+                    "$webContext\n\nUser question: $trimmed"
+                } else {
+                    trimmed
+                }
+
                 val promptMessages = buildList {
                     if (systemPrompt.isNotEmpty()) add("system" to systemPrompt)
-                    if (webContext != null) add("system" to webContext!!)
-                    addAll(visibleHistory.map { it.role to it.content })
+                    addAll(visibleHistory.dropLast(1).map { it.role to it.content })
+                    add("user" to userMessage)
                 }
                 val prompt = engine.chatPrompt(promptMessages)
                 if (prompt == null) {
