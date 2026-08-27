@@ -163,7 +163,7 @@ private fun Bubble(message: ChatUiMessage) {
 @Composable
 private fun MarkdownMessage(content: String) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val textColor = LocalTextStyle.current.color.toArgb()
+    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
     val markwon = remember(context) {
         val textSizePx = TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_SP,
@@ -194,8 +194,8 @@ private fun MarkdownMessage(content: String) {
                 }
             },
             update = { textView ->
-                textView.setTextColor(textColor)
                 markwon.setMarkdown(textView, content)
+                textView.setTextColor(textColor)
             },
         )
     }

@@ -66,21 +66,33 @@ object WebSearch {
     }.getOrDefault(emptyList())
 
     private fun parseDdgHtml(html: String, maxResults: Int): List<WebResult> {
-        val anchorRegex = Regex("""<a[^>]*href="(http[^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
-        val snippetRegex = Regex("""class=["']result-snippet["'][^>]*>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
+        val anchorRegex = Regex("""<a[^>]*class=['"]result-link['"][^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+        val snippetRegex = Regex("""class=['"]result-snippet['"][^>]*>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
 
         val anchors = anchorRegex.findAll(html)
-            .map { stripTags(it.groupValues[2]) to cleanUrl(it.groupValues[1]) }
-            .filter { (title, url) ->
-                title.isNotBlank() && !url.contains("duckduckgo.com") && !url.startsWith("https://duckduckgo")
+            .map { extractDdgUrl(it.groupValues[1]) to stripTags(it.groupValues[2]) }
+            .filter { (url, title) ->
+                title.isNotBlank() && url.isNotBlank() && !url.contains("duckduckgo.com") && !url.startsWith("https://duckduckgo")
             }
             .toList()
         val snippets = snippetRegex.findAll(html).map { stripTags(it.groupValues[1]) }.toList()
 
-        return anchors.mapIndexedNotNull { index, (title, url) ->
+        return anchors.mapIndexedNotNull { index, (url, title) ->
             if (index >= maxResults) return@mapIndexedNotNull null
             WebResult(title, url, snippets.getOrElse(index) { "" })
         }
+    }
+
+    private fun extractDdgUrl(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("http")) return trimmed
+        if (trimmed.startsWith("//")) return "https:$trimmed"
+        // Extract from //duckduckgo.com/l/?uddg=...
+        val uddgMatch = Regex("""uddg=([^&]+)""").find(trimmed)
+        if (uddgMatch != null) {
+            return java.net.URLDecoder.decode(uddgMatch.groupValues[1], "UTF-8")
+        }
+        return trimmed
     }
 
     @Serializable
