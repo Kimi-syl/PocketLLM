@@ -378,7 +378,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         append("Use these results when answering the user's question.")
                     }
-                    ServerLog.log("Web search: ${'$'}{results.size} results for \"${'$'}trimmed\"")
+                    ServerLog.log("Web search: ${results.size} results for \"${trimmed}\"")
                     setReply("")
                 }
 

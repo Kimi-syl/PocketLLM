@@ -75,6 +75,8 @@ object TlsCertManager {
             keyPair.public,
         )
             .addExtension(Extension.subjectAlternativeName, false, GeneralNames(sans.toTypedArray()))
+            .addExtension(Extension.basicConstraints, true,
+                org.bouncycastle.asn1.x509.BasicConstraints(0))  // CA=true, pathLen=0
             .build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))
         val certificate: X509Certificate =
             JcaX509CertificateConverter().getCertificate(certHolder)
@@ -121,14 +123,25 @@ object TlsCertManager {
 
     fun createInstallIntent(context: Context): Intent? {
         val der = getCertificateDer(context) ?: return null
+        // For CA certificates, use the system install intent
+        // This works for both CA and user certificates
         return Intent("android.credentials.INSTALL").apply {
             putExtra(KeyChain.EXTRA_CERTIFICATE, der)
-            putExtra(KeyChain.EXTRA_NAME, "PocketLLM Local Server")
+            putExtra(KeyChain.EXTRA_NAME, "PocketLLM CA")
+            type = "application/x-x509-ca-cert"
         }
     }
 
     fun exportCertificateToDownloads(context: Context): Result<String> = runCatching {
         val der = getCertificateDer(context) ?: error("No certificate yet. Enable HTTPS first.")
+
+        // Build PEM with proper CA headers
+        val base64 = android.util.Base64.encodeToString(der, android.util.Base64.DEFAULT)
+        val pem = buildString {
+            appendLine("-----BEGIN CERTIFICATE-----")
+            appendLine(base64.trimEnd())
+            appendLine("-----END CERTIFICATE-----")
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
@@ -137,14 +150,14 @@ object TlsCertManager {
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("Could not create file in Downloads")
-            context.contentResolver.openOutputStream(uri)?.use { out -> out.write(der) }
+            context.contentResolver.openOutputStream(uri)?.use { out -> out.write(pem.toByteArray()) }
                 ?: error("Could not open output stream")
             "Saved to Downloads/$CERT_FILE_NAME"
         } else {
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
             val outFile = File(dir, CERT_FILE_NAME)
-            FileOutputStream(outFile).use { it.write(der) }
+            FileOutputStream(outFile).use { it.write(pem.toByteArray()) }
             "Saved to ${outFile.absolutePath}"
         }
     }

@@ -58,11 +58,21 @@ object WebSearch {
                 "User-Agent",
                 "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
             )
+            .header("Accept", "text/html")
+            .header("Accept-Language", "en-US,en;q=0.9")
             .build()
-        client.newCall(request).execute().use { response ->
-            check(response.isSuccessful) { "HTTP ${response.code}" }
-            parseDdgHtml(response.body?.string().orEmpty(), maxResults)
+        val response = client.newCall(request).execute()
+        val body = response.body?.string().orEmpty()
+        android.util.Log.d("WebSearch", "DDG response: ${response.code}, body length: ${body.length}")
+        if (body.length < 200) {
+            android.util.Log.w("WebSearch", "DDG body too short: $body")
         }
+        response.use {
+            check(it.isSuccessful) { "HTTP ${it.code}" }
+            parseDdgHtml(body, maxResults)
+        }
+    }.onFailure {
+        android.util.Log.e("WebSearch", "DDG search failed", it)
     }.getOrDefault(emptyList())
 
     private fun parseDdgHtml(html: String, maxResults: Int): List<WebResult> {
