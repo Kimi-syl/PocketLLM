@@ -37,6 +37,11 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
     val keys by vm.apiKeys.collectAsState()
     val tlsFingerprint by vm.tlsFingerprint.collectAsState()
     val ttsReady by vm.ttsReady.collectAsState()
+    val piperReady by vm.piperReady.collectAsState()
+    val piperStatus by vm.piperStatus.collectAsState()
+    val piperProgress by vm.piperProgress.collectAsState()
+    val piperState by vm.piperState.collectAsState()
+    val ttsEngine by vm.ttsEngine.collectAsState()
     val exportMessage by vm.exportMessage.collectAsState()
 
     var _localInstallHint by remember { mutableStateOf<String?>(null) }
@@ -195,8 +200,12 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     Column(Modifier.weight(1f)) {
                         Text("Read replies aloud")
                         Text(
-                            if (ttsReady) "Speaks each finished reply using the system TTS engine"
-                            else "No text-to-speech engine available on this device",
+                            when {
+                                !ttsReady && !piperReady -> "No text-to-speech engine available"
+                                ttsEngine == "piper" && piperReady -> "Piper TTS (high quality, offline)"
+                                ttsEngine == "piper" && !piperReady -> "Piper TTS (downloading model...)"
+                                else -> "System TTS engine"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -204,7 +213,62 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     Switch(
                         checked = settings.ttsAutoSpeak,
                         onCheckedChange = { vm.updateTtsAutoSpeak(it) },
-                        enabled = ttsReady,
+                        enabled = ttsReady || piperReady,
+                    )
+                }
+                Text("TTS engine", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = ttsEngine == "system",
+                        onClick = { vm.updateTtsEngine("system") },
+                        label = { Text("System") },
+                    )
+                    FilterChip(
+                        selected = ttsEngine == "piper",
+                        onClick = { vm.updateTtsEngine("piper") },
+                        label = { Text("Piper") },
+                    )
+                }
+                if (ttsEngine == "piper" && !piperReady) {
+                    val isError = piperState is com.pocketllm.util.SherpaTtsEngine.State.Error
+                    if (isError) {
+                        Text(
+                            "Piper download failed. Check your network connection and tap retry.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            piperStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = { vm.retryPiperDownload() }) { Text("Retry download") }
+                    } else if (piperProgress > 0f && piperProgress < 1f) {
+                        Text(
+                            "Downloading… ${(piperProgress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            "Piper model will be downloaded on first use (~65MB)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Agent mode")
+                        Text(
+                            "Lets the model call web search, calculator, and datetime tools while it answers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.agentEnabled,
+                        onCheckedChange = { vm.updateAgentEnabled(it) },
                     )
                 }
             }

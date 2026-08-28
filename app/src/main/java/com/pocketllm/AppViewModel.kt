@@ -16,6 +16,9 @@ import com.pocketllm.models.GgufModel
 import com.pocketllm.models.ModelRepository
 import com.pocketllm.server.ApiServer
 import com.pocketllm.server.ServerLog
+import com.pocketllm.sessions.ChatSession
+import com.pocketllm.sessions.ChatSessionRepository
+import com.pocketllm.sessions.SessionMessage
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
 import com.pocketllm.util.TtsManager
@@ -32,7 +35,25 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class ChatUiMessage(val role: String, val content: String)
+data class ChatUiMessage(
+    val role: String,
+    val content: String,
+    val toolCalls: List<com.pocketllm.agent.ToolCallUi> = emptyList(),
+    val timestamp: Long = System.currentTimeMillis(),
+    val promptTokens: Int = 0,
+    val generatedTokens: Int = 0,
+    val timeToFirstTokenMs: Long? = null,
+    val tokensPerSecond: Float? = null,
+    val totalDurationMs: Long = 0,
+)
+
+private data class ChatMetrics(
+    val promptTokens: Int,
+    val generatedTokens: Int,
+    val ttftMs: Long?,
+    val tokensPerSecond: Float,
+    val totalDurationMs: Long,
+)
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -48,14 +69,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val tlsFingerprint: StateFlow<String?> = tlsInfo
 
     private val tts = TtsManager(context)
+    private val sessionRepo = ChatSessionRepository(context)
 
     val ttsReady: StateFlow<Boolean> = tts.ready
     val ttsSpeaking: StateFlow<Boolean> = tts.speaking
+    val piperReady: StateFlow<Boolean> = tts.piperReady
+    val piperProgress: StateFlow<Float> = tts.piperProgress
+    val piperStatus: StateFlow<String> = tts.piperStatus
+    val piperState: StateFlow<com.pocketllm.util.SherpaTtsEngine.State> = tts.piperState
+    val ttsEngine: StateFlow<String> = tts.activeEngine
 
     val server = ApiServer(context, settings, apiKeyRepo, usageRepo) { refreshUsage() }
 
     fun speakOrStop(text: String) {
         if (tts.speaking.value) tts.stop() else tts.speak(text)
+    }
+
+    fun speakText(text: String) {
+        tts.speak(text)
     }
 
     
@@ -92,6 +123,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _chatMessages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
     val chatMessages: StateFlow<List<ChatUiMessage>> = _chatMessages
 
+    private val _agentStatus = MutableStateFlow<String?>(null)
+    val agentStatus: StateFlow<String?> = _agentStatus
+
     private val _generating = MutableStateFlow(false)
     val generating: StateFlow<Boolean> = _generating
 
@@ -102,8 +136,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _webSearchEnabled.value = !_webSearchEnabled.value
     }
 
+    private val _agentEnabled = MutableStateFlow(false)
+    val agentEnabled: StateFlow<Boolean> = _agentEnabled
+
+    fun toggleAgent() {
+        _agentEnabled.value = !_agentEnabled.value
+    }
+
+    private val agentRegistry = com.pocketllm.agent.ToolRegistry().apply {
+        register(com.pocketllm.agent.WebSearchTool { _currentSettings.value })
+        register(com.pocketllm.agent.CalculateTool())
+        register(com.pocketllm.agent.DateTimeTool())
+    }
+    private val agentLoop = com.pocketllm.agent.AgentLoop(engine, agentRegistry)
+
     private val _usageRecords = MutableStateFlow<List<UsageRecord>>(emptyList())
     val usageRecords: StateFlow<List<UsageRecord>> = _usageRecords
+
+    // --- Session state ---
+    private val _sessions = MutableStateFlow<List<ChatSession>>(emptyList())
+    val sessions: StateFlow<List<ChatSession>> = _sessions
+    private val _currentSessionId = MutableStateFlow<String?>(null)
+    val currentSessionId: StateFlow<String?> = _currentSessionId
 
     init {
         refreshModels()
@@ -111,6 +165,87 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshUsage()
         _currentSettings.value = settings.current()
         tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
+        tts.setEngine(settings.current().ttsEngine)
+        _agentEnabled.value = settings.current().agentEnabled
+        viewModelScope.launch { startNewSession() }
+    }
+
+    fun refreshSessions() {
+        viewModelScope.launch { _sessions.value = sessionRepo.list() }
+    }
+
+    fun startNewSession() {
+        viewModelScope.launch {
+            persistCurrentSession()
+            val s = sessionRepo.newSession()
+            _currentSessionId.value = s.id
+            _chatMessages.value = emptyList()
+            _sessions.value = sessionRepo.list()
+        }
+    }
+
+    fun loadSession(id: String) {
+        viewModelScope.launch {
+            persistCurrentSession()
+            val s = sessionRepo.get(id) ?: return@launch
+            _currentSessionId.value = s.id
+            _chatMessages.value = s.messages.map { m ->
+                ChatUiMessage(
+                    role = m.role,
+                    content = m.content,
+                    toolCalls = m.toolCalls.map { tc ->
+                        com.pocketllm.agent.ToolCallUi(
+                            id = tc.id,
+                            name = tc.name,
+                            displayName = tc.displayName,
+                            arguments = tc.arguments,
+                            resultSummary = tc.resultSummary,
+                            resultDetail = tc.resultDetail,
+                        )
+                    },
+                    timestamp = m.timestamp,
+                    promptTokens = m.promptTokens,
+                    generatedTokens = m.generatedTokens,
+                    timeToFirstTokenMs = m.timeToFirstTokenMs,
+                    tokensPerSecond = m.tokensPerSecond,
+                    totalDurationMs = m.totalDurationMs,
+                )
+            }
+            _sessions.value = sessionRepo.list()
+        }
+    }
+
+    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            sessionRepo.delete(id)
+            if (_currentSessionId.value == id) {
+                startNewSession()
+            } else {
+                _sessions.value = sessionRepo.list()
+            }
+        }
+    }
+
+    private suspend fun persistCurrentSession() {
+        val id = _currentSessionId.value ?: return
+        val title = _chatMessages.value
+            .firstOrNull { it.role == "user" }?.content?.lineSequence()?.firstOrNull()
+            ?: "New chat"
+        val messages = _chatMessages.value.map { m ->
+            SessionMessage(
+                role = m.role,
+                content = m.content,
+                timestamp = m.timestamp,
+                promptTokens = m.promptTokens,
+                generatedTokens = m.generatedTokens,
+                timeToFirstTokenMs = m.timeToFirstTokenMs,
+                tokensPerSecond = m.tokensPerSecond,
+                totalDurationMs = m.totalDurationMs,
+                toolCalls = m.toolCalls.map { com.pocketllm.sessions.PersistedToolCall.fromUi(it) },
+            )
+        }
+        sessionRepo.save(ChatSession(id = id, title = title, messages = messages))
+        _sessions.value = sessionRepo.list()
     }
 
     fun refreshUsage() {
@@ -300,6 +435,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(ttsAutoSpeak = enabled) }
     }
 
+    fun updateAgentEnabled(enabled: Boolean) {
+        updateSettings { it.copy(agentEnabled = enabled) }
+        _agentEnabled.value = enabled
+    }
+
+    fun updateTtsEngine(engine: String) {
+        updateSettings { it.copy(ttsEngine = engine) }
+        tts.setEngine(engine)
+        if (engine == "piper") {
+            viewModelScope.launch { tts.ensurePiper() }
+        }
+    }
+
+    fun retryPiperDownload() {
+        viewModelScope.launch { tts.retryPiper() }
+    }
+
     private val _exportMessage = MutableStateFlow<String?>(null)
     val exportMessage: StateFlow<String?> = _exportMessage
 
@@ -348,17 +500,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun sendChat(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _generating.value) return
+        if (_agentEnabled.value) {
+            sendChatWithAgent(trimmed)
+        } else {
+            sendChatPlain(trimmed)
+        }
+    }
+
+    private fun sendChatPlain(trimmed: String) {
         viewModelScope.launch {
             _generating.value = true
             try {
                 val systemPrompt = _currentSettings.value.startupPrompt.trim()
-                val visibleHistory = _chatMessages.value + ChatUiMessage("user", trimmed)
-                _chatMessages.value = visibleHistory + ChatUiMessage("assistant", "")
+                val userTs = System.currentTimeMillis()
+                val visibleHistory = _chatMessages.value + ChatUiMessage("user", trimmed, timestamp = userTs)
+                _chatMessages.value = visibleHistory + ChatUiMessage("assistant", "", timestamp = System.currentTimeMillis())
                 val replyIndex = _chatMessages.value.lastIndex
 
-                fun setReply(text: String) {
+                fun setReply(text: String, metrics: ChatMetrics? = null) {
                     _chatMessages.update { list ->
-                        list.toMutableList().also { it[replyIndex] = it[replyIndex].copy(content = text) }
+                        list.toMutableList().also {
+                            it[replyIndex] = it[replyIndex].copy(
+                                content = text,
+                                promptTokens = metrics?.promptTokens ?: it[replyIndex].promptTokens,
+                                generatedTokens = metrics?.generatedTokens ?: it[replyIndex].generatedTokens,
+                                timeToFirstTokenMs = metrics?.ttftMs ?: it[replyIndex].timeToFirstTokenMs,
+                                tokensPerSecond = metrics?.tokensPerSecond ?: it[replyIndex].tokensPerSecond,
+                                totalDurationMs = metrics?.totalDurationMs ?: it[replyIndex].totalDurationMs,
+                            )
+                        }
                     }
                 }
 
@@ -401,19 +571,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
+                val genStart = System.nanoTime()
+                var firstTokenNs: Long? = null
                 val result = engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
+                    if (firstTokenNs == null) firstTokenNs = System.nanoTime()
                     _chatMessages.update { list ->
                         list.toMutableList().also {
                             it[replyIndex] = it[replyIndex].copy(content = it[replyIndex].content + token)
                         }
                     }
                 }
-                result?.let {
-                    usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat", modelName, it.promptTokens, it.generatedTokens))
+                val genEnd = System.nanoTime()
+                result?.let { r ->
+                    val totalMs = (genEnd - genStart) / 1_000_000
+                    val ttftMs = firstTokenNs?.let { (it - genStart) / 1_000_000 }
+                    val tps = if (totalMs > 0) r.generatedTokens * 1000f / totalMs else 0f
+                    val metrics = ChatMetrics(r.promptTokens, r.generatedTokens, ttftMs, tps, totalMs)
+                    setReply(_chatMessages.value[replyIndex].content, metrics)
+                    usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat", modelName, r.promptTokens, r.generatedTokens))
                     refreshUsage()
+                    persistCurrentSession()
                     if (_currentSettings.value.ttsAutoSpeak && !tts.speaking.value) {
                         val full = _chatMessages.value.getOrNull(replyIndex)?.content.orEmpty()
-                        if (full.isNotBlank()) tts.speak(full)
+                        if (full.isNotBlank() && !full.startsWith("…")) {
+                            tts.speak(full)
+                        }
                     }
                 }
             } finally {
@@ -422,9 +604,98 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun sendChatWithAgent(trimmed: String) {
+        viewModelScope.launch {
+            _generating.value = true
+            try {
+                val systemPrompt = _currentSettings.value.startupPrompt.trim()
+                val userTs = System.currentTimeMillis()
+                val visibleHistory = _chatMessages.value
+                _chatMessages.value = visibleHistory + ChatUiMessage("user", trimmed, timestamp = userTs)
+                val userIndex = _chatMessages.value.lastIndex
+                _chatMessages.value = _chatMessages.value + ChatUiMessage("assistant", "", timestamp = System.currentTimeMillis())
+
+                val turn = mutableListOf<com.pocketllm.agent.ToolCallUi>()
+                val genStart = System.nanoTime()
+                var firstTokenNs: Long? = null
+                var totalTokens = 0
+
+                fun setReplyText(text: String) {
+                    if (firstTokenNs == null && text.isNotEmpty()) firstTokenNs = System.nanoTime()
+                    totalTokens += text.length
+                    _chatMessages.update { list ->
+                        list.toMutableList().also {
+                            it[userIndex + 1] = it[userIndex + 1].copy(content = text, toolCalls = turn.toList())
+                        }
+                    }
+                }
+
+                fun appendToolCall(ui: com.pocketllm.agent.ToolCallUi) {
+                    turn += ui
+                    _chatMessages.update { list ->
+                        list.toMutableList().also {
+                            it[userIndex + 1] = it[userIndex + 1].copy(toolCalls = turn.toList())
+                        }
+                    }
+                }
+
+                val history = visibleHistory.map { it.role to it.content }
+                val outcome = agentLoop.run(
+                    systemPrompt = systemPrompt,
+                    history = history,
+                    userMessage = trimmed,
+                    onPartialReply = { text -> setReplyText(text) },
+                    onToolInvoked = { ui -> appendToolCall(ui) },
+                    onStatus = { status ->
+                        _agentStatus.value = when (status) {
+                            is com.pocketllm.agent.AgentLoop.Status.Thinking -> "Thinking\u2026"
+                            is com.pocketllm.agent.AgentLoop.Status.RunningTool -> "Running ${status.tool}\u2026"
+                        }
+                    },
+                )
+
+                val genEnd = System.nanoTime()
+                val finalText = outcome.finalText.orEmpty()
+                val ttftMs = firstTokenNs?.let { (it - genStart) / 1_000_000 }
+                val totalMs = (genEnd - genStart) / 1_000_000
+                val tps = if (totalMs > 0) totalTokens.toFloat() / totalMs * 1000f / 4f else 0f
+
+                _chatMessages.update { list ->
+                    list.toMutableList().also {
+                        it[userIndex + 1] = it[userIndex + 1].copy(
+                            content = if (finalText.isBlank() && it[userIndex + 1].content.isBlank()) "(no response)" else finalText.ifBlank { it[userIndex + 1].content },
+                            toolCalls = turn.toList(),
+                            generatedTokens = totalTokens / 4,
+                            timeToFirstTokenMs = ttftMs,
+                            tokensPerSecond = tps,
+                            totalDurationMs = totalMs,
+                        )
+                    }
+                }
+
+                val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
+                usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat-agent", modelName, 0, totalTokens / 4))
+                refreshUsage()
+                persistCurrentSession()
+
+                if (_currentSettings.value.ttsAutoSpeak && !tts.speaking.value) {
+                    val full = _chatMessages.value.getOrNull(userIndex + 1)?.content.orEmpty()
+                    if (full.isNotBlank()) tts.speak(full)
+                }
+            } catch (e: Exception) {
+                ServerLog.log("Agent loop error: ${e.message}")
+            } finally {
+                _generating.value = false
+                _agentStatus.value = null
+            }
+        }
+    }
+
     fun stopChat() = engine.requestStop()
 
     fun clearChat() {
-        if (!_generating.value) _chatMessages.value = emptyList()
+        if (!_generating.value) {
+            startNewSession()
+        }
     }
 }

@@ -25,7 +25,9 @@ data class AppSettings(
     val bingKey: String = "",
     val firecrawlKey: String = "",
     val ttsAutoSpeak: Boolean = false,
+    val ttsEngine: String = "system",
     val gpuOffload: Boolean = true,
+    val agentEnabled: Boolean = false,
 )
 
 class SettingsRepository(context: Context) {

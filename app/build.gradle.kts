@@ -13,8 +13,8 @@ android {
         applicationId = "com.pocketllm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.4"
+        versionCode = 7
+        versionName = "0.2.5"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -49,6 +49,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/sherpa-onnx-1.13.6.aar"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -62,7 +63,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     implementation(libs.ktor.server.core)
-    implementation(libs.ktor.server.cio)
     implementation(libs.ktor.server.netty)
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.bouncycastle.bcpkix)
@@ -72,6 +72,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.okhttp)
+    implementation(libs.commons.compress)
     implementation(libs.markwon.core)
     implementation(libs.markwon.ext.latex)
     implementation(libs.markwon.inline.parser)

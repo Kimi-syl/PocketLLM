@@ -77,12 +77,13 @@ object WebSearch {
 
     private fun parseDdgHtml(html: String, maxResults: Int): List<WebResult> {
         val anchorRegex = Regex("""<a[^>]*class=['"]result-link['"][^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+        val anchorRegex2 = Regex("""<a[^>]*href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
         val snippetRegex = Regex("""class=['"]result-snippet['"][^>]*>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
 
-        val anchors = anchorRegex.findAll(html)
+        val anchors = (anchorRegex.findAll(html) + anchorRegex2.findAll(html))
             .map { extractDdgUrl(it.groupValues[1]) to stripTags(it.groupValues[2]) }
             .filter { (url, title) ->
-                title.isNotBlank() && url.isNotBlank() && !url.contains("duckduckgo.com") && !url.startsWith("https://duckduckgo")
+                title.isNotBlank() && url.isNotBlank()
             }
             .toList()
         val snippets = snippetRegex.findAll(html).map { stripTags(it.groupValues[1]) }.toList()
@@ -95,13 +96,13 @@ object WebSearch {
 
     private fun extractDdgUrl(raw: String): String {
         val trimmed = raw.trim()
-        if (trimmed.startsWith("http")) return trimmed
-        if (trimmed.startsWith("//")) return "https:$trimmed"
-        // Extract from //duckduckgo.com/l/?uddg=...
+        // Extract the real URL from //duckduckgo.com/l/?uddg=...&rut=... FIRST
         val uddgMatch = Regex("""uddg=([^&]+)""").find(trimmed)
         if (uddgMatch != null) {
             return java.net.URLDecoder.decode(uddgMatch.groupValues[1], "UTF-8")
         }
+        if (trimmed.startsWith("http")) return trimmed
+        if (trimmed.startsWith("//")) return "https:$trimmed"
         return trimmed
     }
 

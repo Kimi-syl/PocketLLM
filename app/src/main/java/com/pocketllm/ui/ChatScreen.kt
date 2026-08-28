@@ -4,6 +4,7 @@ import android.util.TypedValue
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,14 +40,43 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.layout.size
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.latex.JLatexMathPlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.pocketllm.AppViewModel
 import com.pocketllm.ChatUiMessage
 import com.pocketllm.llm.EngineState
+import androidx.compose.material.icons.outlined.VolumeUp
+import com.pocketllm.agent.ToolCallCard
+
+private fun formatTime(ts: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+
+private fun formatStats(message: ChatUiMessage): String? {
+    if (message.role != "assistant") return null
+    if (message.generatedTokens == 0 && message.tokensPerSecond == null) return null
+    val parts = mutableListOf<String>()
+    if (message.tokensPerSecond != null && message.tokensPerSecond > 0f) {
+        parts.add("%.1f tok/s".format(message.tokensPerSecond))
+    }
+    if (message.timeToFirstTokenMs != null && message.timeToFirstTokenMs > 0) {
+        parts.add("TTFT ${message.timeToFirstTokenMs}ms")
+    }
+    if (message.generatedTokens > 0) {
+        parts.add("${message.generatedTokens} tok")
+    }
+    if (message.totalDurationMs > 0) {
+        val secs = message.totalDurationMs / 1000.0
+        parts.add("%.1fs".format(secs))
+    }
+    return if (parts.isEmpty()) null else parts.joinToString(" \u00B7 ")
+}
 
 @Composable
 fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
@@ -54,6 +84,9 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val generating by vm.generating.collectAsState()
     val engineState by vm.engine.state.collectAsState()
     val webSearchEnabled by vm.webSearchEnabled.collectAsState()
+    val agentEnabled by vm.agentEnabled.collectAsState()
+    val ttsSpeaking by vm.ttsSpeaking.collectAsState()
+    val agentStatus by vm.agentStatus.collectAsState()
 
     val ready = engineState is EngineState.Ready
     var input by remember { mutableStateOf("") }
@@ -84,16 +117,35 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             itemsIndexed(messages) { _, message ->
-                Bubble(message)
+                Bubble(
+                    message = message,
+                    onSpeak = { vm.speakText(message.content) },
+                    ttsSpeaking = ttsSpeaking,
+                )
             }
         }
 
-        if (webSearchEnabled && !generating) {
+        if (agentEnabled && !generating) {
+            Text(
+                "\uD83E\uDD16 Agent mode on \u2014 model can use web search, calculator, and datetime",
+                Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else if (webSearchEnabled && !generating) {
             Text(
                 "\uD83C\uDF10 Web search on \u2014 next question will include fresh results",
                 Modifier.padding(horizontal = 16.dp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (generating && agentStatus != null) {
+            Text(
+                agentStatus!!,
+                Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
             )
         }
         Row(
@@ -108,6 +160,13 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
                     Icons.Outlined.Public,
                     contentDescription = "Toggle web search",
                     tint = if (webSearchEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                )
+            }
+            IconButton(onClick = { vm.toggleAgent() }, enabled = ready || !generating) {
+                Icon(
+                    Icons.Outlined.SmartToy,
+                    contentDescription = "Toggle agent mode",
+                    tint = if (agentEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
                 )
             }
             OutlinedTextField(
@@ -134,27 +193,75 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
 }
 
 @Composable
-private fun Bubble(message: ChatUiMessage) {
+private fun Bubble(
+    message: ChatUiMessage,
+    onSpeak: () -> Unit = {},
+    ttsSpeaking: Boolean = false,
+) {
     val isUser = message.role == "user"
     Box(
         Modifier.fillMaxWidth(),
         contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
-        Box(
-            Modifier
-                .widthIn(max = 320.dp)
-                .background(
-                    color = if (isUser) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = if (isUser) RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
-                    else RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp),
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+        Column(
+            modifier = Modifier.widthIn(max = 320.dp),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
         ) {
-            if (message.content.isBlank()) {
-                Text("…", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                MarkdownMessage(message.content)
+            Box(
+                Modifier
+                    .background(
+                        color = if (isUser) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = if (isUser) RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
+                        else RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                if (message.content.isBlank()) {
+                    Text("…", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    MarkdownMessage(message.content)
+                }
+            }
+            for (tool in message.toolCalls) {
+                ToolCallCard(tool = tool)
+            }
+            // Stats line: time + tokens/s + TTFT
+            val time = formatTime(message.timestamp)
+            val stats = formatStats(message)
+            if (time.isNotEmpty() || stats != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 2.dp),
+                ) {
+                    Text(
+                        text = time,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                    if (stats != null) {
+                        Text(
+                            text = "· $stats",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    }
+                    if (!isUser && message.content.isNotBlank() && !message.content.startsWith("…")) {
+                        androidx.compose.material3.IconButton(
+                            onClick = onSpeak,
+                            modifier = Modifier.size(24.dp),
+                        ) {
+                            androidx.compose.material3.Icon(
+                                Icons.Outlined.VolumeUp,
+                                contentDescription = "Read aloud",
+                                tint = if (ttsSpeaking) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
