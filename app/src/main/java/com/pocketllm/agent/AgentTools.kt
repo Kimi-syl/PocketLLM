@@ -86,7 +86,11 @@ class CalculateTool : AgentTool {
         if (result % 1.0 == 0.0 && abs(result) < 1e15) {
             return result.toLong().toString()
         }
-        return "%.10g".format(result)
+        // Use a format that strips trailing zeros (e.g. "2.500000000" → "2.5").
+        val formatted = "%.10g".format(java.util.Locale.US, result)
+        return if (formatted.contains('.')) {
+            formatted.trimEnd('0').trimEnd('.')
+        } else formatted
     }
 
     private fun abs(x: Double) = if (x < 0) -x else x

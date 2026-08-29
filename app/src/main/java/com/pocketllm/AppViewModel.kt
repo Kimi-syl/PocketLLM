@@ -136,6 +136,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _webSearchEnabled.value = !_webSearchEnabled.value
     }
 
+    // --- Attachment state ---
+    private val _attachment = MutableStateFlow<AttachedFile?>(null)
+    val attachment: StateFlow<AttachedFile?> = _attachment
+
+    /**
+     * Open the system file picker. The Activity should launch
+     * [android.content.Intent.ACTION_OPEN_DOCUMENT] and pass the result URI
+     * to [onFilePicked].
+     */
+    fun openFilePicker() {
+        // The actual launch happens in MainActivity; this is just a hook so
+        // the ViewModel can show the "pick" intent. The Activity observes
+        // [pickFileRequest] StateFlow.
+        _pickFileRequest.value = System.currentTimeMillis()
+    }
+    private val _pickFileRequest = MutableStateFlow(0L)
+    val pickFileRequest: StateFlow<Long> = _pickFileRequest
+
+    fun onFilePicked(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val attached = withContext(Dispatchers.IO) {
+                runCatching { AttachedFile.fromUri(context, uri) }.getOrNull()
+            }
+            if (attached != null) {
+                _attachment.value = attached
+            }
+        }
+    }
+
+    fun clearAttachment() {
+        _attachment.value = null
+    }
+
     private val _agentEnabled = MutableStateFlow(false)
     val agentEnabled: StateFlow<Boolean> = _agentEnabled
 
@@ -543,10 +576,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun sendChat(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _generating.value) return
+        val attachment = _attachment.value
+        val enriched = if (attachment != null) {
+            val prefix = if (attachment.isText && attachment.textPreview != null) {
+                "[Attached file: ${attachment.displayName} (${attachment.sizeBytes} bytes)]\n```\n${attachment.textPreview}\n```\n\n"
+            } else {
+                "[Attached file: ${attachment.displayName} (${attachment.sizeBytes} bytes, ${attachment.mimeType}). Saved at sandbox path: ${attachment.localFile.name}]\n\n"
+            }
+            prefix + trimmed
+        } else trimmed
+        // Consume the attachment once it's been sent.
+        _attachment.value = null
         if (_agentEnabled.value) {
-            sendChatWithAgent(trimmed)
+            sendChatWithAgent(enriched)
         } else {
-            sendChatPlain(trimmed)
+            sendChatPlain(enriched)
         }
     }
 

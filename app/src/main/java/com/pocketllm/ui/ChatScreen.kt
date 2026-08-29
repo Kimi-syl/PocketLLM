@@ -3,9 +3,14 @@ package com.pocketllm.ui
 import android.util.TypedValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -151,6 +156,35 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
                 color = MaterialTheme.colorScheme.tertiary,
             )
         }
+        // Attachment chip — shows the currently attached file with an X to remove.
+        val attachment by vm.attachment.collectAsState()
+        if (attachment != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text(
+                        "📎 ${attachment!!.displayName} (${attachment!!.sizeBytes / 1024} KB)",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                IconButton(onClick = { vm.clearAttachment() }, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "Remove attachment",
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -165,20 +199,32 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
                     tint = if (webSearchEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
                 )
             }
+            // Attachment button — opens the system file picker. Selected file
+            // is shown as a chip above the input and prepended to the message.
+            IconButton(onClick = { vm.openFilePicker() }, enabled = ready || !generating) {
+                Icon(
+                    Icons.Outlined.AttachFile,
+                    contentDescription = "Attach file",
+                    tint = if (vm.attachment.value != null) MaterialTheme.colorScheme.primary
+                    else Color.Unspecified,
+                )
+            }
             var toolsDialogOpen by remember { mutableStateOf(false) }
             Box(
-                modifier = Modifier.combinedClickable(
-                    onClick = { vm.toggleAgent() },
-                    onLongClick = { toolsDialogOpen = true },
-                ),
+                modifier = Modifier
+                    .size(40.dp)
+                    .combinedClickable(
+                        onClick = { vm.toggleAgent() },
+                        onLongClick = { toolsDialogOpen = true },
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                IconButton(onClick = {}, enabled = ready || !generating) {
-                    Icon(
-                        Icons.Outlined.SmartToy,
-                        contentDescription = "Toggle agent mode (long-press for tools)",
-                        tint = if (agentEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
-                    )
-                }
+                Icon(
+                    Icons.Outlined.SmartToy,
+                    contentDescription = "Toggle agent mode (long-press for tools)",
+                    tint = if (agentEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                    modifier = Modifier.size(24.dp),
+                )
             }
             if (toolsDialogOpen) {
                 AgentToolsDialog(
