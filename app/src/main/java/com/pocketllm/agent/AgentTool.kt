@@ -48,6 +48,23 @@ sealed interface ToolResult {
         override val summary: String,
     ) : ToolResult
 
+    /** Long-form content (web page, file contents, code output) shown in the card's expanded view. */
+    data class Content(
+        val title: String,
+        val body: String,
+        val source: String = "",
+        override val summary: String,
+    ) : ToolResult
+
+    /** Command execution result. */
+    data class Execution(
+        val command: String,
+        val stdout: String,
+        val stderr: String,
+        val exitCode: Int,
+        override val summary: String,
+    ) : ToolResult
+
     data class Error(val message: String) : ToolResult {
         override val summary = "Error: $message"
     }
@@ -109,8 +126,13 @@ class ToolRegistry {
      * The format is intentionally simple: one line per tool, with a clear
      * invocation syntax. Small local models have a much easier time emitting
      * this than JSON inside XML tags.
+     *
+     * @param onlyIf if provided, only tools whose name is in this set are
+     *   included in the prompt. The loop passes the user's enabled set here
+     *   so the model only sees tools it can actually call.
      */
-    fun promptBlock(): String = buildString {
+    fun promptBlock(onlyIf: Set<String>? = null): String = buildString {
+        val visible = tools.values.filter { onlyIf == null || it.name in onlyIf }
         appendLine("You may use these tools when the user asks a question that needs fresh or external information.")
         appendLine("IMPORTANT: Only use a tool when the question clearly requires it. For casual conversation, just answer normally.")
         appendLine()
@@ -128,10 +150,16 @@ class ToolRegistry {
         appendLine("  User: What day is it?")
         appendLine("  Assistant: TOOL: datetime ARGS: action=now")
         appendLine()
+        appendLine("  User: Read https://example.com/article and summarize it.")
+        appendLine("  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article")
+        appendLine()
+        appendLine("  User: List files in my sandbox.")
+        appendLine("  Assistant: TOOL: run_code ARGS: command=ls -la")
+        appendLine()
         appendLine("When you have the tool's result, answer the user in plain language. If you don't need a tool, just answer without using the TOOL: prefix.")
         appendLine()
         appendLine("Available tools:")
-        for (tool in tools.values) {
+        for (tool in visible) {
             appendLine("- ${tool.name} (${tool.displayName}): ${tool.description}")
             for (param in tool.parameters) {
                 val req = if (param.required) "required" else "optional"

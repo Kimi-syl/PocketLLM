@@ -28,6 +28,10 @@ data class AppSettings(
     val ttsEngine: String = "system",
     val gpuOffload: Boolean = true,
     val agentEnabled: Boolean = false,
+    val enabledTools: Set<String> = setOf(
+        "web_search", "read_url", "calculate", "datetime",
+        "read_file", "write_file", "run_code", "clipboard", "device_info",
+    ),
 )
 
 class SettingsRepository(context: Context) {

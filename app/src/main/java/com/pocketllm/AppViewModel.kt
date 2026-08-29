@@ -143,12 +143,55 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _agentEnabled.value = !_agentEnabled.value
     }
 
-    private val agentRegistry = com.pocketllm.agent.ToolRegistry().apply {
-        register(com.pocketllm.agent.WebSearchTool { _currentSettings.value })
-        register(com.pocketllm.agent.CalculateTool())
-        register(com.pocketllm.agent.DateTimeTool())
+    private val sandboxDir: java.io.File = java.io.File(context.filesDir, "sandbox").also { it.mkdirs() }
+    private val readFileTool = com.pocketllm.agent.ReadFileTool(sandboxDir).also { it.setContext(context) }
+    private val writeFileTool = com.pocketllm.agent.WriteFileTool(sandboxDir)
+    private val runCodeTool = com.pocketllm.agent.RunCodeTool(sandboxDir)
+    private val clipboardTool = com.pocketllm.agent.ClipboardReadTool(context)
+    private val deviceInfoTool = com.pocketllm.agent.DeviceInfoTool(context)
+    private val webSearchTool = com.pocketllm.agent.WebSearchTool { _currentSettings.value }
+    private val calculateTool = com.pocketllm.agent.CalculateTool()
+    private val dateTimeTool = com.pocketllm.agent.DateTimeTool()
+    private val webFetchTool = com.pocketllm.agent.WebFetchTool { query ->
+        val snap = _currentSettings.value
+        val key = when (snap.searchEngine) {
+            "brave" -> snap.braveKey; "tavily" -> snap.tavilyKey
+            "bing" -> snap.bingKey; "firecrawl" -> snap.firecrawlKey; else -> ""
+        }
+        com.pocketllm.util.WebSearch.search(query, snap.searchEngine, key.ifBlank { null }, 1)
+            .firstOrNull()?.url
     }
-    private val agentLoop = com.pocketllm.agent.AgentLoop(engine, agentRegistry)
+
+    private val agentRegistry = com.pocketllm.agent.ToolRegistry().apply {
+        register(webSearchTool)
+        register(webFetchTool)
+        register(calculateTool)
+        register(dateTimeTool)
+        register(readFileTool)
+        register(writeFileTool)
+        register(runCodeTool)
+        register(clipboardTool)
+        register(deviceInfoTool)
+    }
+
+    /** All tools in registration order — used by the long-press picker UI. */
+    val allTools: List<com.pocketllm.agent.AgentTool> = agentRegistry.all()
+    private val enabledToolsFlow: kotlinx.coroutines.flow.MutableStateFlow<Set<String>> =
+        MutableStateFlow(_currentSettings.value.enabledTools)
+    val enabledTools: kotlinx.coroutines.flow.StateFlow<Set<String>> = enabledToolsFlow
+
+    fun setToolEnabled(name: String, enabled: Boolean) {
+        val current = enabledToolsFlow.value.toMutableSet()
+        if (enabled) current.add(name) else current.remove(name)
+        enabledToolsFlow.value = current
+        updateSettings { it.copy(enabledTools = current) }
+    }
+
+    private val agentLoop = com.pocketllm.agent.AgentLoop(
+        engine = engine,
+        registry = agentRegistry,
+        enabledTools = { enabledToolsFlow.value },
+    )
 
     private val _usageRecords = MutableStateFlow<List<UsageRecord>>(emptyList())
     val usageRecords: StateFlow<List<UsageRecord>> = _usageRecords

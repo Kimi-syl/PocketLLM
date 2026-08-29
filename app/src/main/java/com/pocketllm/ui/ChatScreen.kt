@@ -2,6 +2,7 @@ package com.pocketllm.ui
 
 import android.util.TypedValue
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.SmartToy
@@ -54,6 +55,7 @@ import com.pocketllm.ChatUiMessage
 import com.pocketllm.llm.EngineState
 import androidx.compose.material.icons.outlined.VolumeUp
 import com.pocketllm.agent.ToolCallCard
+import androidx.compose.foundation.ExperimentalFoundationApi
 
 private fun formatTime(ts: Long): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
@@ -78,6 +80,7 @@ private fun formatStats(message: ChatUiMessage): String? {
     return if (parts.isEmpty()) null else parts.joinToString(" \u00B7 ")
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     val messages by vm.chatMessages.collectAsState()
@@ -162,11 +165,27 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
                     tint = if (webSearchEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
                 )
             }
-            IconButton(onClick = { vm.toggleAgent() }, enabled = ready || !generating) {
-                Icon(
-                    Icons.Outlined.SmartToy,
-                    contentDescription = "Toggle agent mode",
-                    tint = if (agentEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
+            var toolsDialogOpen by remember { mutableStateOf(false) }
+            Box(
+                modifier = Modifier.combinedClickable(
+                    onClick = { vm.toggleAgent() },
+                    onLongClick = { toolsDialogOpen = true },
+                ),
+            ) {
+                IconButton(onClick = {}, enabled = ready || !generating) {
+                    Icon(
+                        Icons.Outlined.SmartToy,
+                        contentDescription = "Toggle agent mode (long-press for tools)",
+                        tint = if (agentEnabled) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                    )
+                }
+            }
+            if (toolsDialogOpen) {
+                AgentToolsDialog(
+                    allTools = vm.allTools,
+                    enabledTools = vm.enabledTools.collectAsState().value,
+                    onToggle = { name, enabled -> vm.setToolEnabled(name, enabled) },
+                    onDismiss = { toolsDialogOpen = false },
                 )
             }
             OutlinedTextField(

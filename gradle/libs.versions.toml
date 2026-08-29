@@ -13,6 +13,8 @@ okhttp = "4.12.0"
 bouncycastle = "1.78.1"
 markwon = "4.6.2"
 commonsCompress = "1.27.1"
+jsoup = "1.18.1"
+pdfbox = "2.0.27.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -41,6 +43,8 @@ markwon-inline-parser = { group = "io.noties.markwon", name = "inline-parser", v
 markwon-tables = { group = "io.noties.markwon", name = "ext-tables", version.ref = "markwon" }
 markwon-strikethrough = { group = "io.noties.markwon", name = "ext-strikethrough", version.ref = "markwon" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+pdfbox = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfbox" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

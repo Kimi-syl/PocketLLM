@@ -116,7 +116,13 @@ fun ToolCallCard(
 
 private fun toolStyle(name: String): Pair<String, androidx.compose.ui.graphics.Color> = when (name) {
     "web_search" -> "🔍" to androidx.compose.ui.graphics.Color(0xFF1E88E5)
+    "read_url" -> "🌐" to androidx.compose.ui.graphics.Color(0xFF00838F)
     "calculate" -> "🧮" to androidx.compose.ui.graphics.Color(0xFF6A1B9A)
     "datetime" -> "🕐" to androidx.compose.ui.graphics.Color(0xFF00897B)
+    "read_file" -> "📄" to androidx.compose.ui.graphics.Color(0xFF558B2F)
+    "write_file" -> "✏️" to androidx.compose.ui.graphics.Color(0xFF6D4C41)
+    "run_code" -> "▶️" to androidx.compose.ui.graphics.Color(0xFFE65100)
+    "clipboard" -> "📋" to androidx.compose.ui.graphics.Color(0xFF455A64)
+    "device_info" -> "📱" to androidx.compose.ui.graphics.Color(0xFF1976D2)
     else -> "🛠" to androidx.compose.ui.graphics.Color(0xFF6D4C41)
 }

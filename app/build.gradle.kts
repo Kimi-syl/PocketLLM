@@ -13,8 +13,8 @@ android {
         applicationId = "com.pocketllm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.2.5"
+        versionCode = 8
+        versionName = "0.2.6"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -73,6 +73,10 @@ dependencies {
 
     implementation(libs.okhttp)
     implementation(libs.commons.compress)
+    implementation(libs.jsoup)
+    implementation(libs.pdfbox) {
+        exclude(group = "org.bouncycastle")
+    }
     implementation(libs.markwon.core)
     implementation(libs.markwon.ext.latex)
     implementation(libs.markwon.inline.parser)

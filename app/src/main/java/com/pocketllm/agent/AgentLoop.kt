@@ -39,6 +39,7 @@ import kotlinx.serialization.json.jsonObject
 class AgentLoop(
     private val engine: LlamaEngine,
     private val registry: ToolRegistry,
+    private val enabledTools: () -> Set<String> = { registry.names() },
     private val maxTurns: Int = 4,
     private val maxRetries: Int = 2,
     private val toolTimeoutMs: Long = 30_000L,
@@ -62,11 +63,11 @@ class AgentLoop(
         val messages = history.toMutableList()
 
         for (turn in 0 until maxTurns) {
-            // Build the prompt with tool instructions.
+            // Build the prompt with tool instructions — only the enabled ones.
             val enrichedSystem = if (systemPrompt.isBlank()) {
-                registry.promptBlock()
+                registry.promptBlock(onlyIf = enabledTools())
             } else {
-                systemPrompt + "\n\n" + registry.promptBlock()
+                systemPrompt + "\n\n" + registry.promptBlock(onlyIf = enabledTools())
             }
             if (messages.firstOrNull()?.first != "system") {
                 messages.add(0, "system" to enrichedSystem)
@@ -168,6 +169,11 @@ class AgentLoop(
         val tool = registry.get(call.toolName)
             ?: return ToolResult.Error("Unknown tool: ${call.toolName}")
 
+        // Filter: only execute tools the user has enabled.
+        if (call.toolName !in enabledTools()) {
+            return ToolResult.Error("Tool ${call.toolName} is currently disabled. Ask the user to enable it in the agent tools menu.")
+        }
+
         // Validate first — fail fast with a clear message.
         val validation = runCatching { tool.validate(call.arguments) }
         if (validation.isFailure) {
@@ -255,6 +261,12 @@ class AgentLoop(
                 appendLine("${i + 1}. ${item.title} - ${item.snippet}")
                 appendLine("   URL: ${item.url}")
             }
+        }
+        is ToolResult.Content -> "[${result.title}]\n${result.body}"
+        is ToolResult.Execution -> buildString {
+            appendLine("[exit ${result.exitCode}] ${result.command}")
+            if (result.stdout.isNotBlank()) appendLine("--- stdout ---\n${result.stdout}")
+            if (result.stderr.isNotBlank()) appendLine("--- stderr ---\n${result.stderr}")
         }
         is ToolResult.Error -> "Error: ${result.message}"
     }
