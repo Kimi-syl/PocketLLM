@@ -132,7 +132,13 @@ class CalculateTool : AgentTool {
                     ops.removeLast(); i++
                 }
                 c == '+' || c == '-' || c == '*' || c == '/' || c == '^' -> {
-                    while (ops.isNotEmpty() && ops.last() != '(' && precedence(ops.last()) >= precedence(c)) {
+                    // ^ is right-associative: only pop operators with STRICTLY
+                    // higher precedence. Other operators are left-associative
+                    // and pop with >= precedence.
+                    while (ops.isNotEmpty() && ops.last() != '(') {
+                        val top = precedence(ops.last())
+                        val shouldPop = if (c == '^') top > precedence(c) else top >= precedence(c)
+                        if (!shouldPop) break
                         applyOp()
                     }
                     ops.addLast(c); i++
@@ -161,6 +167,10 @@ class CalculateTool : AgentTool {
                                 else -> error("unexpected char in args: $ch")
                             }
                         }
+                        // Before removing the '(', apply all operators on the
+                        // stack so the function arg is the *evaluated* result,
+                        // not just the last pushed value.
+                        while (ops.isNotEmpty() && ops.last() != '(') applyOp()
                         ops.removeLast() // (
                         if (i >= input.length) error("unclosed function")
                         val arg = output.removeLast()

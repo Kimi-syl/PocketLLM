@@ -241,7 +241,11 @@ class AgentLoop(
     private fun parseArgs(text: String): Map<String, JsonElement> {
         if (text.isBlank()) return JsonObject(emptyMap())
         val result = LinkedHashMap<String, JsonElement>()
-        for (pair in text.split(';')) {
+        // Split on ';' but only at top-level separators. A ';' inside a value
+        // is preserved. We detect a separator by checking that the char after
+        // the ';' starts a valid `key=` pattern (letter or underscore, then '=').
+        val parts = splitOnTopLevelSemicolons(text)
+        for (pair in parts) {
             val eq = pair.indexOf('=')
             if (eq < 0) continue
             val k = pair.substring(0, eq).trim()
@@ -249,6 +253,41 @@ class AgentLoop(
             if (k.isNotEmpty()) result[k] = JsonPrimitive(v)
         }
         return JsonObject(result)
+    }
+
+    /**
+     * Split [text] on `;` characters that are followed by what looks like a
+     * new `key=` (a letter/underscore then `=`). A `;` followed by a digit or
+     * other character is kept as part of the current value. This lets values
+     * like `1;2;3` survive while still separating `key1=val1;key2=val2`.
+     */
+    private fun splitOnTopLevelSemicolons(text: String): List<String> {
+        val out = mutableListOf<String>()
+        val current = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            if (c == ';' && i + 1 < text.length) {
+                // Look ahead: is the next non-space char a key-start followed by '='?
+                var j = i + 1
+                while (j < text.length && text[j] == ' ') j++
+                if (j < text.length && (text[j].isLetter() || text[j] == '_')) {
+                    var k = j + 1
+                    while (k < text.length && (text[k].isLetterOrDigit() || text[k] == '_')) k++
+                    if (k < text.length && text[k] == '=') {
+                        // This is a real separator
+                        out.add(current.toString())
+                        current.clear()
+                        i++
+                        continue
+                    }
+                }
+            }
+            current.append(c)
+            i++
+        }
+        out.add(current.toString())
+        return out
     }
 
     // --- result rendering ---
