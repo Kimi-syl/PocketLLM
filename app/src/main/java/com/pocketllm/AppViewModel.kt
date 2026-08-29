@@ -727,19 +727,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val history = visibleHistory.map { it.role to it.content }
-                val outcome = agentLoop.run(
-                    systemPrompt = systemPrompt,
-                    history = history,
-                    userMessage = trimmed,
-                    onPartialReply = { text -> setReplyText(text) },
-                    onToolInvoked = { ui -> appendToolCall(ui) },
-                    onStatus = { status ->
-                        _agentStatus.value = when (status) {
-                            is com.pocketllm.agent.AgentLoop.Status.Thinking -> "Thinking\u2026"
-                            is com.pocketllm.agent.AgentLoop.Status.RunningTool -> "Running ${status.tool}\u2026"
-                        }
-                    },
-                )
+                val outcome = try {
+                    agentLoop.run(
+                        systemPrompt = systemPrompt,
+                        history = history,
+                        userMessage = trimmed,
+                        onPartialReply = { text -> setReplyText(text) },
+                        onToolInvoked = { ui -> appendToolCall(ui) },
+                        onStatus = { status ->
+                            _agentStatus.value = when (status) {
+                                is com.pocketllm.agent.AgentLoop.Status.Thinking -> "Thinking\u2026"
+                                is com.pocketllm.agent.AgentLoop.Status.RunningTool -> "Running ${status.tool}\u2026"
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    ServerLog.log("Agent loop crashed: ${e.message}\n${e.stackTraceToString().take(500)}")
+                    com.pocketllm.agent.AgentLoop.Outcome(
+                        finalText = "Error: ${e.message ?: e.javaClass.simpleName}",
+                        toolCalls = emptyList(),
+                    )
+                }
 
                 val genEnd = System.nanoTime()
                 val finalText = outcome.finalText.orEmpty()
