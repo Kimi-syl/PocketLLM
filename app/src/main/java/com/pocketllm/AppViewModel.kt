@@ -576,6 +576,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun sendChat(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _generating.value) return
+        try {
+            doSendChat(trimmed)
+        } catch (e: Exception) {
+            ServerLog.log("sendChat crashed: ${e.message}\n${e.stackTraceToString().take(800)}")
+            // Best-effort: clear generating flag and status
+            _generating.value = false
+            _agentStatus.value = null
+        }
+    }
+
+    private fun doSendChat(trimmed: String) {
         val attachment = _attachment.value
         val enriched = if (attachment != null) {
             val prefix = if (attachment.isText && attachment.textPreview != null) {
