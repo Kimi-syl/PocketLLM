@@ -236,11 +236,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Live view of the in-memory log for the Logs screen. */
     val logLines: StateFlow<List<String>> = com.pocketllm.server.ServerLog.lines
 
-    /** Force a re-read of the log file from disk. */
+    /** Re-read the persisted log file so the Logs screen shows history from prior runs. */
     fun refreshLog() {
-        // Touch the StateFlow to force UI to re-collect; ServerLog.lines is
-        // already a StateFlow that auto-updates when new lines are appended.
-        // This is a no-op placeholder for explicit "refresh" UI affordance.
+        com.pocketllm.server.ServerLog.reloadFromDisk()
+    }
+
+    /** Clear all in-memory and on-disk log content. */
+    fun clearLog() {
+        com.pocketllm.server.ServerLog.clearLog()
     }
     private val _currentSessionId = MutableStateFlow<String?>(null)
     val currentSessionId: StateFlow<String?> = _currentSessionId

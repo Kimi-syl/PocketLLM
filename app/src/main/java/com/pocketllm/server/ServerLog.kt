@@ -94,6 +94,28 @@ object ServerLog {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        // Load any previously-persisted log lines so the Logs screen shows
+        // history from prior runs, not just the current session.
+        runCatching {
+            val f = logFile
+            if (f != null && f.exists() && f.length() > 0) {
+                val lines = f.readLines().takeLast(MAX_LINES)
+                _lines.value = lines
+            }
+        }
+    }
+
+    /** Force a re-read of the persisted log file. Safe to call from UI. */
+    fun reloadFromDisk() {
+        runCatching {
+            val f = logFile ?: return
+            if (!f.exists()) {
+                _lines.value = emptyList()
+                return
+            }
+            val lines = f.readLines().takeLast(MAX_LINES)
+            synchronized(this) { _lines.value = lines }
+        }
     }
 
     fun log(message: String) {
@@ -115,6 +137,14 @@ object ServerLog {
 
     /** Returns the full log file path, or null if not initialized. */
     fun logFilePath(): String? = logFile?.absolutePath
+
+    /** Clear all in-memory and on-disk log content. */
+    fun clearLog() {
+        synchronized(this) {
+            _lines.value = emptyList()
+            runCatching { logFile?.writeText("") }
+        }
+    }
 
     private fun writeToFiles(line: String) {
         runCatching {
