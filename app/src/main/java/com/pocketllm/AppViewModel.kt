@@ -697,10 +697,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val systemPrompt = _currentSettings.value.startupPrompt.trim()
                 val userTs = System.currentTimeMillis()
-                val visibleHistory = _chatMessages.value
-                _chatMessages.value = visibleHistory + ChatUiMessage("user", trimmed, timestamp = userTs)
-                val userIndex = _chatMessages.value.lastIndex
-                _chatMessages.value = _chatMessages.value + ChatUiMessage("assistant", "", timestamp = System.currentTimeMillis())
+                // Use a stable identity token instead of an index. Indices can go
+                // stale if the list is modified concurrently (e.g. by a parallel
+                // sendChat, session switch, or clearChat). The token is unique
+                // enough to identify the assistant placeholder across updates.
+                val assistantToken = System.nanoTime()
+                _chatMessages.value = _chatMessages.value + ChatUiMessage("user", trimmed, timestamp = userTs)
+                val assistantMsg = ChatUiMessage(
+                    "assistant", "", timestamp = System.currentTimeMillis(),
+                    // Encode the token in a field we already have - reuse
+                    // generatedTokens as a non-displayed token holder. Ugly but
+                    // safe: we never display it.
+                    generatedTokens = (assistantToken and 0x7FFFFFFF).toInt(),
+                )
+                _chatMessages.value = _chatMessages.value + assistantMsg
 
                 val turn = mutableListOf<com.pocketllm.agent.ToolCallUi>()
                 val genStart = System.nanoTime()
@@ -712,7 +722,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     totalTokens += text.length
                     _chatMessages.update { list ->
                         list.toMutableList().also {
-                            it[userIndex + 1] = it[userIndex + 1].copy(content = text, toolCalls = turn.toList())
+                            val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                            if (idx >= 0) {
+                                it[idx] = it[idx].copy(content = text, toolCalls = turn.toList())
+                            }
                         }
                     }
                 }
@@ -721,12 +734,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     turn += ui
                     _chatMessages.update { list ->
                         list.toMutableList().also {
-                            it[userIndex + 1] = it[userIndex + 1].copy(toolCalls = turn.toList())
+                            val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                            if (idx >= 0) {
+                                it[idx] = it[idx].copy(toolCalls = turn.toList())
+                            }
                         }
                     }
                 }
 
-                val history = visibleHistory.map { it.role to it.content }
+                val history = _chatMessages.value
+                    .filter { it.timestamp != assistantMsg.timestamp || it.generatedTokens != assistantMsg.generatedTokens }
+                    .map { it.role to it.content }
                 val outcome = try {
                     agentLoop.run(
                         systemPrompt = systemPrompt,
@@ -757,14 +775,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 _chatMessages.update { list ->
                     list.toMutableList().also {
-                        it[userIndex + 1] = it[userIndex + 1].copy(
-                            content = if (finalText.isBlank() && it[userIndex + 1].content.isBlank()) "(no response)" else finalText.ifBlank { it[userIndex + 1].content },
-                            toolCalls = turn.toList(),
-                            generatedTokens = totalTokens / 4,
-                            timeToFirstTokenMs = ttftMs,
-                            tokensPerSecond = tps,
-                            totalDurationMs = totalMs,
-                        )
+                        val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                        if (idx >= 0) {
+                            it[idx] = it[idx].copy(
+                                content = if (finalText.isBlank() && it[idx].content.isBlank()) "(no response)" else finalText.ifBlank { it[idx].content },
+                                toolCalls = turn.toList(),
+                                generatedTokens = totalTokens / 4,
+                                timeToFirstTokenMs = ttftMs,
+                                tokensPerSecond = tps,
+                                totalDurationMs = totalMs,
+                            )
+                        }
                     }
                 }
 
@@ -774,7 +795,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 persistCurrentSession()
 
                 if (_currentSettings.value.ttsAutoSpeak && !tts.speaking.value) {
-                    val full = _chatMessages.value.getOrNull(userIndex + 1)?.content.orEmpty()
+                    val full = _chatMessages.value.lastOrNull { it.timestamp == assistantMsg.timestamp }?.content.orEmpty()
                     if (full.isNotBlank()) tts.speak(full)
                 }
             } catch (e: Exception) {
