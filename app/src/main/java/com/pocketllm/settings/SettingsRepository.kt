@@ -14,6 +14,7 @@ data class AppSettings(
     val port: Int = 8080,
     val requireApiKey: Boolean = true,
     val contextSize: Int = 2048,
+    val maxGenerationTokens: Int = 1024,
     val hfToken: String = "",
     val themeMode: String = "system",
     val dynamicColor: Boolean = true,

@@ -224,6 +224,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         engine = engine,
         registry = agentRegistry,
         enabledTools = { enabledToolsFlow.value },
+        maxGenerationTokens = { _currentSettings.value.maxGenerationTokens },
     )
 
     private val _usageRecords = MutableStateFlow<List<UsageRecord>>(emptyList())
@@ -495,6 +496,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(contextSize = size) }
     }
 
+    fun updateMaxGenerationTokens(tokens: Int) {
+        val clamped = tokens.coerceIn(64, 4096)
+        updateSettings { it.copy(maxGenerationTokens = clamped) }
+    }
+
     fun updateHfToken(token: String) {
         updateSettings { it.copy(hfToken = token.trim()) }
     }
@@ -717,7 +723,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
                 val genStart = System.nanoTime()
                 var firstTokenNs: Long? = null
-                val result = engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
+                val result = engine.generate(prompt, GenParams(maxTokens = _currentSettings.value.maxGenerationTokens)) { token ->
                     if (firstTokenNs == null) firstTokenNs = System.nanoTime()
                     _chatMessages.update { list ->
                         list.toMutableList().also {

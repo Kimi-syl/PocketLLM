@@ -40,6 +40,7 @@ class AgentLoop(
     private val engine: LlamaEngine,
     private val registry: ToolRegistry,
     private val enabledTools: () -> Set<String> = { registry.names() },
+    private val maxGenerationTokens: () -> Int = { 1024 },
     private val maxTurns: Int = 2,
     private val maxRetries: Int = 1,
     private val toolTimeoutMs: Long = 30_000L,
@@ -141,7 +142,7 @@ class AgentLoop(
         for (attempt in 0..maxRetries) {
             val prompt = engine.chatPrompt(messages) ?: return null
             val sb = StringBuilder()
-            val result = engine.generate(prompt, GenParams(maxTokens = 512)) { token ->
+            val result = engine.generate(prompt, GenParams(maxTokens = maxGenerationTokens())) { token ->
                 sb.append(token)
             }
             if (result == null) return null

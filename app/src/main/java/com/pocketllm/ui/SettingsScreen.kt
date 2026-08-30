@@ -13,6 +13,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pocketllm.AppViewModel
 import com.pocketllm.util.WebSearch
@@ -166,6 +168,44 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                // Max generation tokens slider
+                var maxGenTokens by remember(settings.maxGenerationTokens) {
+                    mutableStateOf(settings.maxGenerationTokens.toFloat())
+                }
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Max generation tokens")
+                            Text(
+                                "Tokens the model can produce per reply. Higher = longer replies but more memory and time.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "${maxGenTokens.toInt()}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Slider(
+                        value = maxGenTokens,
+                        onValueChange = { maxGenTokens = it },
+                        valueRange = 64f..4096f,
+                        steps = 31,  // 64, 192, 320, ... up to 4096
+                        onValueChangeFinished = {
+                            vm.updateMaxGenerationTokens(maxGenTokens.toInt())
+                        },
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("64", style = MaterialTheme.typography.labelSmall)
+                        Text("2048", style = MaterialTheme.typography.labelSmall)
+                        Text("4096", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }
