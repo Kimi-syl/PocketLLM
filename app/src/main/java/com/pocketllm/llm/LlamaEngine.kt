@@ -87,12 +87,22 @@ object LlamaEngine {
 
     fun chatPrompt(messages: List<Pair<String, String>>): String? {
         val h = handle
-        if (h < 0L || messages.isEmpty()) return null
-        return LlamaBridge.applyChatTemplate(
-            h,
-            messages.map { it.first }.toTypedArray(),
-            messages.map { it.second }.toTypedArray(),
-        ).takeIf { it.isNotEmpty() }
+        if (h < 0L || messages.isEmpty()) {
+            com.pocketllm.server.ServerLog.log("chatPrompt: skip h=$h messages=${messages.size}")
+            return null
+        }
+        return try {
+            val result = LlamaBridge.applyChatTemplate(
+                h,
+                messages.map { it.first }.toTypedArray(),
+                messages.map { it.second }.toTypedArray(),
+            )
+            com.pocketllm.server.ServerLog.log("chatPrompt: applied template, len=${result.length}")
+            result.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            com.pocketllm.server.ServerLog.error("chatPrompt JNI", e)
+            null
+        }
     }
 
     suspend fun generate(
@@ -102,16 +112,29 @@ object LlamaEngine {
     ): GenResult? {
         return mutex.withLock {
             val h = handle
-            if (h < 0L || _state.value !is EngineState.Ready) return@withLock null
+            if (h < 0L || _state.value !is EngineState.Ready) {
+                com.pocketllm.server.ServerLog.log("generate: skip h=$h state=${_state.value}")
+                return@withLock null
+            }
+            if (prompt.isBlank()) {
+                com.pocketllm.server.ServerLog.log("generate: skip blank prompt")
+                return@withLock null
+            }
             userStop.set(false)
             val sink = TokenSink { chunk ->
                 if (userStop.get()) return@TokenSink false
                 onToken(String(chunk, Charsets.UTF_8))
                 true
             }
-            val counts = withContext(dispatcher) {
-                LlamaBridge.generate(h, prompt, params.maxTokens, params.temperature, params.topP, params.topK, params.seed, sink)
+            val counts = try {
+                withContext(dispatcher) {
+                    LlamaBridge.generate(h, prompt, params.maxTokens, params.temperature, params.topP, params.topK, params.seed, sink)
+                }
+            } catch (e: Exception) {
+                com.pocketllm.server.ServerLog.error("generate JNI", e)
+                null
             }
+            com.pocketllm.server.ServerLog.log("generate: promptLen=${prompt.length} → counts=${counts?.toList()}")
             counts?.let { GenResult(it[0], it[1], userStop.get()) }
         }
     }

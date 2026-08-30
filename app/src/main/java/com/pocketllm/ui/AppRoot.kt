@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Key
@@ -64,6 +65,7 @@ enum class Tab(val label: String, val icon: ImageVector, val inBottomBar: Boolea
     SERVER("Server", Icons.Outlined.Public, false),
     KEYS("API keys", Icons.Outlined.Key, false),
     SETTINGS("Settings", Icons.Outlined.Settings, false),
+    LOGS("Logs", Icons.Outlined.Description, false),
 }
 
 @Composable
@@ -177,6 +179,7 @@ fun AppRoot(vm: AppViewModel) {
                     Tab.USAGE -> UsageScreen(vm, openDrawer)
                     Tab.KEYS -> KeysScreen(vm, openDrawer)
                     Tab.SETTINGS -> SettingsScreen(vm, onOpenTab = { selected = it.name }, onMenu = openDrawer)
+                    Tab.LOGS -> LogScreen(vm, openDrawer)
                 }
             }
         }

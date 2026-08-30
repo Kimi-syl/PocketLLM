@@ -232,10 +232,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // --- Session state ---
     private val _sessions = MutableStateFlow<List<ChatSession>>(emptyList())
     val sessions: StateFlow<List<ChatSession>> = _sessions
+
+    /** Live view of the in-memory log for the Logs screen. */
+    val logLines: StateFlow<List<String>> = com.pocketllm.server.ServerLog.lines
+
+    /** Force a re-read of the log file from disk. */
+    fun refreshLog() {
+        // Touch the StateFlow to force UI to re-collect; ServerLog.lines is
+        // already a StateFlow that auto-updates when new lines are appended.
+        // This is a no-op placeholder for explicit "refresh" UI affordance.
+    }
     private val _currentSessionId = MutableStateFlow<String?>(null)
     val currentSessionId: StateFlow<String?> = _currentSessionId
 
     init {
+        // Initialize the log file sink before anything else so crashes
+        // during init are captured.
+        com.pocketllm.server.ServerLog.init(context)
+        installUncaughtExceptionHandler()
         refreshModels()
         refreshKeys()
         refreshUsage()
@@ -245,6 +259,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _agentEnabled.value = settings.current().agentEnabled
         viewModelScope.launch { startNewSession() }
     }
+
+    private fun installUncaughtExceptionHandler() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                com.pocketllm.server.ServerLog.error(
+                    "UNCAUGHT on ${thread.name}",
+                    throwable,
+                )
+            } catch (_: Throwable) {}
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
+    fun exportLogToDownloads(): String? {
+        val path = com.pocketllm.server.ServerLog.exportToDownloads(context)
+        com.pocketllm.server.ServerLog.log("Log exported to: $path")
+        return path
+    }
+
+    fun fullLogText(): String = com.pocketllm.server.ServerLog.lines.value.joinToString("\n")
 
     fun refreshSessions() {
         viewModelScope.launch { _sessions.value = sessionRepo.list() }
@@ -576,13 +611,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun sendChat(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _generating.value) return
+        com.pocketllm.server.ServerLog.log("sendChat: text='${trimmed.take(80)}' agent=${_agentEnabled.value} model=${engine.state.value.javaClass.simpleName}")
         try {
             doSendChat(trimmed)
         } catch (e: Exception) {
-            ServerLog.log("sendChat crashed: ${e.message}\n${e.stackTraceToString().take(800)}")
+            com.pocketllm.server.ServerLog.error("sendChat", e)
             // Best-effort: clear generating flag and status
             _generating.value = false
             _agentStatus.value = null
+            // Show a visible error in the chat so the user knows something went wrong.
+            _chatMessages.value = _chatMessages.value + ChatUiMessage(
+                "assistant",
+                "⚠️ sendChat crashed: ${e.message ?: e.javaClass.simpleName}\n\nCheck the Logs tab for the full stack trace.",
+                timestamp = System.currentTimeMillis(),
+            )
         }
     }
 
@@ -607,6 +649,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendChatPlain(trimmed: String) {
         viewModelScope.launch {
+            com.pocketllm.server.ServerLog.log("sendChatPlain: starting")
             _generating.value = true
             try {
                 val systemPrompt = _currentSettings.value.startupPrompt.trim()
@@ -704,6 +747,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendChatWithAgent(trimmed: String) {
         viewModelScope.launch {
+            com.pocketllm.server.ServerLog.log("sendChatWithAgent: starting, tools=${com.pocketllm.agent.AgentTool::class.simpleName} engineState=${engine.state.value.javaClass.simpleName}")
             _generating.value = true
             try {
                 val systemPrompt = _currentSettings.value.startupPrompt.trim()

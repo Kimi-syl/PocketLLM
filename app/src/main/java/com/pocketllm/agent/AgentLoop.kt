@@ -76,15 +76,26 @@ class AgentLoop(
             }
 
             // Generate a model response, with up to maxRetries attempts if it
-            // produces something we can't parse.
+            // produces something we can't parse. Each step is wrapped so any
+            // unexpected exception is logged but doesn't kill the app.
             onStatus(Status.Thinking)
-            val raw = generateWithRetries(messages, onPartialReply) ?: return Outcome(null, calls)
+            val raw = try {
+                generateWithRetries(messages, onPartialReply)
+            } catch (e: Exception) {
+                com.pocketllm.server.ServerLog.error("AgentLoop.generateWithRetries", e)
+                return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls)
+            } ?: return Outcome(null, calls)
             if (raw.isBlank()) return Outcome(null, calls)
 
-            val parsed = parseToolCall(raw)
+            val parsed = try {
+                parseToolCall(raw)
+            } catch (e: Exception) {
+                com.pocketllm.server.ServerLog.error("AgentLoop.parseToolCall", e)
+                null
+            }
             if (parsed == null) {
                 // No tool call — that's the model's final answer.
-                onPartialReply(raw)
+                try { onPartialReply(raw) } catch (_: Exception) {}
                 return Outcome(raw, calls)
             }
 
