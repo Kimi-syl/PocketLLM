@@ -777,7 +777,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 fun setReplyText(text: String) {
                     if (firstTokenNs == null && text.isNotEmpty()) firstTokenNs = System.nanoTime()
-                    totalTokens += text.length
+                    // Cap at 1M chars (~250K tokens) to prevent a runaway
+                    // callback loop from producing astronomical metrics.
+                    if (totalTokens < 1_000_000) {
+                        totalTokens += text.length
+                    }
                     _chatMessages.update { list ->
                         list.toMutableList().also {
                             val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }

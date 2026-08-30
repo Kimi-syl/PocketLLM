@@ -40,8 +40,8 @@ class AgentLoop(
     private val engine: LlamaEngine,
     private val registry: ToolRegistry,
     private val enabledTools: () -> Set<String> = { registry.names() },
-    private val maxTurns: Int = 4,
-    private val maxRetries: Int = 2,
+    private val maxTurns: Int = 2,
+    private val maxRetries: Int = 1,
     private val toolTimeoutMs: Long = 30_000L,
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -63,6 +63,14 @@ class AgentLoop(
         val messages = history.toMutableList()
 
         for (turn in 0 until maxTurns) {
+            // Safety: bail out if the prompt has grown to an absurd size.
+            // This prevents the retry loop from accumulating the entire
+            // (possibly garbage) model output until the context is full.
+            val promptSize = messages.sumOf { it.first.length + it.second.length }
+            if (promptSize > 500_000) {
+                com.pocketllm.server.ServerLog.log("AgentLoop.run: prompt too large ($promptSize chars), bailing out")
+                return Outcome("Error: prompt grew too large, agent loop aborted", calls)
+            }
             // Build the prompt with tool instructions — only the enabled ones.
             val enrichedSystem = if (systemPrompt.isBlank()) {
                 registry.promptBlock(onlyIf = enabledTools())

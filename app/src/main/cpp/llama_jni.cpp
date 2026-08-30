@@ -237,7 +237,12 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
     };
 
     if (env->PushLocalFrame(128) == 0) {
-        for (int i = 0; i < maxNewTokens && nPrompt + nGenerated < nCtx; i++) {
+        // Hard safety cap. Regardless of what the caller asked for, never
+        // generate more than this many tokens in a single call. This is a
+        // last-resort guard against runaway loops (e.g. sampler degeneration).
+        const int HARD_CAP = 2048;
+        int effectiveMax = maxNewTokens < 0 ? 0 : (maxNewTokens > HARD_CAP ? HARD_CAP : maxNewTokens);
+        for (int i = 0; i < effectiveMax && nPrompt + nGenerated < nCtx; i++) {
             if (session->stopGen.load()) { cancelled = true; break; }
 
             llama_token tok = llama_sampler_sample(sampler, ctx, -1);
