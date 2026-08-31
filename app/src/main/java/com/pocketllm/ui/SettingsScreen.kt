@@ -169,6 +169,44 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                // Context window slider
+                var contextSize by remember(settings.contextSize) {
+                    mutableStateOf(settings.contextSize.toFloat())
+                }
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Context window")
+                            Text(
+                                "Max tokens the model sees. Larger = more chat history + tool results, but uses more RAM. Takes effect on next model load.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "${contextSize.toInt()}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Slider(
+                        value = contextSize,
+                        onValueChange = { contextSize = it },
+                        valueRange = 512f..32768f,
+                        steps = 15,  // 512, 2560, 4608, ..., 32768
+                        onValueChangeFinished = {
+                            vm.updateContextSize(contextSize.toInt().toString())
+                        },
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("512", style = MaterialTheme.typography.labelSmall)
+                        Text("8K", style = MaterialTheme.typography.labelSmall)
+                        Text("32K", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 // Max generation tokens slider
                 var maxGenTokens by remember(settings.maxGenerationTokens) {
                     mutableStateOf(settings.maxGenerationTokens.toFloat())
