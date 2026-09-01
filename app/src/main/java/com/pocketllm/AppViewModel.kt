@@ -45,6 +45,14 @@ data class ChatUiMessage(
     val timeToFirstTokenMs: Long? = null,
     val tokensPerSecond: Float? = null,
     val totalDurationMs: Long = 0,
+    /**
+     * Stable identity for the message, set when the assistant placeholder is
+     * created. Used by the agent path to find the row in [_chatMessages]
+     * during streaming updates. Stays non-null after completion; UI never
+     * reads it. Do NOT pack tracking info into [generatedTokens] — that
+     * field is displayed to the user as a real token count.
+     */
+    val clientId: Long? = null,
 )
 
 private data class ChatMetrics(
@@ -763,34 +771,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val userTs = System.currentTimeMillis()
                 // Use a stable identity token instead of an index. Indices can go
                 // stale if the list is modified concurrently (e.g. by a parallel
-                // sendChat, session switch, or clearChat). The token is unique
-                // enough to identify the assistant placeholder across updates.
-                val assistantToken = System.nanoTime()
+                // sendChat, session switch, or clearChat). The clientId is unique
+                // enough to identify the assistant placeholder across updates and
+                // is never displayed.
+                val assistantClientId = System.nanoTime()
                 _chatMessages.value = _chatMessages.value + ChatUiMessage("user", trimmed, timestamp = userTs)
                 val assistantMsg = ChatUiMessage(
                     "assistant", "", timestamp = System.currentTimeMillis(),
-                    // Encode the token in a field we already have - reuse
-                    // generatedTokens as a non-displayed token holder. Ugly but
-                    // safe: we never display it.
-                    generatedTokens = (assistantToken and 0x7FFFFFFF).toInt(),
+                    clientId = assistantClientId,
                 )
                 _chatMessages.value = _chatMessages.value + assistantMsg
 
                 val turn = mutableListOf<com.pocketllm.agent.ToolCallUi>()
                 val genStart = System.nanoTime()
                 var firstTokenNs: Long? = null
-                var totalTokens = 0
 
                 fun setReplyText(text: String) {
                     if (firstTokenNs == null && text.isNotEmpty()) firstTokenNs = System.nanoTime()
-                    // Cap at 1M chars (~250K tokens) to prevent a runaway
-                    // callback loop from producing astronomical metrics.
-                    if (totalTokens < 1_000_000) {
-                        totalTokens += text.length
-                    }
                     _chatMessages.update { list ->
                         list.toMutableList().also {
-                            val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                            val idx = it.indexOfLast { m -> m.clientId == assistantMsg.clientId }
                             if (idx >= 0) {
                                 it[idx] = it[idx].copy(content = text, toolCalls = turn.toList())
                             }
@@ -802,7 +802,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     turn += ui
                     _chatMessages.update { list ->
                         list.toMutableList().also {
-                            val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                            val idx = it.indexOfLast { m -> m.clientId == assistantMsg.clientId }
                             if (idx >= 0) {
                                 it[idx] = it[idx].copy(toolCalls = turn.toList())
                             }
@@ -811,7 +811,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val history = _chatMessages.value
-                    .filter { it.timestamp != assistantMsg.timestamp || it.generatedTokens != assistantMsg.generatedTokens }
+                    .filter { it.clientId != assistantMsg.clientId }
                     .map { it.role to it.content }
                 val outcome = try {
                     agentLoop.run(
@@ -839,16 +839,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val finalText = outcome.finalText.orEmpty()
                 val ttftMs = firstTokenNs?.let { (it - genStart) / 1_000_000 }
                 val totalMs = (genEnd - genStart) / 1_000_000
-                val tps = if (totalMs > 0) totalTokens.toFloat() / totalMs * 1000f / 4f else 0f
+                // Use the real JNI-reported token count, not a character-based estimate.
+                val generatedTokens = outcome.totalGeneratedTokens.coerceAtMost(100_000)
+                val tps = if (totalMs > 0) generatedTokens.toFloat() / totalMs * 1000f else 0f
 
                 _chatMessages.update { list ->
                     list.toMutableList().also {
-                        val idx = it.indexOfLast { m -> m.generatedTokens == assistantMsg.generatedTokens }
+                        val idx = it.indexOfLast { m -> m.clientId == assistantMsg.clientId }
                         if (idx >= 0) {
                             it[idx] = it[idx].copy(
                                 content = if (finalText.isBlank() && it[idx].content.isBlank()) "(no response)" else finalText.ifBlank { it[idx].content },
                                 toolCalls = turn.toList(),
-                                generatedTokens = totalTokens / 4,
+                                generatedTokens = generatedTokens,
                                 timeToFirstTokenMs = ttftMs,
                                 tokensPerSecond = tps,
                                 totalDurationMs = totalMs,
@@ -858,7 +860,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val modelName = (engine.state.value as? EngineState.Ready)?.modelName ?: "unknown"
-                usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat-agent", modelName, 0, totalTokens / 4))
+                usageRepo.add(UsageRecord(System.currentTimeMillis(), "chat-agent", modelName, 0, generatedTokens))
                 refreshUsage()
                 persistCurrentSession()
 

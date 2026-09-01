@@ -126,6 +126,30 @@ class ApiServer(
             get("/health") {
                 call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
             }
+            get("/logs") {
+                val source = call.request.queryParameters["source"] ?: "memory"
+                val tail = call.request.queryParameters["tail"]?.toIntOrNull()
+                val body = when (source) {
+                    "file" -> {
+                        // Full on-disk log. Slower; reads filesDir/pocketllm.log.
+                        val path = ServerLog.logFilePath()
+                        if (path == null) "(no log file yet — log() has never been called)"
+                        else {
+                            val f = java.io.File(path)
+                            if (!f.exists()) "(no log file yet)"
+                            else runCatching { f.readText() }.getOrElse { "read error: ${it.message}" }
+                        }
+                    }
+                    else -> {
+                        // In-memory ring buffer, last 500 lines.
+                        val lines = ServerLog.lines.value
+                        val sliced = if (tail != null && tail in 1..lines.size) lines.takeLast(tail) else lines
+                        if (sliced.isEmpty()) "(no log lines yet)"
+                        else sliced.joinToString("\n")
+                    }
+                }
+                call.respondText(body, ContentType.Text.Plain)
+            }
             get("/v1/models") {
                 if (call.authorized() == null) return@get
                 val ready = llama.state.value as? EngineState.Ready

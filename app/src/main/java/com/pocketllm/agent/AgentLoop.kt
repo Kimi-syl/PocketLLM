@@ -62,6 +62,7 @@ class AgentLoop(
     ): Outcome {
         val calls = mutableListOf<ToolCallRecord>()
         val messages = history.toMutableList()
+        var totalGeneratedTokens = 0
 
         for (turn in 0 until maxTurns) {
             // Safety: bail out if the prompt has grown to an absurd size.
@@ -70,7 +71,7 @@ class AgentLoop(
             val promptSize = messages.sumOf { it.first.length + it.second.length }
             if (promptSize > 500_000) {
                 com.pocketllm.server.ServerLog.log("AgentLoop.run: prompt too large ($promptSize chars), bailing out")
-                return Outcome("Error: prompt grew too large, agent loop aborted", calls)
+                return Outcome("Error: prompt grew too large, agent loop aborted", calls, totalGeneratedTokens)
             }
             // Build the prompt with tool instructions — only the enabled ones.
             val enrichedSystem = if (systemPrompt.isBlank()) {
@@ -88,13 +89,17 @@ class AgentLoop(
             // produces something we can't parse. Each step is wrapped so any
             // unexpected exception is logged but doesn't kill the app.
             onStatus(Status.Thinking)
-            val raw = try {
+            val pair: Pair<String?, Int>? = try {
                 generateWithRetries(messages, onPartialReply)
             } catch (e: Exception) {
                 com.pocketllm.server.ServerLog.error("AgentLoop.generateWithRetries", e)
-                return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls)
-            } ?: return Outcome(null, calls)
-            if (raw.isBlank()) return Outcome(null, calls)
+                return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls, totalGeneratedTokens)
+            }
+            if (pair == null) return Outcome(null, calls, totalGeneratedTokens)
+            val raw = pair.first ?: return Outcome(null, calls, totalGeneratedTokens)
+            val turnTokens = pair.second
+            totalGeneratedTokens += turnTokens
+            if (raw.isBlank()) return Outcome(null, calls, totalGeneratedTokens)
 
             val parsed = try {
                 parseToolCall(raw)
@@ -105,7 +110,7 @@ class AgentLoop(
             if (parsed == null) {
                 // No tool call — that's the model's final answer.
                 try { onPartialReply(raw) } catch (_: Exception) {}
-                return Outcome(raw, calls)
+                return Outcome(raw, calls, totalGeneratedTokens)
             }
 
             // Show the user the text that appeared before the tool call.
@@ -125,12 +130,13 @@ class AgentLoop(
             messages.add("assistant" to "[called ${parsed.call.toolName} with $argsSummary]")
             messages.add("user" to "TOOL_RESULT: $toolResultText\n\nNow answer the original question using this result. If the result answers the question, give a concise final answer. Do not call another tool unless absolutely needed.")
         }
-        return Outcome(null, calls)
+        return Outcome(null, calls, totalGeneratedTokens)
     }
 
     data class Outcome(
         val finalText: String?,
         val toolCalls: List<ToolCallRecord>,
+        val totalGeneratedTokens: Int = 0,
     )
 
     // --- generation with retry on malformed tool calls ---
@@ -138,7 +144,8 @@ class AgentLoop(
     private suspend fun generateWithRetries(
         messages: MutableList<Pair<String, String>>,
         onPartialReply: suspend (String) -> Unit,
-    ): String? {
+    ): Pair<String?, Int>? {
+        var lastTokens = 0
         for (attempt in 0..maxRetries) {
             val prompt = engine.chatPrompt(messages) ?: return null
             val sb = StringBuilder()
@@ -147,9 +154,10 @@ class AgentLoop(
             }
             if (result == null) return null
             val raw = sb.toString()
+            lastTokens = result.generatedTokens
 
             // If we got a tool call, the model succeeded — return it.
-            if (parseToolCall(raw) != null) return raw
+            if (parseToolCall(raw) != null) return raw to lastTokens
 
             // If we got a final answer, return it. This is the success case.
             // We only retry when the model said something but it looks broken
@@ -162,7 +170,7 @@ class AgentLoop(
                     continue
                 }
             }
-            return raw
+            return raw to lastTokens
         }
         return null
     }

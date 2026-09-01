@@ -48,6 +48,7 @@ object LlamaEngine {
 
     init {
         LlamaBridge.backendInit()
+        com.pocketllm.server.ServerLog.log("LlamaEngine init: state=${_state.value}")
     }
 
     suspend fun load(file: File, contextSize: Int, threads: Int, gpuOffload: Boolean = true) {
@@ -55,13 +56,20 @@ object LlamaEngine {
             unloadInternal()
             _state.value = EngineState.Loading(file.name)
             val threadCount = threads.coerceIn(1, 8)
+            // Gate GPU offload on actual native support. Cheap tablets (e.g. Rockchip P20HD)
+            // report no Vulkan backend; sending gpuLayers=99 anyway segfaults llama_decode.
+            val nativeSupportsGpu = try { LlamaBridge.supportsGpuOffload() } catch (_: Throwable) { false }
+            val effectiveGpuLayers = if (gpuOffload && nativeSupportsGpu) 99 else 0
+            com.pocketllm.server.ServerLog.log(
+                "load: ${file.name} ctx=$contextSize threads=$threadCount gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → gpuLayers=$effectiveGpuLayers"
+            )
             val h = withContext(dispatcher) {
                 LlamaBridge.loadModel(
                     file.absolutePath,
                     contextSize,
-                    1024,
+                    2048,
                     threadCount,
-                    if (gpuOffload) 99 else 0,
+                    effectiveGpuLayers,
                 )
             }
             if (h < 0L) {
@@ -110,10 +118,12 @@ object LlamaEngine {
         params: GenParams = GenParams(),
         onToken: (String) -> Unit,
     ): GenResult? {
+        com.pocketllm.server.ServerLog.log("generate: entering, promptLen=${prompt.length} maxTokens=${params.maxTokens}")
         return mutex.withLock {
             val h = handle
-            if (h < 0L || _state.value !is EngineState.Ready) {
-                com.pocketllm.server.ServerLog.log("generate: skip h=$h state=${_state.value}")
+            com.pocketllm.server.ServerLog.log("generate: lock acquired, h=$h state=${_state.value}")
+            if (h < 0L) {
+                com.pocketllm.server.ServerLog.log("generate: skip, handle not ready (state=${_state.value})")
                 return@withLock null
             }
             if (prompt.isBlank()) {
@@ -126,6 +136,7 @@ object LlamaEngine {
                 onToken(String(chunk, Charsets.UTF_8))
                 true
             }
+            com.pocketllm.server.ServerLog.log("generate: about to call JNI, promptLen=${prompt.length}")
             val counts = try {
                 withContext(dispatcher) {
                     LlamaBridge.generate(h, prompt, params.maxTokens, params.temperature, params.topP, params.topK, params.seed, sink)
@@ -134,7 +145,7 @@ object LlamaEngine {
                 com.pocketllm.server.ServerLog.error("generate JNI", e)
                 null
             }
-            com.pocketllm.server.ServerLog.log("generate: promptLen=${prompt.length} → counts=${counts?.toList()}")
+            com.pocketllm.server.ServerLog.log("generate: JNI returned, promptLen=${prompt.length} → counts=${counts?.toList()}")
             counts?.let { GenResult(it[0], it[1], userStop.get()) }
         }
     }

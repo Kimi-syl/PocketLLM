@@ -82,8 +82,13 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = static_cast<uint32_t>(contextSize);
+    // Use the same value for n_batch and n_ubatch. llama.cpp asserts
+    // n_tokens <= n_ubatch inside llama_decode, so both must be large
+    // enough to hold the longest single decode call (typically the
+    // prompt-eval batch, which is prompt_len / ~4 tokens for a chat
+    // template with tool blocks — easily 1000+ tokens for agent mode).
     cparams.n_batch = static_cast<uint32_t>(batchSize);
-    cparams.n_ubatch = 512;
+    cparams.n_ubatch = static_cast<uint32_t>(batchSize);
     cparams.n_threads = threads;
     cparams.n_threads_batch = threads;
 
