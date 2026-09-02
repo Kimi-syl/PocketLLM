@@ -1,13 +1,20 @@
 package com.pocketllm.agent
 
-import com.pocketllm.settings.AppSettings
 import com.pocketllm.util.WebSearch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 
-class WebSearchTool(private val settings: () -> AppSettings) : AgentTool {
+data class SearchConfig(
+    val engine: String = "",
+    val braveKey: String = "",
+    val tavilyKey: String = "",
+    val bingKey: String = "",
+    val firecrawlKey: String = "",
+)
+
+class WebSearchTool(private val settings: () -> SearchConfig) : AgentTool {
     override val name = "web_search"
     override val displayName = "Web search"
     override val description = "Search the web and return titles, snippets, and URLs. Use when you need current information or facts beyond your training data."
@@ -31,7 +38,7 @@ class WebSearchTool(private val settings: () -> AppSettings) : AgentTool {
 
         val maxResults = (args["max_results"] as? JsonPrimitive)?.intOrNull ?: 5
         val snap = settings()
-        val key = when (snap.searchEngine) {
+        val key = when (snap.engine) {
             "brave" -> snap.braveKey
             "tavily" -> snap.tavilyKey
             "bing" -> snap.bingKey
@@ -40,7 +47,7 @@ class WebSearchTool(private val settings: () -> AppSettings) : AgentTool {
         }
 
         val results = runCatching {
-            WebSearch.search(query, snap.searchEngine, key.ifBlank { null }, maxResults.coerceIn(1, 10))
+            WebSearch.search(query, snap.engine, key.ifBlank { null }, maxResults.coerceIn(1, 10))
         }.getOrElse { return ToolResult.Error(it.message ?: "search failed") }
 
         if (results.isEmpty()) {

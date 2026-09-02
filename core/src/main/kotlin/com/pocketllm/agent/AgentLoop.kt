@@ -1,7 +1,8 @@
 package com.pocketllm.agent
 
 import com.pocketllm.llm.GenParams
-import com.pocketllm.llm.LlamaEngine
+import com.pocketllm.llm.ChatEngine
+import com.pocketllm.server.PLog
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -37,7 +38,7 @@ import kotlinx.serialization.json.jsonObject
  *    asked a question that clearly needs one, we let the direct answer through.
  */
 class AgentLoop(
-    private val engine: LlamaEngine,
+    private val engine: ChatEngine,
     private val registry: ToolRegistry,
     private val enabledTools: () -> Set<String> = { registry.names() },
     private val maxGenerationTokens: () -> Int = { 1024 },
@@ -70,7 +71,7 @@ class AgentLoop(
             // (possibly garbage) model output until the context is full.
             val promptSize = messages.sumOf { it.first.length + it.second.length }
             if (promptSize > 500_000) {
-                com.pocketllm.server.ServerLog.log("AgentLoop.run: prompt too large ($promptSize chars), bailing out")
+                PLog.log("AgentLoop.run: prompt too large ($promptSize chars), bailing out")
                 return Outcome("Error: prompt grew too large, agent loop aborted", calls, totalGeneratedTokens)
             }
             // Build the prompt with tool instructions — only the enabled ones.
@@ -92,7 +93,7 @@ class AgentLoop(
             val pair: Pair<String?, Int>? = try {
                 generateWithRetries(messages, onPartialReply)
             } catch (e: Exception) {
-                com.pocketllm.server.ServerLog.error("AgentLoop.generateWithRetries", e)
+                PLog.error("AgentLoop.generateWithRetries", e)
                 return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls, totalGeneratedTokens)
             }
             if (pair == null) return Outcome(null, calls, totalGeneratedTokens)
@@ -104,7 +105,7 @@ class AgentLoop(
             val parsed = try {
                 parseToolCall(raw)
             } catch (e: Exception) {
-                com.pocketllm.server.ServerLog.error("AgentLoop.parseToolCall", e)
+                PLog.error("AgentLoop.parseToolCall", e)
                 null
             }
             if (parsed == null) {

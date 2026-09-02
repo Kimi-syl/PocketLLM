@@ -190,7 +190,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val runCodeTool = com.pocketllm.agent.RunCodeTool(sandboxDir)
     private val clipboardTool = com.pocketllm.agent.ClipboardReadTool(context)
     private val deviceInfoTool = com.pocketllm.agent.DeviceInfoTool(context)
-    private val webSearchTool = com.pocketllm.agent.WebSearchTool { _currentSettings.value }
+    private val webSearchTool = com.pocketllm.agent.WebSearchTool {
+        val s = _currentSettings.value
+        com.pocketllm.agent.SearchConfig(
+            engine = s.searchEngine,
+            braveKey = s.braveKey,
+            tavilyKey = s.tavilyKey,
+            bingKey = s.bingKey,
+            firecrawlKey = s.firecrawlKey,
+        )
+    }
     private val calculateTool = com.pocketllm.agent.CalculateTool()
     private val dateTimeTool = com.pocketllm.agent.DateTimeTool()
     private val webFetchTool = com.pocketllm.agent.WebFetchTool { query ->
@@ -261,6 +270,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // Initialize the log file sink before anything else so crashes
         // during init are captured.
         com.pocketllm.server.ServerLog.init(context)
+        com.pocketllm.server.PLog.sink = { line -> com.pocketllm.server.ServerLog.log(line) }
         installUncaughtExceptionHandler()
         refreshModels()
         refreshKeys()

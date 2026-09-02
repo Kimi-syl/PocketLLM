@@ -49,6 +49,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(files("libs/sherpa-onnx-1.13.6.aar"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

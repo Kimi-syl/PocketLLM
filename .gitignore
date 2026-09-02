@@ -17,3 +17,9 @@ build-native/
 app/src/main/jniLibs/
 *.apk
 build-native/
+
+# build outputs
+build-native-desktop/
+app/build/
+core/build/
+cli/build/

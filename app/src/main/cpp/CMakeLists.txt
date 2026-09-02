@@ -22,3 +22,10 @@ add_library(${CMAKE_PROJECT_NAME} SHARED llama_jni.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     PRIVATE
     llama)
+
+if(NOT ANDROID)
+    if(DEFINED ENV{JAVA_HOME})
+        include_directories("$ENV{JAVA_HOME}/include" "$ENV{JAVA_HOME}/include/linux")
+    endif()
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES BUILD_RPATH "$ORIGIN")
+endif()

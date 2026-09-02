@@ -6,7 +6,8 @@ fun interface TokenSink {
 
 object LlamaBridge {
     init {
-        System.loadLibrary("pocketllm")
+        val explicit = System.getenv("POCKETLLM_NATIVE_LIB")
+        if (explicit != null) System.load(explicit) else System.loadLibrary("pocketllm")
     }
 
     external fun backendInit()

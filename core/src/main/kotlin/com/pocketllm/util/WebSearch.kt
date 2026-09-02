@@ -1,5 +1,7 @@
 package com.pocketllm.util
 
+import com.pocketllm.server.PLog
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -63,16 +65,16 @@ object WebSearch {
             .build()
         val response = client.newCall(request).execute()
         val body = response.body?.string().orEmpty()
-        android.util.Log.d("WebSearch", "DDG response: ${response.code}, body length: ${body.length}")
+        PLog.log("WebSearch DDG response: ${response.code}, body length: ${body.length}")
         if (body.length < 200) {
-            android.util.Log.w("WebSearch", "DDG body too short: $body")
+            PLog.log("WebSearch DDG body too short: $body")
         }
         response.use {
             check(it.isSuccessful) { "HTTP ${it.code}" }
             parseDdgHtml(body, maxResults)
         }
     }.onFailure {
-        android.util.Log.e("WebSearch", "DDG search failed", it)
+        PLog.error("WebSearch DDG", it)
     }.getOrDefault(emptyList())
 
     private fun parseDdgHtml(html: String, maxResults: Int): List<WebResult> {
