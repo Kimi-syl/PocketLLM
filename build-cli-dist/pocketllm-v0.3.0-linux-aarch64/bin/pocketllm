@@ -1,0 +1,4 @@
+#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export POCKETLLM_NATIVE_LIB="$DIR/lib/libpocketllm.so"
+exec "$DIR/runtime/bin/java" -Xss2m -cp "$DIR/lib/*" com.pocketllm.cli.MainKt "$@"

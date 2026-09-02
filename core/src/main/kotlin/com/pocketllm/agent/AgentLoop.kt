@@ -66,6 +66,11 @@ class AgentLoop(
     ): Outcome {
         val calls = mutableListOf<ToolCallRecord>()
         val messages = history.toMutableList()
+        // The caller may include the user message in history (app) or pass it
+        // separately (CLI); make sure it appears exactly once, at the end.
+        if (messages.lastOrNull()?.first != "user" || messages.lastOrNull()?.second != userMessage) {
+            messages.add("user" to userMessage)
+        }
         var totalGeneratedTokens = 0
         val seenSigs = mutableSetOf<String>()
 
@@ -79,11 +84,22 @@ class AgentLoop(
                 return Outcome("Error: prompt grew too large, agent loop aborted", calls, totalGeneratedTokens)
             }
             // Build the prompt with tool instructions — only the enabled ones.
-            val wantsTools = turn == 0 && router.wantsTools(userMessage, enabledTools())
-            val enrichedSystem = if (systemPrompt.isBlank()) {
-                registry.promptBlock(onlyIf = enabledTools())
-            } else {
-                systemPrompt + "\n\n" + registry.promptBlock(onlyIf = enabledTools())
+            val route = if (turn == 0) router.route(userMessage, enabledTools()) else null
+            // On a routed turn the system prompt carries only that tool's
+            // example plus the category hint; on a non-tool turn (router
+            // declined, nothing called yet) we omit the tool block entirely —
+            // small models write meta-placeholders when tool instructions
+            // are present but unused.
+            val includeTools = route != null || calls.isNotEmpty() || turn > 0
+            val enrichedSystem = buildString {
+                if (systemPrompt.isNotBlank()) {
+                    append(systemPrompt)
+                    append("\n\n")
+                }
+                if (includeTools) {
+                    append(registry.promptBlock(onlyIf = enabledTools(), exampleTool = route?.tool))
+                    route?.let { append(it.hint) }
+                }
             }
             if (messages.firstOrNull()?.first != "system") {
                 messages.add(0, "system" to enrichedSystem)
@@ -97,9 +113,11 @@ class AgentLoop(
             onStatus(Status.Thinking)
             // Grammar-constrained tool call only on the first turn (the tool
             // decision). Follow-up turns generate the final answer freely.
-            PLog.log("AgentLoop: turn=$turn router wantsTools=$wantsTools question=\"$userMessage\"")
-            val grammar = if (grammarToolCalls && wantsTools) {
-                ToolGrammarBuilder.build(registry, enabledTools())
+            PLog.log("AgentLoop: turn=$turn router route=${route ?: "none"} question=\"$userMessage\"")
+            val grammar = if (grammarToolCalls && route != null) {
+                // Restrict the grammar to the routed tool only — small models
+                // cannot reliably choose between alternatives.
+                ToolGrammarBuilder.build(registry, setOf(route.tool))
             } else null
             val pair: Pair<String?, Int>? = try {
                 generateWithRetries(messages, onPartialReply, grammar)
@@ -112,21 +130,27 @@ class AgentLoop(
             val turnTokens = pair.second
             totalGeneratedTokens += turnTokens
             if (raw.isBlank()) return Outcome(null, calls, totalGeneratedTokens)
+            val cleanedRaw = stripThink(raw)
+            if (cleanedRaw.isBlank()) return Outcome(null, calls, totalGeneratedTokens)
 
             val parsed = try {
-                parseToolCall(raw)
+                parseToolCall(cleanedRaw)
             } catch (e: Exception) {
                 PLog.error("AgentLoop.parseToolCall", e)
                 null
             }
             if (parsed == null) {
-                // No tool call — that's the model's final answer.
-                try { onPartialReply(raw) } catch (_: Exception) {}
-                return Outcome(raw, calls, totalGeneratedTokens)
+                // No tool call — that's the model's final answer. Strip any
+                // <think> reasoning block the model emitted before answering.
+                val clean = stripThink(raw)
+                if (clean.isNotBlank()) {
+                    try { onPartialReply(clean) } catch (_: Exception) {}
+                }
+                return Outcome(clean.ifBlank { null }, calls, totalGeneratedTokens)
             }
 
             // Show the user the text that appeared before the tool call.
-            val visibleBefore = raw.substringBefore(parsed.match)
+            val visibleBefore = cleanedRaw.substringBefore(parsed.match)
             if (visibleBefore.isNotBlank()) onPartialReply(visibleBefore)
 
             // Loop detection: refuse identical repeat calls and push the
@@ -136,7 +160,7 @@ class AgentLoop(
                     .joinToString(",") { "${it.key}=${it.value}" }
             if (signature in seenSigs) {
                 PLog.log("AgentLoop: loop detected (${parsed.call.toolName}) — forcing answer")
-                messages.add("assistant" to raw)
+                messages.add("assistant" to cleanedRaw)
                 messages.add(
                     "user" to "TOOL_RESULT: Error: you already called ${parsed.call.toolName} with these exact arguments earlier in this conversation. Do not call it again. Use the result you already have and give your final answer now."
                 )
@@ -155,7 +179,7 @@ class AgentLoop(
 
             val toolResultText = renderToolResult(parsed.call.toolName, toolResult)
             messages.add("assistant" to "[called ${parsed.call.toolName} with $argsSummary]")
-            messages.add("user" to "TOOL_RESULT: $toolResultText\n\nNow answer the original question using this result. If the result answers the question, give a concise final answer. Do not call another tool unless absolutely needed.")
+            messages.add("user" to "TOOL_RESULT: $toolResultText\n\nOriginal question: \"$userMessage\"\nAnswer that original question now using only the tool result above. Reply with just the final answer in plain text — no placeholders, no meta commentary, no code, no more tool calls.")
         }
         return Outcome(null, calls, totalGeneratedTokens)
     }
@@ -205,6 +229,11 @@ class AgentLoop(
             return raw to lastTokens
         }
         return null
+    }
+
+    private fun stripThink(text: String): String {
+        val stripped = Regex("(?s)<think>.*?</think>\\s*").replace(text, "")
+        return stripped.trim()
     }
 
     private fun looksLikePartialToolCall(text: String): Boolean {
@@ -309,7 +338,10 @@ class AgentLoop(
             val eq = pair.indexOf('=')
             if (eq < 0) continue
             val k = pair.substring(0, eq).trim()
-            val v = pair.substring(eq + 1).trim()
+            var v = pair.substring(eq + 1).trim()
+            // Small models often wrap values in quotes; strip them so search
+            // queries etc. don't include literal quote characters.
+            v = v.removeSurrounding("\"").trim().removeSurrounding("'").trim()
             if (k.isNotEmpty()) result[k] = JsonPrimitive(v)
         }
         return JsonObject(result)

@@ -99,6 +99,7 @@ private fun parseOpts(args: List<String>): Map<String, String> {
 
 private fun loadModelOrExit(path: String, opts: Map<String, String>) {
     runBlocking {
+        try {
         LlamaEngine.load(
             File(path),
             contextSize = opts["ctx"]?.toIntOrNull() ?: 4096,
@@ -111,6 +112,11 @@ private fun loadModelOrExit(path: String, opts: Map<String, String>) {
                 exitProcess(1)
             }
             else -> Unit
+        }
+        } catch (e: LinkageError) {
+            System.err.println("native library failed to load: ${e.message}")
+            System.err.println("set POCKETLLM_NATIVE_LIB to your libpocketllm.so (see build-native-desktop.sh)")
+            exitProcess(1)
         }
     }
 }

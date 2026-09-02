@@ -131,33 +131,49 @@ class ToolRegistry {
      *   included in the prompt. The loop passes the user's enabled set here
      *   so the model only sees tools it can actually call.
      */
-    fun promptBlock(onlyIf: Set<String>? = null, withExamples: Boolean = true): String = buildString {
+    fun promptBlock(onlyIf: Set<String>? = null, withExamples: Boolean = true, exampleTool: String? = null): String = buildString {
         val visible = tools.values.filter { onlyIf == null || it.name in onlyIf }
         appendLine("You may use these tools when the user asks a question that needs fresh or external information.")
         appendLine("IMPORTANT: Only use a tool when the question clearly requires it. For casual conversation, just answer normally.")
+        appendLine("If you don't need a tool, answer the user's last message directly in plain text. Do not write code, do not role-play more conversation turns, and never invent tool results.")
         appendLine()
         appendLine("To call a tool, output EXACTLY ONE LINE in this format on its own line:")
         appendLine("  TOOL: <name> ARGS: <key>=<value>;<key>=<value>")
         appendLine("Then stop. Do not write any other text. You will be given the tool's result and can then answer the user.")
         appendLine()
-        appendLine("Always use the actual values from the user's question — never reuse values from an example.")
+        appendLine("Tool choice rule: arithmetic or math question → calculate. Today's date/time → datetime. A URL to read → read_url. Anything needing fresh web info → web_search.")
+        appendLine("Always take argument values from the user's actual question — never reuse values from an example.")
         if (withExamples) {
-            appendLine("Worked examples:")
-            appendLine("  User: What's the weather in Hong Kong right now?")
-            appendLine("  Assistant: TOOL: web_search ARGS: query=weather in Hong Kong right now")
-            appendLine()
-            appendLine("  User: What's 2+2*3?")
-            appendLine("  Assistant: TOOL: calculate ARGS: expression=2+2*3")
-            appendLine()
-            appendLine("  User: What day is it?")
-            appendLine("  Assistant: TOOL: datetime ARGS: action=now")
-            appendLine()
-            appendLine("  User: Read https://example.com/article and summarize it.")
-            appendLine("  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article")
-            appendLine()
-            appendLine("  User: List files in my sandbox.")
-            appendLine("  Assistant: TOOL: run_code ARGS: command=ls -la")
-            appendLine()
+            val examples = listOf(
+                "web_search" to listOf(
+                    "  User: What's the weather in Hong Kong right now?",
+                    "  Assistant: TOOL: web_search ARGS: query=weather in Hong Kong right now",
+                ),
+                "calculate" to listOf(
+                    "  User: What's 2+2*3?",
+                    "  Assistant: TOOL: calculate ARGS: expression=2+2*3",
+                ),
+                "datetime" to listOf(
+                    "  User: What day is it?",
+                    "  Assistant: TOOL: datetime ARGS: action=now",
+                ),
+                "read_url" to listOf(
+                    "  User: Read https://example.com/article and summarize it.",
+                    "  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article",
+                ),
+                "run_code" to listOf(
+                    "  User: List files in my sandbox.",
+                    "  Assistant: TOOL: run_code ARGS: command=ls -la",
+                ),
+            )
+            val shown = if (exampleTool != null) examples.filter { it.first == exampleTool } else examples
+            if (shown.isNotEmpty()) {
+                appendLine("Worked example:")
+                for ((_, lines) in shown) {
+                    for (line in lines) appendLine(line)
+                    appendLine()
+                }
+            }
         }
         appendLine("When you have the tool's result, answer the user in plain language. If you don't need a tool, just answer without using the TOOL: prefix.")
         appendLine()

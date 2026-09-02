@@ -86,10 +86,14 @@ APK="app/build/outputs/apk/debug/app-debug.apk"
 if [ -f "$APK" ]; then
     SIZE=$(du -h "$APK" | cut -f1)
     echo "=== Done: $APK ($SIZE) ==="
-    # Copy to /sdcard/Download for easy install
+    # Name the release artifact after the app version (pocketllm-<version>.apk)
+    VERSION=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
+    NAMED_APK="pocketllm-${VERSION}.apk"
+    cp "$APK" "$NAMED_APK"
+    echo "  Copied to $PWD/$NAMED_APK"
     if [ -d /sdcard/Download ]; then
-        cp "$APK" /sdcard/Download/pocketllm-debug.apk
-        echo "  Also copied to /sdcard/Download/pocketllm-debug.apk"
+        cp "$APK" "/sdcard/Download/$NAMED_APK"
+        echo "  Also copied to /sdcard/Download/$NAMED_APK"
     fi
 else
     echo "=== Build failed: APK not found ==="
