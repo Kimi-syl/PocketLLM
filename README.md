@@ -71,7 +71,19 @@ Install:
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Desktop CLI (JVM)
+## Desktop CLI (Linux aarch64)
+
+Download the self-contained binary from **Releases** (no Java install needed):
+
+https://github.com/Kimi-syl/PocketLLM/releases/latest
+
+```bash
+tar xzf pocketllm-*-linux-aarch64.tar.gz
+cd pocketllm-*-linux-aarch64
+./bin/pocketllm chat --model /path/to/model.gguf
+```
+
+## Build the CLI from source
 
 ```bash
 git clone --depth 1 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
