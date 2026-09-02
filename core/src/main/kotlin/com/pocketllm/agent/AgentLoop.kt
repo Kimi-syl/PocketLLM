@@ -45,7 +45,10 @@ class AgentLoop(
     private val maxTurns: Int = 2,
     private val maxRetries: Int = 1,
     private val toolTimeoutMs: Long = 30_000L,
+    private val grammarToolCalls: Boolean = true,
 ) {
+
+    private val router = ToolRouter()
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     sealed interface Status {
@@ -64,6 +67,7 @@ class AgentLoop(
         val calls = mutableListOf<ToolCallRecord>()
         val messages = history.toMutableList()
         var totalGeneratedTokens = 0
+        val seenSigs = mutableSetOf<String>()
 
         for (turn in 0 until maxTurns) {
             // Safety: bail out if the prompt has grown to an absurd size.
@@ -75,6 +79,7 @@ class AgentLoop(
                 return Outcome("Error: prompt grew too large, agent loop aborted", calls, totalGeneratedTokens)
             }
             // Build the prompt with tool instructions — only the enabled ones.
+            val wantsTools = turn == 0 && router.wantsTools(userMessage, enabledTools())
             val enrichedSystem = if (systemPrompt.isBlank()) {
                 registry.promptBlock(onlyIf = enabledTools())
             } else {
@@ -90,8 +95,14 @@ class AgentLoop(
             // produces something we can't parse. Each step is wrapped so any
             // unexpected exception is logged but doesn't kill the app.
             onStatus(Status.Thinking)
+            // Grammar-constrained tool call only on the first turn (the tool
+            // decision). Follow-up turns generate the final answer freely.
+            PLog.log("AgentLoop: turn=$turn router wantsTools=$wantsTools question=\"$userMessage\"")
+            val grammar = if (grammarToolCalls && wantsTools) {
+                ToolGrammarBuilder.build(registry, enabledTools())
+            } else null
             val pair: Pair<String?, Int>? = try {
-                generateWithRetries(messages, onPartialReply)
+                generateWithRetries(messages, onPartialReply, grammar)
             } catch (e: Exception) {
                 PLog.error("AgentLoop.generateWithRetries", e)
                 return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls, totalGeneratedTokens)
@@ -117,6 +128,21 @@ class AgentLoop(
             // Show the user the text that appeared before the tool call.
             val visibleBefore = raw.substringBefore(parsed.match)
             if (visibleBefore.isNotBlank()) onPartialReply(visibleBefore)
+
+            // Loop detection: refuse identical repeat calls and push the
+            // model to answer from the result it already has.
+            val signature = parsed.call.toolName + ":" +
+                parsed.call.stringArgs().entries.sortedBy { it.key }
+                    .joinToString(",") { "${it.key}=${it.value}" }
+            if (signature in seenSigs) {
+                PLog.log("AgentLoop: loop detected (${parsed.call.toolName}) — forcing answer")
+                messages.add("assistant" to raw)
+                messages.add(
+                    "user" to "TOOL_RESULT: Error: you already called ${parsed.call.toolName} with these exact arguments earlier in this conversation. Do not call it again. Use the result you already have and give your final answer now."
+                )
+                continue
+            }
+            seenSigs.add(signature)
 
             // Execute the tool with a timeout and per-tool status.
             val tool = registry.get(parsed.call.toolName)
@@ -145,12 +171,17 @@ class AgentLoop(
     private suspend fun generateWithRetries(
         messages: MutableList<Pair<String, String>>,
         onPartialReply: suspend (String) -> Unit,
+        grammar: String? = null,
     ): Pair<String?, Int>? {
         var lastTokens = 0
         for (attempt in 0..maxRetries) {
             val prompt = engine.chatPrompt(messages) ?: return null
             val sb = StringBuilder()
-            val result = engine.generate(prompt, GenParams(maxTokens = maxGenerationTokens())) { token ->
+            val cap = if (grammar != null) 128 else maxGenerationTokens()
+            val result = engine.generate(
+                prompt,
+                GenParams(maxTokens = cap, grammar = grammar),
+            ) { token ->
                 sb.append(token)
             }
             if (result == null) return null

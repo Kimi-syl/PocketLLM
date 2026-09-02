@@ -24,6 +24,7 @@ data class GenParams(
     val topP: Float = 0.95f,
     val topK: Int = 40,
     val seed: Long = -1L,
+    val grammar: String? = null,
 )
 
 data class GenResult(
@@ -140,7 +141,7 @@ object LlamaEngine : ChatEngine {
             PLog.log("generate: about to call JNI, promptLen=${prompt.length}")
             val counts = try {
                 withContext(dispatcher) {
-                    LlamaBridge.generate(h, prompt, params.maxTokens, params.temperature, params.topP, params.topK, params.seed, sink)
+                    LlamaBridge.generate(h, prompt, params.maxTokens, params.temperature, params.topP, params.topK, params.seed, params.grammar, sink)
                 }
             } catch (e: Exception) {
                 PLog.error("generate JNI", e)

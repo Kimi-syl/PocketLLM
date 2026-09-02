@@ -170,7 +170,7 @@ Java_com_pocketllm_llm_LlamaBridge_stopGeneration(JNIEnv*, jobject, jlong id) {
 extern "C" JNIEXPORT jintArray JNICALL
 Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstring jPrompt,
                                             jint maxNewTokens, jfloat temperature, jfloat topP,
-                                            jint topK, jlong seed, jobject sink) {
+                                            jint topK, jlong seed, jstring jGrammar, jobject sink) {
     Session* session = findSession(id);
     if (session == nullptr) return nullptr;
     if (!session->busy.try_lock()) return nullptr;
@@ -186,6 +186,13 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
     const int nCtx = static_cast<int>(llama_n_ctx(ctx));
 
     std::string prompt = toStdString(env, jPrompt);
+
+    std::string grammarStr;
+    const char* grammarC = nullptr;
+    if (jGrammar != nullptr) {
+        grammarStr = toStdString(env, jGrammar);
+        if (!grammarStr.empty()) grammarC = grammarStr.c_str();
+    }
 
     std::vector<llama_token> tokens(std::max(prompt.size() / 2u + static_cast<size_t>(256), static_cast<size_t>(256)));
     int nPrompt = -1;
@@ -208,6 +215,9 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
     if (onTokenMethod == nullptr) return nullptr;
 
     llama_sampler* sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (grammarC != nullptr) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_grammar(vocab, grammarC, "root"));
+    }
     if (temperature <= 0.0f) {
         llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
     } else {

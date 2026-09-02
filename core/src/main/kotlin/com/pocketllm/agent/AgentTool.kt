@@ -131,7 +131,7 @@ class ToolRegistry {
      *   included in the prompt. The loop passes the user's enabled set here
      *   so the model only sees tools it can actually call.
      */
-    fun promptBlock(onlyIf: Set<String>? = null): String = buildString {
+    fun promptBlock(onlyIf: Set<String>? = null, withExamples: Boolean = true): String = buildString {
         val visible = tools.values.filter { onlyIf == null || it.name in onlyIf }
         appendLine("You may use these tools when the user asks a question that needs fresh or external information.")
         appendLine("IMPORTANT: Only use a tool when the question clearly requires it. For casual conversation, just answer normally.")
@@ -140,22 +140,25 @@ class ToolRegistry {
         appendLine("  TOOL: <name> ARGS: <key>=<value>;<key>=<value>")
         appendLine("Then stop. Do not write any other text. You will be given the tool's result and can then answer the user.")
         appendLine()
-        appendLine("Worked examples:")
-        appendLine("  User: What's the weather in Hong Kong right now?")
-        appendLine("  Assistant: TOOL: web_search ARGS: query=weather in Hong Kong right now")
-        appendLine()
-        appendLine("  User: What's 2+2*3?")
-        appendLine("  Assistant: TOOL: calculate ARGS: expression=2+2*3")
-        appendLine()
-        appendLine("  User: What day is it?")
-        appendLine("  Assistant: TOOL: datetime ARGS: action=now")
-        appendLine()
-        appendLine("  User: Read https://example.com/article and summarize it.")
-        appendLine("  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article")
-        appendLine()
-        appendLine("  User: List files in my sandbox.")
-        appendLine("  Assistant: TOOL: run_code ARGS: command=ls -la")
-        appendLine()
+        appendLine("Always use the actual values from the user's question — never reuse values from an example.")
+        if (withExamples) {
+            appendLine("Worked examples:")
+            appendLine("  User: What's the weather in Hong Kong right now?")
+            appendLine("  Assistant: TOOL: web_search ARGS: query=weather in Hong Kong right now")
+            appendLine()
+            appendLine("  User: What's 2+2*3?")
+            appendLine("  Assistant: TOOL: calculate ARGS: expression=2+2*3")
+            appendLine()
+            appendLine("  User: What day is it?")
+            appendLine("  Assistant: TOOL: datetime ARGS: action=now")
+            appendLine()
+            appendLine("  User: Read https://example.com/article and summarize it.")
+            appendLine("  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article")
+            appendLine()
+            appendLine("  User: List files in my sandbox.")
+            appendLine("  Assistant: TOOL: run_code ARGS: command=ls -la")
+            appendLine()
+        }
         appendLine("When you have the tool's result, answer the user in plain language. If you don't need a tool, just answer without using the TOOL: prefix.")
         appendLine()
         appendLine("Available tools:")

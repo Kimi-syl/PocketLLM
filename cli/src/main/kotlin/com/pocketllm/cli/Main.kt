@@ -1,5 +1,12 @@
 package com.pocketllm.cli
 
+import com.pocketllm.agent.AgentLoop
+import com.pocketllm.agent.CalculateTool
+import com.pocketllm.agent.DateTimeTool
+import com.pocketllm.agent.SearchConfig
+import com.pocketllm.agent.ToolRegistry
+import com.pocketllm.agent.WebFetchTool
+import com.pocketllm.agent.WebSearchTool
 import com.pocketllm.llm.EngineState
 import com.pocketllm.llm.GenParams
 import com.pocketllm.llm.LlamaEngine
@@ -32,6 +39,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.pocketllm.util.WebSearch
 import java.io.File
 import java.util.UUID
 import kotlin.system.exitProcess
@@ -46,6 +54,7 @@ fun main(args: Array<String>) {
     when (args.firstOrNull()) {
         "chat" -> chat(args.drop(1))
         "serve" -> serve(args.drop(1))
+        "agent" -> agent(args.drop(1))
         else -> usage(if (args.isEmpty()) 0 else 1)
     }
 }
@@ -58,6 +67,7 @@ private fun usage(exitCode: Int): Nothing {
         Usage:
           pocketllm chat  --model <path.gguf> [--ctx N] [--threads N] [--temp F]
           pocketllm serve [--port N] [--host H] [--model <path.gguf>]
+          pocketllm agent --model <path.gguf> [--ctx N] [--threads N] <question>
 
         REPL commands in chat: /exit /reset /state
 
@@ -152,6 +162,62 @@ private fun chat(args: List<String>) {
         println()
         history += ChatMessage(role = "assistant", content = out.toString())
     }
+    }
+}
+
+private fun agent(args: List<String>) {
+    val opts = parseOpts(args)
+    val modelPath = opts["model"] ?: run {
+        System.err.println("agent: --model <path.gguf> is required")
+        exitProcess(1)
+    }
+    val question = run {
+        var i = 0
+        var q: String? = null
+        while (i < args.size) {
+            val a = args[i]
+            if (a.startsWith("--")) {
+                i += 2
+            } else {
+                q = a
+                break
+            }
+        }
+        q
+    } ?: run {
+        System.err.println("agent: no question given")
+        exitProcess(1)
+    }
+
+    runBlocking {
+        loadModelOrExit(modelPath, opts)
+
+        val registry = ToolRegistry().apply {
+            register(WebSearchTool { SearchConfig(engine = "duckduckgo") })
+            register(CalculateTool())
+            register(DateTimeTool())
+            register(WebFetchTool { q ->
+                WebSearch.search(q, "duckduckgo", null, 1).firstOrNull()?.url
+            })
+        }
+        val loop = AgentLoop(LlamaEngine, registry, maxTurns = 3)
+
+        val outcome = loop.run(
+            systemPrompt = "You are PocketLLM, a concise helpful assistant running fully offline on the user's device.",
+            history = emptyList(),
+            userMessage = question,
+            onPartialReply = { print(it); System.out.flush() },
+            onToolInvoked = { ui ->
+                println()
+                println("[tool] ${ui.displayName} ${ui.arguments.entries.joinToString { "${it.key}=${it.value}" }}")
+                println("  -> ${ui.resultSummary}")
+            },
+        )
+        if (outcome.finalText.isNullOrBlank()) {
+            println("(no final answer; tool calls: ${outcome.toolCalls.size})")
+        } else {
+            println()
+        }
     }
 }
 

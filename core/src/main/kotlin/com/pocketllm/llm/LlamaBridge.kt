@@ -24,6 +24,7 @@ object LlamaBridge {
         topP: Float,
         topK: Int,
         seed: Long,
+        grammar: String?,
         sink: TokenSink,
     ): IntArray?
 
