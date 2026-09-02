@@ -1,6 +1,6 @@
 # PocketLLM
 
-Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenAI-compatible API for on-device apps and LAN clients.
+Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenAI-compatible API for on-device apps and LAN clients. A shared, platform-neutral **core** module also powers a desktop JVM **CLI** — the same engine, agent loop, and OpenAI-compatible server on your phone and in Termux/proot or on Linux.
 
 ## Features
 
@@ -14,24 +14,39 @@ Run GGUF LLMs locally on Android with llama.cpp and expose them through an OpenA
 - **Hugging Face model discovery** and GGUF browsing/download
 - **Resumable segmented downloader** with retry support and persisted metadata
 - Built-in **chat screen** with **Markdown + LaTeX** rendering
+- **Agent mode with grammar-constrained tool calls** (v0.3.0)
+  - GBNF grammar applied at sampling time: the model can only emit *one valid* `TOOL: <name> ARGS: key=value;...` line for tools you have enabled — no more malformed tool calls from small models
+  - `ToolRouter` heuristics decide when tool use is likely (URLs, arithmetic, search/time cues) and only then constrain generation — zero extra inference cost
+  - Repeat-call **loop detection**: identical tool calls are refused and the model is pushed to answer from the result it already has
+  - Built-in tools: `web_search`, `read_url`, `calculate`, `datetime` (+ file sandbox & code tools on Android)
+- **Desktop CLI** (JVM, v0.3.0) — same core engine on your computer
+  - `pocketllm chat` — interactive REPL with history (`/reset`, `/state`)
+  - `pocketllm serve` — OpenAI-compatible server (`/v1/chat/completions`, streaming + JSON)
+  - `pocketllm agent` — one-shot tool-using agent for scripting
 - Optional **web search augmentation** (DuckDuckGo, Brave, Tavily, Bing, Firecrawl)
 - Optional **auto-speak** responses using Android TTS
-- **Usage logging and analytics** in-app
+- **Usage logging and analytics** in-app, plus a **Logs tab** with on-device export
 - Optional **HTTPS** with generated self-signed certificate and fingerprint display
 
 ## Architecture
 
 ```
-Compose UI + AppViewModel
-├─ ModelRepository (HF search/download)
-├─ ApiKeyRepository (local API key persistence)
-├─ SettingsRepository (server, search, TTS, TLS settings)
-├─ UsageRepository (JSONL usage logs)
-├─ ApiServer (Ktor OpenAI-compatible routes)
-└─ LlamaEngine → LlamaBridge (JNI) → llama_jni.cpp
+├─ app (Android)                ┆  ┌────────────────────────────┐
+│  Compose UI + AppViewModel    ┆  │ core (platform-neutral JVM)│
+│  ├─ ModelRepository           ┆  │ ├─ agent/ AgentLoop, tools,│
+│  ├─ ApiKeyRepository          ┆  │ │  ToolGrammarBuilder,     │
+│  ├─ SettingsRepository        ┆  │ │  ToolRouter              │
+│  ├─ UsageRepository           ┆  │ ├─ llm/ LlamaEngine (JNI), │
+│  ├─ ApiServer (Ktor, TLS)     ┆  │ │  ChatEngine, CpuInfo     │
+│  └─ ServerLog → PLog sink     ┆  │ ├─ server/ OpenAI types    │
+└─ cli (desktop JVM)            ┆  │ ├─ hf/, util/              │
+   chat / serve / agent         ┆  │ └─ PLog logging facade     │
+                                ┆  └────────────────────────────┘
+
+LlamaEngine → LlamaBridge (JNI) → llama_jni.cpp → llama.cpp
 ```
 
-Generation is serialized through a dedicated single-thread path with synchronization, so one inference runs at a time.
+Generation is serialized through a dedicated single-thread path with synchronization, so one inference runs at a time. Android and the CLI share the same `core` module; the app registers `ServerLog` as the `PLog` sink so core logs land in the in-app Logs tab.
 
 ## Requirements
 
@@ -41,7 +56,7 @@ Generation is serialized through a dedicated single-thread path with synchroniza
 - Android NDK + CMake (3.22.1)
 - Device/emulator API 26+
 
-## Build
+## Build (Android)
 
 ```bash
 # from repo root (needed on fresh clones because llama.cpp is not committed)
@@ -54,6 +69,34 @@ Install:
 
 ```bash
 adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Desktop CLI (JVM)
+
+```bash
+git clone --depth 1 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
+
+# build the CLI distribution
+./gradlew :cli:installDist
+
+# build libpocketllm.so for desktop (gcc/g++ + JDK JNI headers)
+JAVA_HOME=/path/to/jdk17 ./build-native-desktop.sh
+
+# point the CLI at the native library
+export POCKETLLM_NATIVE_LIB=$PWD/build-native-desktop/libpocketllm.so
+
+BIN=cli/build/install/cli/bin/pocketllm
+$BIN chat  --model /path/to/model.gguf --threads 4
+$BIN serve --port 8080 --model /path/to/model.gguf
+$BIN agent --model /path/to/model.gguf "What is 23*7+4?"
+```
+
+`serve` speaks the same OpenAI wire format as the Android app:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello!"}],"stream":true}'
 ```
 
 ## Quick start
@@ -82,7 +125,7 @@ For on-device clients, use `http://127.0.0.1:8080/v1`.
 
 ## Security notes
 
-- Server binds to `0.0.0.0`; LAN clients can reach it when enabled.
+- Server binds to `0.0.0.0`; LAN clients can reach it when enabled. The CLI `serve` command binds to `127.0.0.1` by default and has no auth — local use only.
 - Keep **Require API key** on for non-local testing.
 - API keys are stored in app-private storage.
 - HTTPS is optional and uses a self-signed certificate (clients must trust/allow it, e.g. `curl -k`).
@@ -94,6 +137,7 @@ For on-device clients, use `http://127.0.0.1:8080/v1`.
 - Long prompts/conversations may be truncated to fit context window
 - No foreground service yet, so long operations may be interrupted if app/process is killed
 - Current packaged ABI target is arm64-v8a
+- Grammar-constrained tool calls guarantee the tool-call *format*; argument *content* quality depends on the model — sub-500M models may copy few-shot example values instead of using your numbers. 1B+ models behave much better.
 
 ## Building on-device (Termux + proot, no Android Studio)
 
@@ -114,14 +158,11 @@ Example rebuild flow:
 ```bash
 . /opt/tenv.sh
 cd ~/pocketllm
-cmake -S app/src/main/cpp -B build-native -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  -DGGML_OPENMP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF \
-  -DLLAMA_BUILD_TOOLS=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
-cmake --build build-native -j6
-cp build-native/libpocketllm.so app/src/main/jniLibs/arm64-v8a/
-cp /opt/tusr/lib/libc++_shared.so app/src/main/jniLibs/arm64-v8a/
+./build-native.sh        # Android .so (clang, arm64) → jniLibs → APK
 JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :app:assembleDebug
+
+./build-native-desktop.sh   # desktop .so (gcc) for the CLI
+JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :cli:installDist
 ```
 
 ## Roadmap
@@ -131,3 +172,4 @@ JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :app:assembleDebug
 - Expanded per-key analytics
 - Better model metadata/RAM estimation
 - Service discovery (mDNS)
+- Kotlin Multiplatform core (JVM + Android + iOS targets) with a SwiftUI app scaffold
