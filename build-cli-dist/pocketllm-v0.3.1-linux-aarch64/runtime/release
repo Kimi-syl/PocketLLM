@@ -1,2 +1,0 @@
-JAVA_VERSION="17.0.20.1"
-MODULES="java.base java.datatransfer java.xml java.prefs java.desktop java.instrument java.logging java.management jdk.unsupported"

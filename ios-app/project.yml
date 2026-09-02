@@ -1,0 +1,22 @@
+name: PocketLLM
+options:
+  bundleIdPrefix: ai.pocketllm
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+targets:
+  PocketLLM:
+    type: application
+    platform: iOS
+    sources:
+      - PocketLLM
+    dependencies:
+      - framework: Frameworks/PocketLLMKit.xcframework
+        embed: true
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"

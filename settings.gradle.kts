@@ -19,6 +19,12 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "PocketLLM"
-include(":app")
-include(":core")
-include(":cli")
+// iOS CI passes -PskipAndroid=true: the framework build needs no Android SDK.
+if (providers.gradleProperty("skipAndroid").isPresent) {
+    include(":core")
+    include(":cli")
+} else {
+    include(":app")
+    include(":core")
+    include(":cli")
+}
