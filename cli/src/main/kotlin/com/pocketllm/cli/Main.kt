@@ -3,6 +3,8 @@ package com.pocketllm.cli
 import com.pocketllm.agent.AgentLoop
 import com.pocketllm.agent.CalculateTool
 import com.pocketllm.agent.DateTimeTool
+import com.pocketllm.agent.RunCodeTool
+import com.pocketllm.agent.WriteFileTool
 import com.pocketllm.agent.SearchConfig
 import com.pocketllm.agent.ToolRegistry
 import com.pocketllm.agent.WebFetchTool
@@ -198,6 +200,7 @@ private fun agent(args: List<String>) {
     runBlocking {
         loadModelOrExit(modelPath, opts)
 
+        val sandbox = java.io.File(System.getProperty("user.home"), ".pocketllm-sandbox").apply { mkdirs() }
         val registry = ToolRegistry().apply {
             register(WebSearchTool { SearchConfig(engine = "duckduckgo") })
             register(CalculateTool())
@@ -205,6 +208,8 @@ private fun agent(args: List<String>) {
             register(WebFetchTool { q ->
                 WebSearch.search(q, "duckduckgo", null, 1).firstOrNull()?.url
             })
+            register(WriteFileTool(sandbox))
+            register(RunCodeTool(sandbox))
         }
         val loop = AgentLoop(LlamaEngine, registry, maxTurns = 3)
 

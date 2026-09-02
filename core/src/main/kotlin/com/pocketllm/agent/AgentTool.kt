@@ -133,49 +133,25 @@ class ToolRegistry {
      */
     fun promptBlock(onlyIf: Set<String>? = null, withExamples: Boolean = true, exampleTool: String? = null): String = buildString {
         val visible = tools.values.filter { onlyIf == null || it.name in onlyIf }
-        appendLine("You may use these tools when the user asks a question that needs fresh or external information.")
-        appendLine("IMPORTANT: Only use a tool when the question clearly requires it. For casual conversation, just answer normally.")
-        appendLine("If you don't need a tool, answer the user's last message directly in plain text. Do not write code, do not role-play more conversation turns, and never invent tool results.")
+        appendLine("You are an agent with REAL, executable tools. These tools actually run: when you output a tool call, the system executes it and returns the real result to you. Never claim you have no tools, no code interpreter, no execution engine, or no runtime - you have all of these.")
         appendLine()
-        appendLine("To call a tool, output EXACTLY ONE LINE in this format on its own line:")
+        appendLine("To use a tool, output EXACTLY ONE LINE in this format on its own line:")
         appendLine("  TOOL: <name> ARGS: <key>=<value>;<key>=<value>")
-        appendLine("Then stop. Do not write any other text. You will be given the tool's result and can then answer the user.")
+        appendLine("Then stop immediately. Do not write anything else. You will receive the real result and can then answer the user.")
         appendLine()
-        appendLine("Tool choice rule: arithmetic or math question → calculate. Today's date/time → datetime. A URL to read → read_url. Anything needing fresh web info → web_search.")
-        appendLine("Always take argument values from the user's actual question — never reuse values from an example.")
-        if (withExamples) {
-            val examples = listOf(
-                "web_search" to listOf(
-                    "  User: What's the weather in Hong Kong right now?",
-                    "  Assistant: TOOL: web_search ARGS: query=weather in Hong Kong right now",
-                ),
-                "calculate" to listOf(
-                    "  User: What's 2+2*3?",
-                    "  Assistant: TOOL: calculate ARGS: expression=2+2*3",
-                ),
-                "datetime" to listOf(
-                    "  User: What day is it?",
-                    "  Assistant: TOOL: datetime ARGS: action=now",
-                ),
-                "read_url" to listOf(
-                    "  User: Read https://example.com/article and summarize it.",
-                    "  Assistant: TOOL: read_url ARGS: url_or_query=https://example.com/article",
-                ),
-                "run_code" to listOf(
-                    "  User: List files in my sandbox.",
-                    "  Assistant: TOOL: run_code ARGS: command=ls -la",
-                ),
-            )
-            val shown = if (exampleTool != null) examples.filter { it.first == exampleTool } else examples
-            if (shown.isNotEmpty()) {
-                appendLine("Worked example:")
-                for ((_, lines) in shown) {
-                    for (line in lines) appendLine(line)
-                    appendLine()
-                }
-            }
-        }
-        appendLine("When you have the tool's result, answer the user in plain language. If you don't need a tool, just answer without using the TOOL: prefix.")
+        appendLine("Tool choice guide:")
+        appendLine("- Arithmetic, math expressions, unit math -> calculate")
+        appendLine("- Today's date or current time -> datetime")
+        appendLine("- A URL to read or summarize -> read_url")
+        appendLine("- Fresh web information (news, weather, prices, facts you are unsure about) -> web_search")
+        appendLine("- Write code, run code, execute a script or command -> run_code (for Python use a python3 -c one-liner)")
+        appendLine("- Save text or code to a file -> write_file")
+        appendLine("- Clipboard contents -> clipboard;  Device/battery/storage info -> device_info")
+        appendLine()
+        appendLine("Rules:")
+        appendLine("- If the user asks you to create, generate, or run code, you MUST use run_code or write_file - never just print code and claim you cannot run it.")
+        appendLine("- Argument values must come from the user's actual question - never reuse an example's values.")
+        appendLine("- If no tool fits the request, answer directly in plain text. Do not role-play extra conversation turns, do not invent tool results.")
         appendLine()
         appendLine("Available tools:")
         for (tool in visible) {

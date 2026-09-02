@@ -85,21 +85,16 @@ class AgentLoop(
             }
             // Build the prompt with tool instructions — only the enabled ones.
             val route = if (turn == 0) router.route(userMessage, enabledTools()) else null
-            // On a routed turn the system prompt carries only that tool's
-            // example plus the category hint; on a non-tool turn (router
-            // declined, nothing called yet) we omit the tool block entirely —
-            // small models write meta-placeholders when tool instructions
-            // are present but unused.
-            val includeTools = route != null || calls.isNotEmpty() || turn > 0
+            // The tool block is ALWAYS present so the model knows it has
+            // executable tools; on a routed turn it carries only that
+            // category's example plus a value hint.
             val enrichedSystem = buildString {
                 if (systemPrompt.isNotBlank()) {
                     append(systemPrompt)
                     append("\n\n")
                 }
-                if (includeTools) {
-                    append(registry.promptBlock(onlyIf = enabledTools(), exampleTool = route?.tool))
-                    route?.let { append(it.hint) }
-                }
+                append(registry.promptBlock(onlyIf = enabledTools(), exampleTool = route?.tools?.first()))
+                route?.let { append(it.hint) }
             }
             if (messages.firstOrNull()?.first != "system") {
                 messages.add(0, "system" to enrichedSystem)
@@ -115,9 +110,9 @@ class AgentLoop(
             // decision). Follow-up turns generate the final answer freely.
             PLog.log("AgentLoop: turn=$turn router route=${route ?: "none"} question=\"$userMessage\"")
             val grammar = if (grammarToolCalls && route != null) {
-                // Restrict the grammar to the routed tool only — small models
-                // cannot reliably choose between alternatives.
-                ToolGrammarBuilder.build(registry, setOf(route.tool))
+                // Restrict the grammar to the routed category's tools — small
+                // models cannot reliably choose between all alternatives.
+                ToolGrammarBuilder.build(registry, route.tools.toSet())
             } else null
             val pair: Pair<String?, Int>? = try {
                 generateWithRetries(messages, onPartialReply, grammar)
