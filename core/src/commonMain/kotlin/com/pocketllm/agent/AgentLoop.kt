@@ -270,7 +270,7 @@ class AgentLoop(
             if (e is TimeoutCancellationException) {
                 ToolResult.Error("Tool ${call.toolName} timed out after ${toolTimeoutMs / 1000}s")
             } else {
-                ToolResult.Error(e.message ?: e::class.simpleName)
+                ToolResult.Error(e.message ?: e::class.simpleName ?: "error")
             }
         }
     }

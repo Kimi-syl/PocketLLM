@@ -1,6 +1,6 @@
 package com.pocketllm.server
 
-import kotlin.concurrent.AtomicBoolean
+import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
 
 /**
@@ -17,11 +17,11 @@ object PLog {
         get() = sinkRef.value
         set(value) { sinkRef.value = value }
 
-    private val enabledFlag = AtomicBoolean(true)
+    private val enabledFlag = AtomicInt(1)
 
     var enabled: Boolean
-        get() = enabledFlag.value
-        set(value) { enabledFlag.value = value }
+        get() = enabledFlag.value == 1
+        set(value) { enabledFlag.value = if (value) 1 else 0 }
 
     fun log(message: String) {
         if (enabled) runCatching { sink(message) }
