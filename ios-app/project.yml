@@ -24,4 +24,4 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: PocketLLM/bridging.h
         HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/llama-libs"
-        OTHER_LDFLAGS: "-lpocketllm_ios"
+        OTHER_LDFLAGS: "-lpocketllm_ios -framework Accelerate"
