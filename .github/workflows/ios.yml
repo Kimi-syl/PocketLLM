@@ -18,6 +18,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
       - name: Build PocketLLMKit XCFramework
         run: ./gradlew :core:assemblePocketLLMKitXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
 
