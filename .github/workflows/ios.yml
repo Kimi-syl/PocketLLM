@@ -1,0 +1,45 @@
+name: ios
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build PocketLLMKit XCFramework
+        run: ./gradlew :core:assembleXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
+
+      - name: Copy framework into the app
+        run: |
+          mkdir -p ios-app/Frameworks
+          cp -R core/build/XCFrameworks/Release/PocketLLMKit.xcframework ios-app/Frameworks/
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios-app && xcodegen generate
+
+      - name: Build iOS app (simulator)
+        run: |
+          cd ios-app
+          xcodebuild -project PocketLLM.xcodeproj -scheme PocketLLM \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug build CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload framework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketLLMKit.xcframework
+          path: ios-app/Frameworks/PocketLLMKit.xcframework
