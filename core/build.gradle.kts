@@ -24,6 +24,12 @@ kotlin {
                 xcf.add(this)
             }
         }
+        iosX64 {
+            binaries.framework {
+                baseName = "PocketLLMKit"
+                xcf.add(this)
+            }
+        }
         iosSimulatorArm64 {
             binaries.framework {
                 baseName = "PocketLLMKit"
