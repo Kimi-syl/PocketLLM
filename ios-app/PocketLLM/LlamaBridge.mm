@@ -33,7 +33,7 @@ size_t utf8SequenceLength(unsigned char lead) {
 }
 
 std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &text) {
-    std::vector<llama_token> tokens(std::max(text.size() / 2u + 256u, 256u));
+    std::vector<llama_token> tokens(std::max(text.size() / 2u + (size_t)256, (size_t)256));
     int n = -1;
     while (true) {
         n = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
@@ -136,12 +136,12 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
        completion:(void (^)(int, int, BOOL))completion {
     if (!_ctx || !onToken || !completion) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        if (!this->_busy.try_lock()) { completion(0, 0, NO); return; }
-        struct BusyUnlock { std::mutex &m; ~BusyUnlock() { m.unlock(); } } unlock{this->_busy};
-        this->_stopGen.store(false);
+        if (!self->_busy.try_lock()) { completion(0, 0, NO); return; }
+        struct BusyUnlock { std::mutex &m; ~BusyUnlock() { m.unlock(); } } unlock{self->_busy};
+        self->_stopGen.store(false);
 
-        const llama_vocab *vocab = llama_model_get_vocab(this->_model);
-        const int nCtx = (int)llama_n_ctx(this->_ctx);
+        const llama_vocab *vocab = llama_model_get_vocab(self->_model);
+        const int nCtx = (int)llama_n_ctx(self->_ctx);
         std::string text = prompt.UTF8String ?: "";
 
         std::vector<llama_token> tokens = tokenize(vocab, text);
@@ -162,7 +162,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
             llama_sampler_chain_add(sampler, llama_sampler_init_dist(0xFFFFFFFFu));
         }
 
-        if (nPrompt <= 0 || llama_decode(this->_ctx,
+        if (nPrompt <= 0 || llama_decode(self->_ctx,
                 llama_batch_get_one(tokens.data(), nPrompt)) != 0) {
             llama_sampler_free(sampler);
             completion(0, 0, NO);
@@ -176,9 +176,9 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         int effectiveMax = maxTokens < 0 ? 0 : (maxTokens > HARD_CAP ? HARD_CAP : maxTokens);
 
         for (int i = 0; i < effectiveMax && nPrompt + nGenerated < nCtx; i++) {
-            if (this->_stopGen.load()) { cancelled = true; break; }
+            if (self->_stopGen.load()) { cancelled = true; break; }
 
-            llama_token tok = llama_sampler_sample(sampler, this->_ctx, -1);
+            llama_token tok = llama_sampler_sample(sampler, self->_ctx, -1);
             if (llama_vocab_is_eog(vocab, tok)) break;
 
             char piece[512];
@@ -195,13 +195,13 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
                     offset += seq;
                 }
                 pending.erase(0, offset);
-                if (this->_stopGen.load()) { cancelled = true; nGenerated++; break; }
+                if (self->_stopGen.load()) { cancelled = true; nGenerated++; break; }
             }
 
             nGenerated++;
-            if (this->_stopGen.load()) { cancelled = true; break; }
+            if (self->_stopGen.load()) { cancelled = true; break; }
             llama_batch batch = llama_batch_get_one(&tok, 1);
-            if (llama_decode(this->_ctx, batch) != 0) break;
+            if (llama_decode(self->_ctx, batch) != 0) break;
         }
 
         if (!pending.empty() && !cancelled) {
