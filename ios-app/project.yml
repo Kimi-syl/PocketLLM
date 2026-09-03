@@ -21,3 +21,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OBJC_BRIDGING_HEADER: PocketLLM/bridging.h
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/llama-libs"
+        OTHER_LDFLAGS: "-lpocketllm_ios"
