@@ -10,6 +10,7 @@ on:
 jobs:
   ios:
     runs-on: macos-14
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -30,25 +31,22 @@ jobs:
           mkdir -p ios-app/Frameworks
           cp -R core/build/XCFrameworks/Release/PocketLLMKit.xcframework ios-app/Frameworks/
 
-      - name: Build llama.cpp for iOS (simulator + device)
+      - name: Build llama.cpp for iOS (simulator)
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp ci-llama
-          COMMON="-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-          cmake -S ci-llama -B build-ios-sim $COMMON \
+          cmake -S ci-llama -B build-ios-sim \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-          cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu -j
-          cmake -S ci-llama -B build-ios-dev $COMMON \
-            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
-            -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-          cmake --build build-ios-dev --target llama ggml ggml-base ggml-cpu -j
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
+            -DGGML_METAL=OFF -DLLAMA_CURL=OFF
+          cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu -j3
           mkdir -p ios-app/llama-libs ios-app/llama-headers
-          libtool -static -o ios-app/llama-libs/libpocketllm_ios_sim.a $(find build-ios-sim -name "*.a" | sort)
-          libtool -static -o ios-app/llama-libs/libpocketllm_ios_dev.a $(find build-ios-dev -name "*.a" | sort)
+          libtool -static -o ios-app/llama-libs/libpocketllm_ios.a $(find build-ios-sim -name "*.a" | sort)
           cp ci-llama/include/llama.h ios-app/llama-headers/
           cp ci-llama/ggml/include/*.h ios-app/llama-headers/
           find build-ios-sim -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
-          ls -la ios-app/llama-libs ios-app/llama-headers
 
       - name: Generate Xcode project
         run: |
