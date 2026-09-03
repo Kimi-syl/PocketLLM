@@ -12,16 +12,19 @@ if [ -f /opt/tenv.sh ]; then
 fi
 
 BUILD_DIR="build-native"
-NPROCS=$(nproc 2>/dev/null || echo 4)
+NPROCS=${POCKETLLM_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
 
 echo "=== Building native libraries (${NPROCS} jobs) ==="
 cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
+    -DCMAKE_FIND_ROOT_PATH="/opt/tusr;/usr" \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+    -DCMAKE_PREFIX_PATH="$SCRIPT_DIR/vulkan-host" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DGGML_OPENMP=OFF \
-    -DGGML_VULKAN=OFF \
+    -DGGML_VULKAN=ON \
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_TESTS=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
@@ -77,6 +80,21 @@ def patch_soname(path):
 
 for f in glob.glob('app/src/main/jniLibs/arm64-v8a/lib*.so'):
     patch_soname(f)
+
+# The Vulkan link records the host sysroot path for libvulkan; rewrite it to
+# the bare soname Android's loader expects.
+import glob as _g
+for f in _g.glob('app/src/main/jniLibs/arm64-v8a/lib*.so'):
+    with open(f, 'rb') as fh:
+        d = bytearray(fh.read())
+    bad = b'/opt/tusr/usr/lib/libvulkan.so\x00'
+    if bad in d:
+        i = d.find(bad)
+        rep = b'libvulkan.so\x00'
+        d[i:i+len(bad)] = rep + b'\x00' * (len(bad) - len(rep))
+        with open(f, 'wb') as fh:
+            fh.write(d)
+        print(f'  Patched libvulkan NEEDED in {os.path.basename(f)}')
 PYEOF
 
 echo "=== Building APK ==="
