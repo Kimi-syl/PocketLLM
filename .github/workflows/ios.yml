@@ -19,7 +19,7 @@ jobs:
           java-version: "17"
 
       - name: Build PocketLLMKit XCFramework
-        run: ./gradlew :core:assembleXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
+        run: ./gradlew :core:assemblePocketLLMKitXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
 
       - name: Copy framework into the app
         run: |
