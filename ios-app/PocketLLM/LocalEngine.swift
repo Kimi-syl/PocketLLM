@@ -15,8 +15,7 @@ final class LocalEngine: ObservableObject {
             let ctx = try LlamaContext(modelPath: url.path,
                                        contextSize: contextSize,
                                        batchSize: 2048,
-                                       threads: Int32(threads),
-                                       error: nil)
+                                       threads: Int32(threads))
             context = ctx
             current = ctx
             state = "ready (ctx=\(ctx.contextLength))"
