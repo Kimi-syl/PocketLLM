@@ -6,8 +6,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// Mirrors the Android JNI bridge (llama_jni.cpp): one context per model,
 /// serialized generation, cooperative stop.
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
 BOOL LlamaSupportsGpuOffload(void);
 void LlamaGlobalInit(void);
+#if defined(__cplusplus)
+}
+#endif
 
 @interface LlamaContext : NSObject
 
