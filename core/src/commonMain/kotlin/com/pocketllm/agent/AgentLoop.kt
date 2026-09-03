@@ -118,7 +118,7 @@ class AgentLoop(
                 generateWithRetries(messages, onPartialReply, grammar)
             } catch (e: Exception) {
                 PLog.error("AgentLoop.generateWithRetries", e)
-                return Outcome("Error: ${e.message ?: e.javaClass.simpleName}", calls, totalGeneratedTokens)
+                return Outcome("Error: ${e.message ?: e::class.simpleName}", calls, totalGeneratedTokens)
             }
             if (pair == null) return Outcome(null, calls, totalGeneratedTokens)
             val raw = pair.first ?: return Outcome(null, calls, totalGeneratedTokens)
@@ -270,7 +270,7 @@ class AgentLoop(
             if (e is TimeoutCancellationException) {
                 ToolResult.Error("Tool ${call.toolName} timed out after ${toolTimeoutMs / 1000}s")
             } else {
-                ToolResult.Error(e.message ?: e.javaClass.simpleName)
+                ToolResult.Error(e.message ?: e::class.simpleName)
             }
         }
     }
@@ -398,7 +398,7 @@ class AgentLoop(
     }
 
     private fun buildUi(call: ToolCall, result: ToolResult): ToolCallUi = ToolCallUi(
-        id = "${call.toolName}-${System.nanoTime()}",
+        id = "${call.toolName}-${kotlin.random.Random.nextLong()}",
         name = call.toolName,
         displayName = call.displayName,
         arguments = call.stringArgs(),
