@@ -79,6 +79,8 @@ Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
     llama_backend_init();
 }
 
+extern "C" const char *opencl_shim_debug(void);
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
     std::string out;
@@ -104,6 +106,8 @@ Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
         out += gLogBuffer;
         gLogBuffer.clear();
     }
+    out += "--- opencl shim ---\n";
+    out += opencl_shim_debug();
     return env->NewStringUTF(out.c_str());
 }
 
