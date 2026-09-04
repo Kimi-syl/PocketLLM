@@ -131,12 +131,15 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
             SectionCard("Inference") {
                 val loaded by vm.engine.state.collectAsState()
                 val gpuSupported = remember { com.pocketllm.llm.LlamaBridge.supportsGpuOffload() }
+                val gpuInfo = remember {
+                    if (gpuSupported) "" else runCatching { com.pocketllm.llm.LlamaBridge.backendInfo() }.getOrElse { "" }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("GPU offload")
                         Text(
                             when {
-                                !gpuSupported -> "This build has no GPU backend — CPU only"
+                                !gpuSupported -> "No usable GPU device — CPU only (details below)"
                                 settings.gpuOffload -> "Layers run on the GPU for faster inference"
                                 else -> "CPU only — lower power use, slower generation"
                             },
@@ -155,6 +158,13 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (gpuInfo.isNotBlank()) {
+                    Text(
+                        gpuInfo,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (!gpuSupported && loaded is com.pocketllm.llm.EngineState.Ready) {
                     Text(
                         "Loaded model runs on CPU.",

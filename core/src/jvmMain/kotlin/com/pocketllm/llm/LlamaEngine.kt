@@ -39,6 +39,7 @@ object LlamaEngine : ChatEngine {
             // Gate GPU offload on actual native support. Cheap tablets (e.g. Rockchip P20HD)
             // report no Vulkan backend; sending gpuLayers=99 anyway segfaults llama_decode.
             val nativeSupportsGpu = try { LlamaBridge.supportsGpuOffload() } catch (_: Throwable) { false }
+            runCatching { PLog.log("backend info:\n" + LlamaBridge.backendInfo()) }
             val effectiveGpuLayers = if (gpuOffload && nativeSupportsGpu) 99 else 0
             PLog.log(
                 "load: ${file.name} ctx=$contextSize threads=$threadCount gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → gpuLayers=$effectiveGpuLayers"

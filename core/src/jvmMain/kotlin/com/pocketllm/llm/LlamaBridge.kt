@@ -11,6 +11,8 @@ object LlamaBridge {
     }
 
     external fun backendInit()
+
+    external fun backendInfo(): String
     external fun supportsGpuOffload(): Boolean
     external fun loadModel(path: String, contextSize: Int, batchSize: Int, threads: Int, gpuLayers: Int): Long
     external fun freeModel(handle: Long)

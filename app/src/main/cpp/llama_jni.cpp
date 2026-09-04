@@ -21,6 +21,21 @@ std::mutex gMutex;
 std::unordered_map<long long, Session*> gSessions;
 long long gNextId = 1;
 
+static std::mutex gLogMutex;
+static std::string gLogBuffer;
+
+static void ggml_log_forward(ggml_log_level, const char * text, void *) {
+    if (text == nullptr) return;
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    if (gLogBuffer.size() < 16384) gLogBuffer += text;
+}
+
+// Install the ggml log hook as early as possible so backend registration
+// messages (Vulkan device enumeration etc.) are captured for diagnostics.
+__attribute__((constructor)) static void llama_jni_init_log() {
+    ggml_log_set(ggml_log_forward, nullptr);
+}
+
 std::string toStdString(JNIEnv* env, jstring js) {
     if (js == nullptr) return std::string();
     const char* chars = env->GetStringUTFChars(js, nullptr);
@@ -62,6 +77,34 @@ size_t utf8SequenceLength(unsigned char lead) {
 extern "C" JNIEXPORT void JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
     llama_backend_init();
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
+    std::string out;
+    size_t n = ggml_backend_dev_count();
+    out += "registered devices: " + std::to_string(n) + "\n";
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        out += "- ";
+        out += ggml_backend_dev_name(dev);
+        out += " | ";
+        out += ggml_backend_dev_description(dev);
+        switch (ggml_backend_dev_type(dev)) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:  out += " [cpu]"; break;
+            case GGML_BACKEND_DEVICE_TYPE_GPU:  out += " [gpu]"; break;
+            case GGML_BACKEND_DEVICE_TYPE_IGPU: out += " [igpu]"; break;
+            default:                            out += " [other]"; break;
+        }
+        out += "\n";
+    }
+    {
+        std::lock_guard<std::mutex> lock(gLogMutex);
+        out += "--- ggml log ---\n";
+        out += gLogBuffer;
+        gLogBuffer.clear();
+    }
+    return env->NewStringUTF(out.c_str());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
