@@ -82,6 +82,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val ttsReady: StateFlow<Boolean> = tts.ready
     val ttsSpeaking: StateFlow<Boolean> = tts.speaking
     val piperReady: StateFlow<Boolean> = tts.piperReady
+    val piperInstalled: Boolean get() = tts.piperInstalled
     val piperProgress: StateFlow<Float> = tts.piperProgress
     val piperStatus: StateFlow<String> = tts.piperStatus
     val piperState: StateFlow<com.pocketllm.util.SherpaTtsEngine.State> = tts.piperState
@@ -279,6 +280,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
         tts.setEngine(settings.current().ttsEngine)
         _agentEnabled.value = settings.current().agentEnabled
+        // Pick up an already-downloaded Piper model without any download UI.
+        if (settings.current().ttsEngine == "piper") {
+            viewModelScope.launch { tts.preparePiper() }
+        }
         viewModelScope.launch { startNewSession() }
     }
 
@@ -582,7 +587,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(ttsEngine = engine) }
         tts.setEngine(engine)
         if (engine == "piper") {
-            viewModelScope.launch { tts.ensurePiper() }
+            // Load if present; the download itself starts on first use.
+            viewModelScope.launch { tts.preparePiper() }
         }
     }
 

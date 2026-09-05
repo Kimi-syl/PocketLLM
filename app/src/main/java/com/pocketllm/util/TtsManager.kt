@@ -20,6 +20,9 @@ class TtsManager(context: Context) {
     private val _piperReady = MutableStateFlow(false)
     val piperReady: StateFlow<Boolean> = _piperReady
 
+    /** True once the Piper model files exist on disk (regardless of loaded state). */
+    val piperInstalled: Boolean get() = piperTts.hasModelFiles
+
     val piperState: StateFlow<SherpaTtsEngine.State> = piperTts.state
     val piperProgress: StateFlow<Float> = piperTts.progress
     val piperStatus: StateFlow<String> = piperTts.status
@@ -44,6 +47,13 @@ class TtsManager(context: Context) {
 
     fun setEngine(engine: String) {
         _activeEngine.value = engine
+    }
+
+    /** Load the Piper model if it is already on disk; never downloads. */
+    suspend fun preparePiper(): Boolean {
+        val result = piperTts.ensureModel(downloadIfMissing = false)
+        _piperReady.value = result
+        return result
     }
 
     suspend fun ensurePiper(): Boolean {

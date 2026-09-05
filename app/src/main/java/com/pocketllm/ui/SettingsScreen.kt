@@ -291,7 +291,10 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                             when {
                                 !ttsReady && !piperReady -> "No text-to-speech engine available"
                                 ttsEngine == "piper" && piperReady -> "Piper TTS (high quality, offline)"
-                                ttsEngine == "piper" && !piperReady -> "Piper TTS (downloading model...)"
+                                ttsEngine == "piper" && vm.piperInstalled && !piperReady -> "Piper TTS (offline, loading model...)"
+                                ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Downloading -> "Piper TTS (downloading model...)"
+                                ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Extracting -> "Piper TTS (extracting model...)"
+                                ttsEngine == "piper" && !piperReady -> "Piper TTS (model not downloaded)"
                                 else -> "System TTS engine"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -337,9 +340,15 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    } else if (vm.piperInstalled) {
+                        Text(
+                            "Piper model is downloaded and loading...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     } else {
                         Text(
-                            "Piper model will be downloaded on first use (~65MB)",
+                            "Piper model not downloaded yet. It downloads automatically (~65MB) the first time Piper is used for speech.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

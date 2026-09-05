@@ -57,6 +57,12 @@ class SherpaTtsEngine(private val context: Context) {
     private val modelDir: File = File(baseDir, "vits-piper-en_US-amy-medium")
 
     val isReady: Boolean get() = _state.value is State.Ready
+
+    /** True when the model files are already on disk (downloaded previously). */
+    val hasModelFiles: Boolean
+        get() = File(modelDir, "en_US-amy-medium.onnx").exists() &&
+            File(modelDir, "tokens.txt").exists() &&
+            File(modelDir, "espeak-ng-data/phondata").exists()
     val isSpeaking: Boolean get() = audioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING
 
     private val client = OkHttpClient.Builder()
@@ -67,7 +73,7 @@ class SherpaTtsEngine(private val context: Context) {
         .followRedirects(true)
         .build()
 
-    suspend fun ensureModel(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun ensureModel(downloadIfMissing: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         if (_state.value is State.Ready) return@withContext true
 
         val onnxFile = File(modelDir, "en_US-amy-medium.onnx")
@@ -76,6 +82,14 @@ class SherpaTtsEngine(private val context: Context) {
 
         if (onnxFile.exists() && tokensFile.exists() && phondata.exists()) {
             return@withContext loadModel()
+        }
+
+        if (!downloadIfMissing) {
+            // Load-only pass: do not start a download from here. Used at
+            // startup and on engine switch so an already-downloaded model
+            // is picked up without any "downloading" indication.
+            _status.value = "Piper model not downloaded yet"
+            return@withContext false
         }
 
         try {

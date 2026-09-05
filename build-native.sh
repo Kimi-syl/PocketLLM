@@ -23,6 +23,8 @@ cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DGGML_OPENCL=ON \
     -DOpenCL_LIBRARY="$SCRIPT_DIR/opencl-host/lib/libOpenCLshim.so" \
     -DOpenCL_INCLUDE_DIR="$SCRIPT_DIR/opencl-host/include" \
+    -DVulkan_LIBRARY="$SCRIPT_DIR/vk-host/lib/libvkshim.so" \
+    -DVulkan_INCLUDE_DIR="/opt/tusr/usr/include" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -42,7 +44,7 @@ echo "=== Copying .so files to jniLibs ==="
 JNI_DIR="app/src/main/jniLibs/arm64-v8a"
 mkdir -p "$JNI_DIR"
 
-for lib in "$BUILD_DIR"/lib*.so "$SCRIPT_DIR"/opencl-host/lib/libOpenCLshim.so; do
+for lib in "$BUILD_DIR"/lib*.so "$SCRIPT_DIR"/opencl-host/lib/libOpenCLshim.so "$SCRIPT_DIR"/vk-host/lib/libvkshim.so "$SCRIPT_DIR"/third_party/turnip/libvulkan_freedreno.so; do
     [ -f "$lib" ] || continue
     base=$(basename "$lib")
     cp "$lib" "$JNI_DIR/$base"
