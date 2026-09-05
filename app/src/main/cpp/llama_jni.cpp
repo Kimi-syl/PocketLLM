@@ -81,6 +81,7 @@ Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
 
 extern "C" const char *opencl_shim_debug(void);
 extern "C" const char *vulkan_shim_debug(void);
+extern "C" const char *vulkan_shim_probe(void);
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
@@ -111,6 +112,8 @@ Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
     out += opencl_shim_debug();
     out += "--- vulkan shim ---\n";
     out += vulkan_shim_debug();
+    out += "--- vulkan probe (fork-isolated) ---\n";
+    out += vulkan_shim_probe();
     return env->NewStringUTF(out.c_str());
 }
 

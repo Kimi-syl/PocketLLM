@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <stdarg.h>
 
 /* Exact AOSP hardware HAL layouts (hardware/libhardware hardware.h, LP64).
@@ -149,6 +150,93 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
 }
 
 const char *vulkan_shim_debug(void) { return g_diag; }
+
+/* Fork-isolated driver probe: exercises instance creation + physical device
+ * enumeration in a child process so a driver segfault (Turnip on some GPUs)
+ * kills only the child. The parent reports what happened. Runs on demand
+ * (GPU info button), never at load. */
+static char g_probe[1024];
+
+const char *vulkan_shim_probe(void) {
+    if (!g_driver) {
+        snprintf(g_probe, sizeof(g_probe), "no driver loaded\n");
+        return g_probe;
+    }
+    int fds[2];
+    if (pipe(fds) != 0) {
+        snprintf(g_probe, sizeof(g_probe), "pipe failed\n");
+        return g_probe;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]); close(fds[1]);
+        snprintf(g_probe, sizeof(g_probe), "fork failed\n");
+        return g_probe;
+    }
+    if (pid == 0) {
+        /* child */
+        close(fds[0]);
+        char out[768];
+        size_t n = 0;
+        do {
+            uint32_t api = 0;
+            PFN_vkEnumerateInstanceVersion ev =
+                (PFN_vkEnumerateInstanceVersion)g_gipa(NULL, "vkEnumerateInstanceVersion");
+            if (ev) ev(&api);
+            n += (size_t)snprintf(out + n, sizeof(out) - n, "api %u.%u\n",
+                                  VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api));
+
+            VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "pocketllm-probe", .apiVersion = 0};
+            VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+            VkInstance inst = VK_NULL_HANDLE;
+            VkResult r = g_create_instance(&ci, NULL, &inst);
+            if (r != VK_SUCCESS) {
+                n += (size_t)snprintf(out + n, sizeof(out) - n, "vkCreateInstance failed: %d\n", (int)r);
+                break;
+            }
+            n += (size_t)snprintf(out + n, sizeof(out) - n, "instance ok\n");
+
+            PFN_vkEnumeratePhysicalDevices eps =
+                (PFN_vkEnumeratePhysicalDevices)g_gipa(inst, "vkEnumeratePhysicalDevices");
+            if (!eps) { n += (size_t)snprintf(out + n, sizeof(out) - n, "no EnumeratePhysicalDevices\n"); break; }
+            uint32_t count = 0;
+            r = eps(inst, &count, NULL);
+            if (r != VK_SUCCESS) { n += (size_t)snprintf(out + n, sizeof(out) - n, "enum failed: %d\n", (int)r); break; }
+            n += (size_t)snprintf(out + n, sizeof(out) - n, "devices: %u\n", count);
+            if (count == 0) break;
+            VkPhysicalDevice devs[4];
+            uint32_t c2 = count < 4 ? count : 4;
+            eps(inst, &c2, devs);
+            PFN_vkGetPhysicalDeviceProperties gp =
+                (PFN_vkGetPhysicalDeviceProperties)g_gipa(inst, "vkGetPhysicalDeviceProperties");
+            for (uint32_t i = 0; i < c2; i++) {
+                VkPhysicalDeviceProperties p;
+                gp(devs[i], &p);
+                n += (size_t)snprintf(out + n, sizeof(out) - n, "dev%u: %s api %u.%u\n", i, p.deviceName,
+                                      VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion));
+            }
+        } while (0);
+        write(fds[1], out, n);
+        _exit(0);
+    }
+    /* parent */
+    close(fds[1]);
+    char out[768] = {0};
+    size_t got = 0;
+    ssize_t r;
+    while (got < sizeof(out) - 1 &&
+           (r = read(fds[0], out + got, sizeof(out) - 1 - got)) > 0) got += (size_t)r;
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFSIGNALED(status)) {
+        snprintf(g_probe, sizeof(g_probe), "driver probe CRASHED (signal %d)%s%s\n",
+                 WTERMSIG(status), got ? ":\n" : "", out);
+    } else {
+        snprintf(g_probe, sizeof(g_probe), "driver probe ok:\n%s", out);
+    }
+    return g_probe;
+}
 
 /* ---- Exported entry points (what ggml-vulkan links against) ---- */
 
