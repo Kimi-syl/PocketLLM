@@ -13,8 +13,8 @@ android {
         applicationId = "com.pocketllm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.3.7"
+        versionCode = 17
+        versionName = "0.3.8"
 
         ndk {
             abiFilters += "arm64-v8a"

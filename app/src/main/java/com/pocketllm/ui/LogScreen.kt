@@ -113,6 +113,15 @@ fun LogScreen(vm: AppViewModel, onMenu: () -> Unit) {
                 },
                 modifier = Modifier.weight(1f),
             ) { Text("Clear") }
+            OutlinedButton(
+                onClick = {
+                    val info = runCatching { com.pocketllm.llm.LlamaBridge.backendInfo() }
+                        .getOrElse { "GPU info failed: ${it.message}" }
+                    com.pocketllm.server.PLog.log(info)
+                    Toast.makeText(context, "GPU info appended", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("GPU info") }
         }
 
         Card(
