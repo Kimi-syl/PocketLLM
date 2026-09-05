@@ -158,6 +158,24 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                var turnipOn by remember { mutableStateOf(vm.isTurnipEnabled()) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Turnip GPU driver (experimental)")
+                        Text(
+                            "Open-source Adreno Vulkan driver. May crash on some GPUs; takes effect after app restart.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = turnipOn,
+                        onCheckedChange = {
+                            turnipOn = it
+                            vm.updateTurnipEnabled(it)
+                        },
+                    )
+                }
                 if (gpuInfo.isNotBlank()) {
                     Text(
                         gpuInfo,

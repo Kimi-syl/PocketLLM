@@ -596,6 +596,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { tts.retryPiper() }
     }
 
+    /** Experimental Turnip GPU driver opt-in (off by default; may crash on some GPUs). */
+    fun isTurnipEnabled(): Boolean =
+        java.io.File(context.filesDir, "turnip.on").exists()
+
+    fun updateTurnipEnabled(enabled: Boolean) {
+        val f = java.io.File(context.filesDir, "turnip.on")
+        if (enabled) f.createNewFile() else f.delete()
+        com.pocketllm.server.PLog.log("Turnip driver ${if (enabled) "ENABLED" else "disabled"} (takes effect on app restart)")
+    }
+
     private val _exportMessage = MutableStateFlow<String?>(null)
     val exportMessage: StateFlow<String?> = _exportMessage
 

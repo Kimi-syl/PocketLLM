@@ -11,9 +11,11 @@
  */
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <stdarg.h>
 
 /* Exact AOSP hardware HAL layouts (hardware/libhardware hardware.h, LP64).
@@ -91,7 +93,12 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
     /* Locate our own lib dir (the turnip driver ships next to us). */
     Dl_info info;
     void *self = (void *)&vulkan_shim_init;
-    if (dladdr(self, &info) && info.dli_fname) {
+    /* Turnip is opt-in: it segfaults on some GPUs (e.g. Adreno 610), and a
+     * native crash cannot be caught in-process. Only load it when the app
+     * settings created the flag file. */
+    int turnip_enabled = access("/data/data/com.pocketllm/files/turnip.on", F_OK) == 0;
+    diagf("turnip opt-in flag: %s\n", turnip_enabled ? "on" : "off (default)");
+    if (dladdr(self, &info) && info.dli_fname && turnip_enabled) {
         char path[512];
         snprintf(path, sizeof(path), "%s", info.dli_fname);
         char *slash = strrchr(path, '/');
@@ -125,6 +132,8 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
         } else {
             diagf("dladdr path has no slash\n");
         }
+    } else if (!turnip_enabled) {
+        diagf("turnip skipped: disabled\n");
     } else {
         diagf("dladdr failed\n");
     }
