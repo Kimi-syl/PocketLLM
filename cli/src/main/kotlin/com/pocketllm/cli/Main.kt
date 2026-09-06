@@ -90,8 +90,16 @@ private fun parseOpts(args: List<String>): Map<String, String> {
     while (i < args.size) {
         val a = args[i]
         if (a.startsWith("--")) {
-            out[a.removePrefix("--")] = args.getOrNull(i + 1) ?: ""
-            i += 2
+            // Only consume the next token as a value when it isn't another
+            // flag: "--model --threads 4" must not swallow --threads.
+            val next = args.getOrNull(i + 1)
+            if (next != null && !next.startsWith("--")) {
+                out[a.removePrefix("--")] = next
+                i += 2
+            } else {
+                out[a.removePrefix("--")] = ""
+                i++
+            }
         } else {
             i++
         }
@@ -115,7 +123,7 @@ private fun loadModelOrExit(path: String, opts: Map<String, String>) {
             }
             else -> Unit
         }
-        } catch (e: LinkageError) {
+        } catch (e: Throwable) {
             System.err.println("native library failed to load: ${e.message}")
             System.err.println("set POCKETLLM_NATIVE_LIB to your libpocketllm.so (see build-native-desktop.sh)")
             exitProcess(1)
@@ -297,7 +305,12 @@ private suspend fun handleChat(call: ApplicationCall) {
 
     if (req.stream) {
         call.respondTextWriter(contentType = ContentType.parse("text/event-stream")) {
+            // Write to a closed client socket throws IOException (broken pipe);
+            // track it so the generation loop can stop instead of burning
+            // maxTokens into a dead connection.
+            val clientGone = java.util.concurrent.atomic.AtomicBoolean(false)
             fun send(delta: Delta, finishReason: String?) {
+                if (clientGone.get()) return
                 val payload = json.encodeToString(
                     StreamChunk(
                         id = completionId,
@@ -306,12 +319,20 @@ private suspend fun handleChat(call: ApplicationCall) {
                         choices = listOf(StreamChoice(index = 0, delta = delta, finishReason = finishReason)),
                     )
                 )
-                write("data: $payload\n\n")
-                flush()
+                try {
+                    write("data: $payload\n\n")
+                    flush()
+                } catch (e: java.io.IOException) {
+                    clientGone.set(true)
+                }
             }
             send(Delta(role = "assistant", content = ""), null)
             val collected = StringBuilder()
             val result = LlamaEngine.generate(prompt, params) { token ->
+                if (clientGone.get()) {
+                    LlamaEngine.requestStop()
+                    return@generate
+                }
                 collected.append(token)
                 send(Delta(content = token), null)
             }

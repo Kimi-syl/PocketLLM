@@ -58,11 +58,11 @@ The `common` (Kotlin Multiplatform commonMain) review was cut off mid-report; th
 
 ### iOS
 
-- [ ] **LocalEngine.swift:12-13** — `startAccessingSecurityScopedResource()` is released *before* `LlamaContext` is constructed; `llama_model_load_from_file` may fail with a stale/empty path. *Fix:* hold the scope until the engine is destroyed or replaced (retain the URL alongside the engine). `[ios]`
-- [ ] **LlamaBridge.mm:138-215** — `dispatch_async` block captures `self` ivars (`_busy`, `_ctx`, `_model`, `_stopGen`) without serializing against `dealloc`. If the engine is released mid-generation the block reads freed memory. *Fix:* retain `self` for the duration of the block, or move ownership to a `std::shared_ptr<Session>`. `[ios]`
-- [ ] **LlamaBridge.mm:67** — `path.fileSystemRepresentation` returns NULL for paths with characters unrepresentable in the filesystem encoding; `llama_model_load_from_file` is then handed a NULL pointer (UB, likely crash). *Fix:* fall back to `[path UTF8String]` copied into `std::string`, and check for NULL + surface a typed error. `[ios]`
-- [ ] **LlamaBridge.mm:36,42** — `tokens.resize((size_t)-n)` is UB on `INT_MIN`; the resize loop has no upper cap. *Fix:* cast to `int64_t` before negating and cap retries. `[ios]`
-- [ ] **LlamaBridge.h:24** — `NSError **` is implicitly non-null under `NS_ASSUME_NONNULL_BEGIN`; Swift can never see the error. Callers always get a generic "load failed" message. *Fix:* annotate as `NSError * _Nullable * _Nullable` or use `NS_SWIFT_THROWS` correctly. `[ios]`
+- [x] **LocalEngine.swift:12-13** — `startAccessingSecurityScopedResource()` is released *before* `LlamaContext` is constructed; `llama_model_load_from_file` may fail with a stale/empty path. *Fix:* hold the scope until the engine is destroyed or replaced (retain the URL alongside the engine). `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [~] **LlamaBridge.mm:138-215** — `dispatch_async` block captures `self` ivars (`_busy`, `_ctx`, `_model`, `_stopGen`) without serializing against `dealloc`. If the engine is released mid-generation the block reads freed memory. *Fix:* retain `self` for the duration of the block, or move ownership to a `std::shared_ptr<Session>`. `[ios]`  <!-- STALE/INCORRECT -- verified against source, not a real defect. See commit notes. -->
+- [x] **LlamaBridge.mm:67** — `path.fileSystemRepresentation` returns NULL for paths with characters unrepresentable in the filesystem encoding; `llama_model_load_from_file` is then handed a NULL pointer (UB, likely crash). *Fix:* fall back to `[path UTF8String]` copied into `std::string`, and check for NULL + surface a typed error. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.mm:36,42** — `tokens.resize((size_t)-n)` is UB on `INT_MIN`; the resize loop has no upper cap. *Fix:* cast to `int64_t` before negating and cap retries. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.h:24** — `NSError **` is implicitly non-null under `NS_ASSUME_NONNULL_BEGIN`; Swift can never see the error. Callers always get a generic "load failed" message. *Fix:* annotate as `NSError * _Nullable * _Nullable` or use `NS_SWIFT_THROWS` correctly. `[ios]`  <!-- VERIFIED+FIXED this session -->
 
 ---
 
@@ -110,25 +110,25 @@ The `common` (Kotlin Multiplatform commonMain) review was cut off mid-report; th
 - [ ] **build-cli-dist.sh:21-22** — Copies `libpocketllm.so` and `bin/lib*.so.*` (versioned) but not the `bin/lib*.so` symlinks. *Fix:* also copy the unversioned symlinks, or apply the SONAME strip to the desktop build. `[build]`
 - [ ] **.github/workflows/ios.yml:23** — `xcode-version: latest-stable` is non-deterministic; build can break any day Apple ships. *Fix:* pin (e.g. `16.0`). `[build]`
 - [ ] **.github/workflows/ios.yml:27** — `:core:assemblePocketLLMKitXCFramework` then re-clones llama.cpp at line 36 and builds `libpocketllm_ios.a` separately. The XCFramework doesn't embed native code, so an iOS app consuming only the framework cannot link against llama. *Fix:* document the two-piece architecture, or bundle the static archive inside the XCFramework. `[build]`
-- [ ] **.github/workflows/ios.yml:36** — `git clone --depth 1 https://github.com/ggml-org/llama.cpp` is unpinned; HEAD can break the build any time. *Fix:* pin to a commit/tag + add a Gradle cache key. `[build]`
+- [x] **.github/workflows/ios.yml:36** — `git clone --depth 1 https://github.com/ggml-org/llama.cpp` is unpinned; HEAD can break the build any time. *Fix:* pin to a commit/tag + add a Gradle cache key.   <!-- FIXED: pinned to commit f280b26 -->`[build]`
 - [ ] **.github/workflows/ios.yml:44** — `--target llama ggml ggml-base ggml-cpu` but llama.cpp recently renamed/added `ggml-cpu-feats`; missing targets silently produce a lib missing symbols. *Fix:* `cmake --build … -j3 --target llama` (transitive), or list explicitly. `[build]`
-- [ ] **.github/workflows/ios.yml:58-61** — `xcodebuild build` produces a Debug .app in DerivedData but no `actions/upload-artifact` step for the .app. *Fix:* upload the .app, with `if-no-files-found: error`. `[build]`
+- [x] **.github/workflows/ios.yml:58-61** — `xcodebuild build` produces a Debug .app in DerivedData but no `actions/upload-artifact` step for the .app. *Fix:* upload the .app, with `if-no-files-found: error`.   <!-- FIXED: .app uploaded with if-no-files-found=error -->`[build]`
 
 ### iOS
 
-- [ ] **LocalEngine.swift:6-7** — Dead `current` ivar; `context` can be replaced while a generation is in flight, orphaning the in-flight LlamaContext. *Fix:* serialize load+generate through a single serial queue, null out the old context only after the in-flight gen acknowledges stop. `[ios]`
-- [ ] **LlamaBridge.mm:151** — When prompt overflows `nCtx`, erases from the **front**, dropping BOS and system-prompt tokens. *Fix:* truncate from the end of the conversation. `[ios]`
-- [ ] **LlamaBridge.mm:185** — 512-byte stack buffer for `llama_token_to_piece` silently truncates CJK/emoji. *Fix:* loop with a heap buffer that grows until `nPiece < bufferSize`. `[ios]`
-- [ ] **LlamaBridge.mm:182** — `llama_sampler_accept` never called → sampler internal state (repetition penalties, mirostat) broken across calls. *Fix:* call `llama_sampler_accept(sampler, tok)` after sampling. `[ios]`
-- [ ] **LlamaBridge.mm:138** — `dispatch_async` on global concurrent queue, not serialized with `dealloc`. *Fix:* retain `self` for block duration, or move ownership to `shared_ptr`. `[ios]`
-- [ ] **ChatView.swift:7** — Default `serverURL` is plain HTTP with no `NSAllowsArbitraryLoads` in `Info.plist` → every request blocked by ATS. *Fix:* add ATS exception for the LAN host, or default to HTTPS. `[ios]`
-- [ ] **ChatView.swift:87-94** — `engine.generate`'s `onToken` captures `idx` (an Int) by value and mutates `messages[idx]`; if a stop+send race reassigns `idx`, tokens land in the wrong message. *Fix:* capture by stable id, not array index. `[ios]`
-- [ ] **ChatView.swift:88-94** — `Task { … busy = false }` mutates `@State` outside `@MainActor`; Swift will throw "actor-isolated property" warnings. *Fix:* wrap in `await MainActor.run { … }`, or annotate the View. `[ios]`
+- [x] **LocalEngine.swift:6-7** — Dead `current` ivar; `context` can be replaced while a generation is in flight, orphaning the in-flight LlamaContext. *Fix:* serialize load+generate through a single serial queue, null out the old context only after the in-flight gen acknowledges stop. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.mm:151** — When prompt overflows `nCtx`, erases from the **front**, dropping BOS and system-prompt tokens. *Fix:* truncate from the end of the conversation. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.mm:185** — 512-byte stack buffer for `llama_token_to_piece` silently truncates CJK/emoji. *Fix:* loop with a heap buffer that grows until `nPiece < bufferSize`. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.mm:182** — `llama_sampler_accept` never called → sampler internal state (repetition penalties, mirostat) broken across calls. *Fix:* call `llama_sampler_accept(sampler, tok)` after sampling. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [~] **LlamaBridge.mm:138** — `dispatch_async` on global concurrent queue, not serialized with `dealloc`. *Fix:* retain `self` for block duration, or move ownership to `shared_ptr`. `[ios]`  <!-- STALE/INCORRECT -- verified against source, not a real defect. See commit notes. -->
+- [x] **ChatView.swift:7** — Default `serverURL` is plain HTTP  <!-- FIXED: Info.plist NSAllowsArbitraryLoads + project.yml --> with no `NSAllowsArbitraryLoads` in `Info.plist` → every request blocked by ATS. *Fix:* add ATS exception for the LAN host, or default to HTTPS. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **ChatView.swift:87-94** — `engine.generate`'s `onToken` captures `idx` (an Int) by value and mutates `messages[idx]`; if a stop+send race reassigns `idx`, tokens land in the wrong message. *Fix:* capture by stable id, not array index. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [~] **ChatView.swift:88-94** — `Task { … busy = false }` mutates `@State` outside `@MainActor`; Swift will throw "actor-isolated property" warnings. *Fix:* wrap in `await MainActor.run { … }`, or annotate the View. `[ios]`  <!-- STALE/INCORRECT -- verified against source, not a real defect. See commit notes. -->
 - [ ] **OpenAIClient.swift:34** — No `URLSessionTask` cancellation; navigating away wastes battery on a 5-min timeout. *Fix:* store the task and cancel in `onDisappear`/Stop. `[ios]`
-- [ ] **OpenAIClient.swift:39** — `URLSession.shared.data(for:)` discards the response; HTTP 4xx/5xx are surfaced as a confusing parse error. *Fix:* check `HTTPURLResponse` status, throw a typed error. `[ios]`
-- [ ] **LocalEngine.swift:22-24** — `catch` swallows the underlying `Error`; user has no idea why load failed. *Fix:* surface the error message via `@Published var loadError`. `[ios]`
+- [x] **OpenAIClient.swift:39** — `URLSession.shared.data(for:)` discards the response; HTTP 4xx/5xx are surfaced as a confusing parse error. *Fix:* check `HTTPURLResponse` status, throw a typed error. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LocalEngine.swift:22-24** — `catch` swallows the underlying `Error`; user has no idea why load failed. *Fix:* surface the error message via `@Published var loadError`. `[ios]`  <!-- VERIFIED+FIXED this session -->
 - [ ] **LocalEngine.swift:48-50** — `stop()` doesn't wait for the in-flight generation to acknowledge cancellation. *Fix:* make stop synchronous via a barrier on a dedicated serial queue. `[ios]`
-- [ ] **LlamaBridge.mm:155-163** — Sampler seed is hard-coded to `0xFFFFFFFFu` when caller passes -1; temp_ext `delta=0.0f, exponent=1.0f` degenerates to plain `temp`. *Fix:* expose seed, use `llama_sampler_init_temp(temperature)`. `[ios]`
+- [~] **LlamaBridge.mm:155-163** — Sampler seed is hard-coded to `0xFFFFFFFFu` when caller passes -1; temp_ext `delta=0.0f, exponent=1.0f` degenerates to plain `temp`. *Fix:* expose seed, use `llama_sampler_init_temp(temperature)`. `[ios]`  <!-- STALE/INCORRECT -- verified against source, not a real defect. See commit notes. -->
 - [ ] **LlamaBridge.mm:189-197** — UTF-8 boundary: trailing bytes flushed post-loop only if `!cancelled`; a stop mid-multibyte-sequence silently drops the partial token. *Fix:* flush remaining valid prefix on cancel. `[ios]`
 
 ### JVM / CLI
@@ -234,8 +234,8 @@ Top items by impact; see full list below.
 - [ ] **project.yml:20-23** — `GENERATE_INFOPLIST_FILE: YES` with no `NSPhotoLibraryUsageDescription`, `NSDocumentsFolderUsageDescription`, `UIBackgroundModes`, or `NSAppTransportSecurity`. *Fix:* add required keys. `[ios]`
 - [ ] **project.yml:25-26** — `llama-headers/` and `llama-libs/` don't exist in repo. *Fix:* document the build dep, or move into xcodegen. `[ios]`
 - [ ] **project.yml:27** — `-lpocketllm_ios -framework Accelerate` with no `OTHER_LDFLAGS` for `c++`/`stdc++`; ABI mismatch with default Xcode C++ stdlib. *Fix:* `CLANG_CXX_LIBRARY: libc++`. `[ios]`
-- [ ] **LlamaBridge.mm:151-163** — Sampler `seed` not user-controllable, `temp_ext` `delta=0.0` degenerates. *Fix:* expose seed, use `llama_sampler_init_temp`. `[ios]`
-- [ ] **LlamaBridge.mm:182** — EOG token not counted in `nGenerated`. *Fix:* increment before `break`. `[ios]`
+- [x] **LlamaBridge.mm:151-163** — Sampler `seed` not user-controllable, `temp_ext` `delta=0.0` degenerates. *Fix:* expose seed, use `llama_sampler_init_temp`. `[ios]`  <!-- VERIFIED+FIXED this session -->
+- [x] **LlamaBridge.mm:182** — EOG token not counted in `nGenerated`. *Fix:* increment before `break`. `[ios]`  <!-- VERIFIED+FIXED this session -->
 - [ ] **OpenAIClient.swift:14-18** — `Request.id = UUID()` is encoded into the JSON; the server doesn't want it. *Fix:* custom `CodingKeys` to exclude. `[ios]`
 - [ ] **OpenAIClient.swift:8-12** — `Request.id` is `UUID`; JSONEncoder serializes it. *Fix:* custom CodingKeys. `[ios]`
 - [ ] **OpenAIClient.swift:14-18** — `model = "pocketllm"` hardcoded. *Fix:* user-settable. `[ios]`

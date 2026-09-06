@@ -92,7 +92,13 @@ object ServerLog {
         }.getOrNull()
     }
 
+    @Volatile private var initialized = false
+
     fun init(context: Context) {
+        // Idempotent: MainActivity and AppViewModel both call this; a second
+        // call must NOT clobber in-memory lines by re-reading the file.
+        if (initialized) { appContext = context.applicationContext; return }
+        initialized = true
         appContext = context.applicationContext
         // Load any previously-persisted log lines so the Logs screen shows
         // history from prior runs, not just the current session.

@@ -64,15 +64,17 @@ object WebSearch {
             .header("Accept-Language", "en-US,en;q=0.9")
             .build()
         val response = client.newCall(request).execute()
-        val body = response.body?.string().orEmpty()
+        // Check status BEFORE reading the body — an error page parsed as
+        // results silently reports "0 results" instead of failing loudly.
+        val body = response.use {
+            check(it.isSuccessful) { "HTTP ${it.code}" }
+            it.body?.string().orEmpty()
+        }
         PLog.log("WebSearch DDG response: ${response.code}, body length: ${body.length}")
         if (body.length < 200) {
             PLog.log("WebSearch DDG body too short: $body")
         }
-        response.use {
-            check(it.isSuccessful) { "HTTP ${it.code}" }
-            parseDdgHtml(body, maxResults)
-        }
+        parseDdgHtml(body, maxResults)
     }.onFailure {
         PLog.error("WebSearch DDG", it)
     }.getOrDefault(emptyList())
@@ -80,7 +82,7 @@ object WebSearch {
     private fun parseDdgHtml(html: String, maxResults: Int): List<WebResult> {
         val anchorRegex = Regex("""<a[^>]*class=['"]result-link['"][^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
         val anchorRegex2 = Regex("""<a[^>]*href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
-        val snippetRegex = Regex("""class=['"]result-snippet['"][^>]*>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL)
+        val snippetRegex = Regex("""class=['"]result-snippet['"][^>]*>(.*?)</(?:td|span|div)""", RegexOption.DOT_MATCHES_ALL)
 
         val anchors = (anchorRegex.findAll(html) + anchorRegex2.findAll(html))
             .map { extractDdgUrl(it.groupValues[1]) to stripTags(it.groupValues[2]) }

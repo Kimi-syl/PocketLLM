@@ -34,14 +34,20 @@ size_t utf8SequenceLength(unsigned char lead) {
 
 std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &text) {
     std::vector<llama_token> tokens(std::max(text.size() / 2u + (size_t)256, (size_t)256));
-    int n = -1;
-    while (true) {
-        n = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
-                           tokens.data(), (int32_t)tokens.size(), true, true);
-        if (n >= 0) break;
-        tokens.resize((size_t)(-n));
+    // llama_tokenize returns the required size negated. Negating INT_MIN is UB,
+    // so do the negation in 64-bit and cap the grow loop.
+    for (int guard = 0; guard < 8; guard++) {
+        const int n = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
+                                     tokens.data(), (int32_t)tokens.size(), true, true);
+        if (n >= 0) {
+            tokens.resize((size_t)n);
+            return tokens;
+        }
+        const int64_t need = -(int64_t)n;
+        if (need <= (int64_t)tokens.size()) break; // pathological; bail
+        tokens.resize((size_t)need);
     }
-    tokens.resize((size_t)n);
+    tokens.clear();
     return tokens;
 }
 
@@ -62,9 +68,15 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     self = [super init];
     if (!self) return nil;
 
+    const char *cpath = path.fileSystemRepresentation; // NULL for unrepresentable names
+    if (cpath == NULL) {
+        if (error) *error = [NSError errorWithDomain:@"PocketLLM" code:2
+            userInfo:@{NSLocalizedDescriptionKey: @"model path not representable in filesystem encoding"}];
+        return nil;
+    }
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0; // CPU-only on iOS for now
-    _model = llama_model_load_from_file(path.fileSystemRepresentation, mparams);
+    _model = llama_model_load_from_file(cpath, mparams);
     if (_model == nullptr) {
         if (error) *error = [NSError errorWithDomain:@"PocketLLM" code:1
             userInfo:@{NSLocalizedDescriptionKey: @"failed to load model"}];
@@ -147,9 +159,20 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         std::vector<llama_token> tokens = tokenize(vocab, text);
         int nPrompt = (int)tokens.size();
         if (nPrompt >= nCtx) {
-            size_t overflow = tokens.size() - (size_t)(nCtx - 16);
-            tokens.erase(tokens.begin(), tokens.begin() + (long)overflow);
-            nPrompt = (int)tokens.size();
+            const int keep = nCtx - 16;
+            if (keep <= 0) {
+                nPrompt = 0; // degenerate context; decode check below fails cleanly
+            } else {
+                // Preserve the leading BOS token; drop the oldest middle tokens
+                // instead of blindly erasing from the front (which removed BOS
+                // and the system prompt).
+                const size_t start = (!tokens.empty() && tokens.front() == llama_vocab_bos(vocab)) ? 1 : 0;
+                const size_t overflow = tokens.size() - (size_t)keep;
+                if (overflow > 0 && start + overflow < tokens.size()) {
+                    tokens.erase(tokens.begin() + (long)start, tokens.begin() + (long)(start + overflow));
+                }
+                nPrompt = (int)tokens.size();
+            }
         }
 
         llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -180,11 +203,20 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 
             llama_token tok = llama_sampler_sample(sampler, self->_ctx, -1);
             if (llama_vocab_is_eog(vocab, tok)) break;
+            // Feed the accepted token back so penalty/mirostat samplers track
+            // state across calls. llama_sampler_sample does NOT do this itself.
+            llama_sampler_accept(sampler, tok);
 
-            char piece[512];
-            int nPiece = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
+            // Grow the buffer until the piece fits: a fixed 512-byte stack
+            // buffer silently truncates long CJK/emoji/multi-codepoint pieces.
+            std::vector<char> pieceBuf(64);
+            int nPiece = llama_token_to_piece(vocab, tok, pieceBuf.data(), (int)pieceBuf.size(), 0, true);
+            if (nPiece > (int)pieceBuf.size()) {
+                pieceBuf.resize((size_t)nPiece);
+                nPiece = llama_token_to_piece(vocab, tok, pieceBuf.data(), (int)pieceBuf.size(), 0, true);
+            }
             if (nPiece > 0) {
-                pending.append(piece, (size_t)nPiece);
+                pending.append(pieceBuf.data(), (size_t)nPiece);
                 size_t offset = 0;
                 while (offset < pending.size()) {
                     size_t seq = utf8SequenceLength((unsigned char)pending[offset]);

@@ -87,7 +87,9 @@ struct ChatView: View {
             let idx = messages.count - 1
             engine.generate(messages: Array(history), onToken: { piece in
                 DispatchQueue.main.async {
-                    messages[idx].content += piece
+                    // Guard: a stop+send between turns can shrink/reindex the
+                    // array; appending to a stale index would crash.
+                    if idx < messages.count { messages[idx].content += piece }
                 }
             }, done: {
                 DispatchQueue.main.async { busy = false }

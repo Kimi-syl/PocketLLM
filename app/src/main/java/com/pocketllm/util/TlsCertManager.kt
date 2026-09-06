@@ -75,6 +75,12 @@ object TlsCertManager {
             keyPair.public,
         )
             .addExtension(Extension.subjectAlternativeName, false, GeneralNames(sans.toTypedArray()))
+            // CA=true, pathLen=0 — intentional. Clients (curl, requests, other
+            // OpenAI apps) install this cert as a trust anchor so they can verify
+            // the self-signed server without disabling TLS checks, which requires
+            // the CA flag. This is safe because the private key NEVER leaves
+            // filesDir: only the public DER is ever handed out, and pathLen=0
+            // stops it issuing further CAs. Nothing here can MitM other hosts.
             .addExtension(Extension.basicConstraints, true,
                 org.bouncycastle.asn1.x509.BasicConstraints(0))  // CA=true, pathLen=0
             .build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))

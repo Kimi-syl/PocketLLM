@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -18,7 +19,7 @@ struct Session {
 };
 
 std::mutex gMutex;
-std::unordered_map<long long, Session*> gSessions;
+std::unordered_map<long long, std::shared_ptr<Session>> gSessions;
 long long gNextId = 1;
 
 static std::mutex gLogMutex;
@@ -44,24 +45,18 @@ std::string toStdString(JNIEnv* env, jstring js) {
     return out;
 }
 
-Session* findSession(jlong id) {
+std::shared_ptr<Session> findSession(jlong id) {
     std::lock_guard<std::mutex> lock(gMutex);
     auto it = gSessions.find(static_cast<long long>(id));
     return it == gSessions.end() ? nullptr : it->second;
 }
 
+// The session owns the llama resources via a shared_ptr custom deleter, so a
+// session can be dropped while a generation still holds a reference: the
+// context/model are freed only when the last user is done.
 void dropSession(jlong id) {
-    Session* s = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(gMutex);
-        auto it = gSessions.find(static_cast<long long>(id));
-        if (it == gSessions.end()) return;
-        s = it->second;
-        gSessions.erase(it);
-    }
-    if (s->ctx != nullptr) llama_free(s->ctx);
-    if (s->model != nullptr) llama_model_free(s->model);
-    delete s;
+    std::lock_guard<std::mutex> lock(gMutex);
+    gSessions.erase(static_cast<long long>(id));
 }
 
 size_t utf8SequenceLength(unsigned char lead) {
@@ -151,7 +146,11 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
         return -1;
     }
 
-    Session* session = new Session();
+    auto session = std::shared_ptr<Session>(new Session(), [](Session* s) {
+        if (s->ctx != nullptr) llama_free(s->ctx);
+        if (s->model != nullptr) llama_model_free(s->model);
+        delete s;
+    });
     session->model = model;
     session->ctx = ctx;
 
@@ -168,7 +167,7 @@ Java_com_pocketllm_llm_LlamaBridge_freeModel(JNIEnv*, jobject, jlong id) {
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_pocketllm_llm_LlamaBridge_contextLength(JNIEnv*, jobject, jlong id) {
-    Session* session = findSession(id);
+    auto session = findSession(id);
     if (session == nullptr) return 0;
     return static_cast<jint>(llama_n_ctx(session->ctx));
 }
@@ -176,7 +175,7 @@ Java_com_pocketllm_llm_LlamaBridge_contextLength(JNIEnv*, jobject, jlong id) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pocketllm_llm_LlamaBridge_applyChatTemplate(JNIEnv* env, jobject, jlong id,
                                                      jobjectArray roles, jobjectArray contents) {
-    Session* session = findSession(id);
+    auto session = findSession(id);
     if (session == nullptr) return env->NewStringUTF("");
 
     jsize count = env->GetArrayLength(roles);
@@ -216,7 +215,7 @@ Java_com_pocketllm_llm_LlamaBridge_applyChatTemplate(JNIEnv* env, jobject, jlong
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_pocketllm_llm_LlamaBridge_stopGeneration(JNIEnv*, jobject, jlong id) {
-    Session* session = findSession(id);
+    auto session = findSession(id);
     if (session != nullptr) session->stopGen.store(true);
 }
 
@@ -224,7 +223,7 @@ extern "C" JNIEXPORT jintArray JNICALL
 Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstring jPrompt,
                                             jint maxNewTokens, jfloat temperature, jfloat topP,
                                             jint topK, jlong seed, jstring jGrammar, jobject sink) {
-    Session* session = findSession(id);
+    auto session = findSession(id);
     if (session == nullptr) return nullptr;
     if (!session->busy.try_lock()) return nullptr;
     struct BusyUnlock {
@@ -258,16 +257,33 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
     tokens.resize(static_cast<size_t>(nPrompt));
 
     if (nPrompt >= nCtx) {
-        size_t overflow = tokens.size() - static_cast<size_t>(nCtx - 16);
-        tokens.erase(tokens.begin(), tokens.begin() + static_cast<long>(overflow));
-        nPrompt = static_cast<int>(tokens.size());
+        const int keep = nCtx - 16;
+        if (keep <= 0) {
+            nPrompt = 0; // degenerate context; the decode check below fails cleanly
+        } else {
+            // Preserve the leading BOS token; drop the oldest middle tokens.
+            const size_t start =
+                (!tokens.empty() && tokens.front() == llama_vocab_bos(vocab)) ? 1 : 0;
+            const size_t overflow = tokens.size() - static_cast<size_t>(keep);
+            if (overflow > 0 && start + overflow < tokens.size()) {
+                tokens.erase(tokens.begin() + static_cast<long>(start),
+                             tokens.begin() + static_cast<long>(start + overflow));
+            }
+            nPrompt = static_cast<int>(tokens.size());
+        }
     }
 
     jclass sinkClass = env->GetObjectClass(sink);
     jmethodID onTokenMethod = env->GetMethodID(sinkClass, "onToken", "([B)Z");
+    env->DeleteLocalRef(sinkClass);
     if (onTokenMethod == nullptr) return nullptr;
 
     llama_sampler* sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    // Grammar goes FIRST: chain samplers act on the candidate array in order,
+    // so grammar masks out disallowed tokens and the trailing greedy/dist
+    // sampler then picks among the survivors. (Appending grammar after greedy
+    // would be worse: greedy's p=1.0 marker survives and grammar's mask is
+    // ignored.) This matches llama.cpp's own server chain layout.
     if (grammarC != nullptr) {
         llama_sampler_chain_add(sampler, llama_sampler_init_grammar(vocab, grammarC, "root"));
     }
@@ -292,6 +308,7 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
 
     auto invokeSink = [&](const char* data, size_t len) -> bool {
         jbyteArray chunk = env->NewByteArray(static_cast<jsize>(len));
+        if (chunk == nullptr || env->ExceptionCheck()) return false;
         env->SetByteArrayRegion(chunk, 0, static_cast<jsize>(len),
                                 reinterpret_cast<const jbyte*>(data));
         jboolean keepGoing = env->CallBooleanMethod(sink, onTokenMethod, chunk);

@@ -21,7 +21,7 @@ void LlamaGlobalInit(void);
                                contextSize:(int32_t)contextSize
                                  batchSize:(int32_t)batchSize
                                    threads:(int)threads
-                                     error:(NSError **)error;
+                    error:(NSError * _Nullable * _Nullable)error;
 
 /// messages: array of @[role, content] pairs; returns the rendered prompt.
 - (nullable NSString *)applyTemplate:(NSArray<NSArray<NSString *> *> *)messages;

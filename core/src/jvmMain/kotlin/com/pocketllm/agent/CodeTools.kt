@@ -33,6 +33,11 @@ class WriteFileTool(private val sandboxDir: File) : AgentTool {
         val relPath = (args["path"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
         if (relPath.isBlank()) return@withContext ToolResult.Error("path must not be empty")
         if (relPath.contains("..")) return@withContext ToolResult.Error("path may not contain '..'")
+        // Canonical containment check: symlinks/absolute tricks can't escape the sandbox.
+        val canonicalSandbox = sandboxDir.canonicalPath
+        val resolved = java.io.File(sandboxDir, relPath).canonicalPath
+        if (resolved != canonicalSandbox && !resolved.startsWith(canonicalSandbox + java.io.File.separator))
+            return@withContext ToolResult.Error("path escapes the sandbox")
         val content = (args["content"] as? JsonPrimitive)?.contentOrNull.orEmpty()
 
         try {
@@ -94,19 +99,35 @@ class RunCodeTool(private val sandboxDir: File) : AgentTool {
         val env = pb.environment()
         env["PYTHONUNBUFFERED"] = "1"
         val proc = pb.start()
+        // Drain stdout/stderr concurrently BEFORE waitFor: a child that prints
+        // more than the 64 KB pipe buffer deadlocks against waitFor otherwise.
+        val outBuf = StringBuilder()
+        val errBuf = StringBuilder()
+        val outThread = Thread {
+            runCatching { proc.inputStream.bufferedReader().forEachLine { l ->
+                if (outBuf.length < 16000) outBuf.appendLine(l)
+            } }
+        }.also { it.isDaemon = true; it.start() }
+        val errThread = Thread {
+            runCatching { proc.errorStream.bufferedReader().forEachLine { l ->
+                if (errBuf.length < 8000) errBuf.appendLine(l)
+            } }
+        }.also { it.isDaemon = true; it.start() }
         val finished = proc.waitFor(timeoutS.toLong(), java.util.concurrent.TimeUnit.SECONDS)
         if (!finished) {
             proc.destroyForcibly()
             return@withContext ToolResult.Execution(
                 command = fullCommand,
-                stdout = proc.inputStream.bufferedReader().readText().take(4000),
+                stdout = outBuf.toString().take(4000),
                 stderr = "Timed out after ${timeoutS}s",
                 exitCode = -1,
                 summary = "Timed out after ${timeoutS}s",
             )
         }
-        val stdout = proc.inputStream.bufferedReader().readText()
-        val stderr = proc.errorStream.bufferedReader().readText()
+        outThread.join(2000)
+        errThread.join(2000)
+        val stdout = outBuf.toString()
+        val stderr = errBuf.toString()
         val out = if (stdout.length > 12000) stdout.substring(0, 12000) + "\n[truncated]" else stdout
         val err = if (stderr.length > 4000) stderr.substring(0, 4000) + "\n[truncated]" else stderr
         ToolResult.Execution(

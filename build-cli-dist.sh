@@ -8,7 +8,8 @@ if [ -f /opt/tenv.sh ]; then . /opt/tenv.sh; fi
 JAVA_HOME=${JAVA_HOME:-/opt/jdk17}
 BUILD_DIR=build-native-desktop
 INSTALL=cli/build/install/cli
-VERSION=$(git describe --tags 2>/dev/null || echo 0.3.0)
+VERSION=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/' || true)
+VERSION=${VERSION:-$(git describe --tags 2>/dev/null || echo 0.0.0)}
 OUT="pocketllm-$VERSION-linux-aarch64"
 STAGE="build-cli-dist/$OUT"
 
@@ -37,6 +38,9 @@ cat > "$STAGE/bin/pocketllm" <<'WEOF'
 #!/bin/sh
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export POCKETLLM_NATIVE_LIB="$DIR/lib/libpocketllm.so"
+# Belt and braces: libpocketllm has $ORIGIN RUNPATH, but resolve its NEEDED
+# libs (libllama etc.) via LD_LIBRARY_PATH too for older loaders.
+export LD_LIBRARY_PATH="$DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$DIR/runtime/bin/java" -Xss2m -cp "$DIR/lib/*" com.pocketllm.cli.MainKt "$@"
 WEOF
 chmod +x "$STAGE/bin/pocketllm"

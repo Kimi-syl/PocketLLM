@@ -55,8 +55,13 @@ class ApiKeyRepository(context: Context) {
         if (raw.isNullOrBlank()) return@withLock null
         val entries = load()
         val hit = entries.firstOrNull { it.key == raw && it.enabled } ?: return@withLock null
-        hit.lastUsedAt = System.currentTimeMillis()
-        save(entries)
+        // Persist lastUsedAt lazily (at most ~once a minute) — rewriting the
+        // JSON file on every authenticated request is pure I/O waste.
+        val now = System.currentTimeMillis()
+        if (now - hit.lastUsedAt > 60_000) {
+            hit.lastUsedAt = now
+            save(entries)
+        }
         hit
     }
 

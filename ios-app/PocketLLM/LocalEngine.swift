@@ -4,23 +4,36 @@ import Foundation
 final class LocalEngine: ObservableObject {
     @Published var state: String = "no model loaded"
     private var context: LlamaContext?
-    private var current: LlamaContext?
+    // Security scope is held for the context's whole lifetime: llama.cpp mmaps
+    // the model file, so pages can fault in long after load() returns; stopping
+    // the scope early can make later page-ins fail.
+    private var securedURL: URL?
+    private var securedActive = false
+
+    private func releaseSecurityScope() {
+        if securedActive { securedURL?.stopAccessingSecurityScopedResource() }
+        securedActive = false
+        securedURL = nil
+    }
 
     func load(url: URL, contextSize: Int32, threads: Int) {
         state = "loading…"
         LlamaGlobalInit()
+        releaseSecurityScope() // drop the previous model's scope, if any
         let securityScoped = url.startAccessingSecurityScopedResource()
-        defer { if securityScoped { url.stopAccessingSecurityScopedResource() } }
+        securedURL = url
+        securedActive = securityScoped
         do {
             let ctx = try LlamaContext(modelPath: url.path,
                                        contextSize: contextSize,
                                        batchSize: 2048,
                                        threads: Int32(threads))
             context = ctx
-            current = ctx
             state = "ready (ctx=\(ctx.contextLength))"
         } catch {
-            state = "load failed"
+            releaseSecurityScope()
+            // Surface the real reason — "load failed" gave users nothing.
+            state = "load failed: \(error.localizedDescription)"
         }
     }
 

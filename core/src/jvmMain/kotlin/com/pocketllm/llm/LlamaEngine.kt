@@ -127,7 +127,7 @@ object LlamaEngine : ChatEngine {
                 null
             }
             PLog.log("generate: JNI returned, promptLen=${prompt.length} → counts=${counts?.toList()}")
-            counts?.let { GenResult(it[0], it[1], userStop.get()) }
+            counts?.takeIf { it.size >= 2 }?.let { GenResult(it[0], it[1], userStop.get()) }
         }
     }
 

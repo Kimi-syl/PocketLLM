@@ -43,6 +43,20 @@ class WebFetchTool(
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        // SSRF guard: refuse to resolve any host that points at loopback,
+        // link-local (cloud metadata 169.254.x.x), site-local or multicast
+        // addresses. Runs for redirect targets too, so a public page cannot
+        // bounce the fetch into the local network.
+        .dns(object : okhttp3.Dns {
+            override fun lookup(hostname: String): List<java.net.InetAddress> {
+                val addrs = okhttp3.Dns.SYSTEM.lookup(hostname)
+                if (addrs.any { it.isLoopbackAddress || it.isLinkLocalAddress ||
+                        it.isSiteLocalAddress || it.isAnyLocalAddress || it.isMulticastAddress }) {
+                    throw java.io.IOException("Blocked: $hostname resolves to a private address")
+                }
+                return addrs
+            }
+        })
         .build()
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
@@ -51,6 +65,9 @@ class WebFetchTool(
         val maxChars = ((args["max_chars"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 8_000)
             .coerceIn(500, 32_000)
 
+        // resolveUrl only returns URLs matching URL_REGEX (^https?://) or a
+        // search result URL, so the scheme is already constrained; the
+        // private-address DNS guard on the client is what blocks SSRF.
         val url = resolveUrl(input)
             ?: return ToolResult.Error("Not a URL and no search results found for \"$input\"")
 

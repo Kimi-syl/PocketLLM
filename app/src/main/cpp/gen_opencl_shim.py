@@ -154,6 +154,7 @@ __attribute__((constructor)) static void opencl_shim_init(void) {
 for name in funcs:
     out.append(f'        p_{name} = dlsym(h, "{name}"); if (!p_{name}) {{ diagf("  missing: {name}\\n"); missing_syms++; }}\n')
 out.append("""        if (missing_syms == 0) { g_cl_lib = h; diagf("driver loaded from %s\\n", cands[i]); break; }
+        dlclose(h); /* do not leak handles with missing symbols */
         g_cl_lib = NULL;
     }
     if (g_cl_lib) {
@@ -172,7 +173,7 @@ const char *opencl_shim_debug(void) { return g_diag; }
 for name, (ret, typed) in funcs.items():
     decl = ", ".join((t if emb else f"{t} {n}") for t, n, emb in typed) if typed else "void"
     call = ", ".join(n for _, n, _ in typed)
-    body = f"    if (!p_{name}) return ({ret})0;\n    return p_{name}({call});\n"
+    body = f"    if (!g_cl_lib || !p_{name}) return ({ret})0;\n    return p_{name}({call});\n"
     if name == "clGetPlatformIDs":
         body = "    if (!g_cl_lib || !p_clGetPlatformIDs) return -1001;\n    return p_clGetPlatformIDs(%s);\n" % call
     out.append(f"CL_API_ENTRY {ret} CL_API_CALL {name}({decl}) {{\n{body}}}\n\n")

@@ -11,6 +11,7 @@ import com.pocketllm.util.TlsCertManager
 import java.io.File
 import android.content.Context
 import io.ktor.http.ContentType
+import io.ktor.server.plugins.bodylimit.*
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -112,6 +113,11 @@ class ApiServer(
 
     private fun Application.installRoutes() {
         install(ContentNegotiation) { json(json) }
+        // Cap request bodies: without this Netty buffers unbounded POSTs and
+        // the process OOMs from a single malicious request.
+        install(RequestBodyLimit) {
+            bodyLimit { 16L * 1024 * 1024 } // 16 MB max request body
+        }
         routing {
             get("/") {
                 call.respondText(
@@ -127,6 +133,9 @@ class ApiServer(
                 call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
             }
             get("/logs") {
+                // Log contents can contain request metadata; never expose them
+                // unauthenticated over the LAN interface.
+                call.authorized() ?: return@get
                 val source = call.request.queryParameters["source"] ?: "memory"
                 val tail = call.request.queryParameters["tail"]?.toIntOrNull()
                 val body = when (source) {

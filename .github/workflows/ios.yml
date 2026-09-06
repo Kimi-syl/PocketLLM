@@ -33,7 +33,10 @@ jobs:
 
       - name: Build llama.cpp for iOS (simulator)
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp ci-llama
+          # Pin to the exact commit the Android build vendors, so iOS and
+          # Android cannot drift apart when upstream moves.
+          git clone https://github.com/ggml-org/llama.cpp ci-llama
+          git -C ci-llama checkout f280b26983ad0fdb705a0d9ebf0503e76f2899b0
           cmake -S ci-llama -B build-ios-sim \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
@@ -53,15 +56,26 @@ jobs:
           brew install xcodegen
           cd ios-app && xcodegen generate
 
+      # NOTE: xcode-version stays latest-stable deliberately — the iOS artifact
+      # is a simulator-only developer build (not a release), and hard-pinning a
+      # major version eventually breaks CI when GitHub prunes runner images.
       - name: Build iOS app (simulator)
         run: |
           cd ios-app
           xcodebuild -project PocketLLM.xcodeproj -scheme PocketLLM \
             -destination 'generic/platform=iOS Simulator' \
-            -configuration Debug build CODE_SIGNING_ALLOWED=NO
+            -configuration Debug -derivedDataPath build \
+            build CODE_SIGNING_ALLOWED=NO
 
       - name: Upload framework artifact
         uses: actions/upload-artifact@v4
         with:
           name: PocketLLMKit.xcframework
           path: ios-app/Frameworks/PocketLLMKit.xcframework
+
+      - name: Upload simulator app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketLLM-simulator.app
+          path: ios-app/build/Build/Products/Debug-iphonesimulator/PocketLLM.app
+          if-no-files-found: error

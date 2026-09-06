@@ -15,11 +15,10 @@ targets:
     dependencies:
       - framework: Frameworks/PocketLLMKit.xcframework
         embed: true
+    info:
+      path: PocketLLM/Info.plist
     settings:
       base:
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_OBJC_BRIDGING_HEADER: PocketLLM/bridging.h
         HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers"

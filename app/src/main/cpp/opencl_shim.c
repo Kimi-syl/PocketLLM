@@ -145,6 +145,7 @@ __attribute__((constructor)) static void opencl_shim_init(void) {
         p_clEnqueueBarrierWithWaitList = dlsym(h, "clEnqueueBarrierWithWaitList"); if (!p_clEnqueueBarrierWithWaitList) { diagf("  missing: clEnqueueBarrierWithWaitList\n"); missing_syms++; }
         p_clCreateCommandQueue = dlsym(h, "clCreateCommandQueue"); if (!p_clCreateCommandQueue) { diagf("  missing: clCreateCommandQueue\n"); missing_syms++; }
         if (missing_syms == 0) { g_cl_lib = h; diagf("driver loaded from %s\n", cands[i]); break; }
+        dlclose(h); /* do not leak handles with missing symbols */
         g_cl_lib = NULL;
     }
     if (g_cl_lib) {
@@ -165,172 +166,172 @@ CL_API_ENTRY cl_int CL_API_CALL clGetPlatformIDs(cl_uint p0, cl_platform_id * p1
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetPlatformInfo(cl_platform_id p0, cl_platform_info p1, size_t p2, void * p3, size_t * p4) {
-    if (!p_clGetPlatformInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetPlatformInfo) return (cl_int)0;
     return p_clGetPlatformInfo(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetDeviceIDs(cl_platform_id p0, cl_device_type p1, cl_uint p2, cl_device_id * p3, cl_uint * p4) {
-    if (!p_clGetDeviceIDs) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetDeviceIDs) return (cl_int)0;
     return p_clGetDeviceIDs(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetDeviceInfo(cl_device_id p0, cl_device_info p1, size_t p2, void * p3, size_t * p4) {
-    if (!p_clGetDeviceInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetDeviceInfo) return (cl_int)0;
     return p_clGetDeviceInfo(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_context CL_API_CALL clCreateContext(const cl_context_properties * p0, cl_uint p1, const cl_device_id * p2, void (CL_CALLBACK * p3)(const char *, const void *, size_t, void *), void * p4, cl_int * p5) {
-    if (!p_clCreateContext) return (cl_context)0;
+    if (!g_cl_lib || !p_clCreateContext) return (cl_context)0;
     return p_clCreateContext(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context p0, cl_mem_flags p1, size_t p2, void * p3, cl_int * p4) {
-    if (!p_clCreateBuffer) return (cl_mem)0;
+    if (!g_cl_lib || !p_clCreateBuffer) return (cl_mem)0;
     return p_clCreateBuffer(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem p0, cl_mem_flags p1, cl_buffer_create_type p2, const void * p3, cl_int * p4) {
-    if (!p_clCreateSubBuffer) return (cl_mem)0;
+    if (!g_cl_lib || !p_clCreateSubBuffer) return (cl_mem)0;
     return p_clCreateSubBuffer(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateImage(cl_context p0, cl_mem_flags p1, const cl_image_format * p2, const cl_image_desc * p3, void * p4, cl_int * p5) {
-    if (!p_clCreateImage) return (cl_mem)0;
+    if (!g_cl_lib || !p_clCreateImage) return (cl_mem)0;
     return p_clCreateImage(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateBufferWithProperties(cl_context p0, const cl_mem_properties * p1, cl_mem_flags p2, size_t p3, void * p4, cl_int * p5) {
-    if (!p_clCreateBufferWithProperties) return (cl_mem)0;
+    if (!g_cl_lib || !p_clCreateBufferWithProperties) return (cl_mem)0;
     return p_clCreateBufferWithProperties(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem p0) {
-    if (!p_clReleaseMemObject) return (cl_int)0;
+    if (!g_cl_lib || !p_clReleaseMemObject) return (cl_int)0;
     return p_clReleaseMemObject(p0);
 }
 
 CL_API_ENTRY cl_program CL_API_CALL clCreateProgramWithSource(cl_context p0, cl_uint p1, const char ** p2, const size_t * p3, cl_int * p4) {
-    if (!p_clCreateProgramWithSource) return (cl_program)0;
+    if (!g_cl_lib || !p_clCreateProgramWithSource) return (cl_program)0;
     return p_clCreateProgramWithSource(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_program CL_API_CALL clCreateProgramWithBinary(cl_context p0, cl_uint p1, const cl_device_id * p2, const size_t * p3, const unsigned char ** p4, cl_int * p5, cl_int * p6) {
-    if (!p_clCreateProgramWithBinary) return (cl_program)0;
+    if (!g_cl_lib || !p_clCreateProgramWithBinary) return (cl_program)0;
     return p_clCreateProgramWithBinary(p0, p1, p2, p3, p4, p5, p6);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseProgram(cl_program p0) {
-    if (!p_clReleaseProgram) return (cl_int)0;
+    if (!g_cl_lib || !p_clReleaseProgram) return (cl_int)0;
     return p_clReleaseProgram(p0);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clBuildProgram(cl_program p0, cl_uint p1, const cl_device_id * p2, const char * p3, void (CL_CALLBACK * p4)(cl_program, void *), void * p5) {
-    if (!p_clBuildProgram) return (cl_int)0;
+    if (!g_cl_lib || !p_clBuildProgram) return (cl_int)0;
     return p_clBuildProgram(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetProgramInfo(cl_program p0, cl_program_info p1, size_t p2, void * p3, size_t * p4) {
-    if (!p_clGetProgramInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetProgramInfo) return (cl_int)0;
     return p_clGetProgramInfo(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetProgramBuildInfo(cl_program p0, cl_device_id p1, cl_program_build_info p2, size_t p3, void * p4, size_t * p5) {
-    if (!p_clGetProgramBuildInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetProgramBuildInfo) return (cl_int)0;
     return p_clGetProgramBuildInfo(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p0, const char * p1, cl_int * p2) {
-    if (!p_clCreateKernel) return (cl_kernel)0;
+    if (!g_cl_lib || !p_clCreateKernel) return (cl_kernel)0;
     return p_clCreateKernel(p0, p1, p2);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseKernel(cl_kernel p0) {
-    if (!p_clReleaseKernel) return (cl_int)0;
+    if (!g_cl_lib || !p_clReleaseKernel) return (cl_int)0;
     return p_clReleaseKernel(p0);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel p0, cl_uint p1, size_t p2, const void * p3) {
-    if (!p_clSetKernelArg) return (cl_int)0;
+    if (!g_cl_lib || !p_clSetKernelArg) return (cl_int)0;
     return p_clSetKernelArg(p0, p1, p2, p3);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetKernelInfo(cl_kernel p0, cl_kernel_info p1, size_t p2, void * p3, size_t * p4) {
-    if (!p_clGetKernelInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetKernelInfo) return (cl_int)0;
     return p_clGetKernelInfo(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetKernelWorkGroupInfo(cl_kernel p0, cl_device_id p1, cl_kernel_work_group_info p2, size_t p3, void * p4, size_t * p5) {
-    if (!p_clGetKernelWorkGroupInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetKernelWorkGroupInfo) return (cl_int)0;
     return p_clGetKernelWorkGroupInfo(p0, p1, p2, p3, p4, p5);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetKernelSubGroupInfo(cl_kernel p0, cl_device_id p1, cl_kernel_sub_group_info p2, size_t p3, const void* p4, size_t p5, void* p6, size_t* p7) {
-    if (!p_clGetKernelSubGroupInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetKernelSubGroupInfo) return (cl_int)0;
     return p_clGetKernelSubGroupInfo(p0, p1, p2, p3, p4, p5, p6, p7);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clWaitForEvents(cl_uint p0, const cl_event * p1) {
-    if (!p_clWaitForEvents) return (cl_int)0;
+    if (!g_cl_lib || !p_clWaitForEvents) return (cl_int)0;
     return p_clWaitForEvents(p0, p1);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseEvent(cl_event p0) {
-    if (!p_clReleaseEvent) return (cl_int)0;
+    if (!g_cl_lib || !p_clReleaseEvent) return (cl_int)0;
     return p_clReleaseEvent(p0);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clGetEventProfilingInfo(cl_event p0, cl_profiling_info p1, size_t p2, void * p3, size_t * p4) {
-    if (!p_clGetEventProfilingInfo) return (cl_int)0;
+    if (!g_cl_lib || !p_clGetEventProfilingInfo) return (cl_int)0;
     return p_clGetEventProfilingInfo(p0, p1, p2, p3, p4);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clFlush(cl_command_queue p0) {
-    if (!p_clFlush) return (cl_int)0;
+    if (!g_cl_lib || !p_clFlush) return (cl_int)0;
     return p_clFlush(p0);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clFinish(cl_command_queue p0) {
-    if (!p_clFinish) return (cl_int)0;
+    if (!g_cl_lib || !p_clFinish) return (cl_int)0;
     return p_clFinish(p0);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(cl_command_queue p0, cl_mem p1, cl_bool p2, size_t p3, size_t p4, void * p5, cl_uint p6, const cl_event * p7, cl_event * p8) {
-    if (!p_clEnqueueReadBuffer) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueReadBuffer) return (cl_int)0;
     return p_clEnqueueReadBuffer(p0, p1, p2, p3, p4, p5, p6, p7, p8);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(cl_command_queue p0, cl_mem p1, cl_bool p2, size_t p3, size_t p4, const void * p5, cl_uint p6, const cl_event * p7, cl_event * p8) {
-    if (!p_clEnqueueWriteBuffer) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueWriteBuffer) return (cl_int)0;
     return p_clEnqueueWriteBuffer(p0, p1, p2, p3, p4, p5, p6, p7, p8);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueFillBuffer(cl_command_queue p0, cl_mem p1, const void * p2, size_t p3, size_t p4, size_t p5, cl_uint p6, const cl_event * p7, cl_event * p8) {
-    if (!p_clEnqueueFillBuffer) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueFillBuffer) return (cl_int)0;
     return p_clEnqueueFillBuffer(p0, p1, p2, p3, p4, p5, p6, p7, p8);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(cl_command_queue p0, cl_mem p1, cl_mem p2, size_t p3, size_t p4, size_t p5, cl_uint p6, const cl_event * p7, cl_event * p8) {
-    if (!p_clEnqueueCopyBuffer) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueCopyBuffer) return (cl_int)0;
     return p_clEnqueueCopyBuffer(p0, p1, p2, p3, p4, p5, p6, p7, p8);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(cl_command_queue p0, cl_kernel p1, cl_uint p2, const size_t * p3, const size_t * p4, const size_t * p5, cl_uint p6, const cl_event * p7, cl_event * p8) {
-    if (!p_clEnqueueNDRangeKernel) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueNDRangeKernel) return (cl_int)0;
     return p_clEnqueueNDRangeKernel(p0, p1, p2, p3, p4, p5, p6, p7, p8);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueMarkerWithWaitList(cl_command_queue p0, cl_uint p1, const cl_event * p2, cl_event * p3) {
-    if (!p_clEnqueueMarkerWithWaitList) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueMarkerWithWaitList) return (cl_int)0;
     return p_clEnqueueMarkerWithWaitList(p0, p1, p2, p3);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueBarrierWithWaitList(cl_command_queue p0, cl_uint p1, const cl_event * p2, cl_event * p3) {
-    if (!p_clEnqueueBarrierWithWaitList) return (cl_int)0;
+    if (!g_cl_lib || !p_clEnqueueBarrierWithWaitList) return (cl_int)0;
     return p_clEnqueueBarrierWithWaitList(p0, p1, p2, p3);
 }
 
 CL_API_ENTRY CL_API_PREFIX__VERSION_1_2_DEPRECATED cl_command_queue CL_API_CALL clCreateCommandQueue(cl_context p0, cl_device_id p1, cl_command_queue_properties p2, cl_int * p3) {
-    if (!p_clCreateCommandQueue) return (CL_API_PREFIX__VERSION_1_2_DEPRECATED cl_command_queue)0;
+    if (!g_cl_lib || !p_clCreateCommandQueue) return (CL_API_PREFIX__VERSION_1_2_DEPRECATED cl_command_queue)0;
     return p_clCreateCommandQueue(p0, p1, p2, p3);
 }
 

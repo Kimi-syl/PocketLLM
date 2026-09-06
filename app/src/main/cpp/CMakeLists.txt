@@ -11,7 +11,7 @@ set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 add_subdirectory(llama.cpp)
 
 # Override versioned SONAMEs from llama.cpp — Android only loads *.so files
-foreach(_tgt llama ggml ggml-base ggml-cpu ggml-vulkan)
+foreach(_tgt llama ggml ggml-base ggml-cpu ggml-vulkan ggml-opencl)
     if(TARGET ${_tgt})
         set_target_properties(${_tgt} PROPERTIES VERSION "" SOVERSION "")
     endif()

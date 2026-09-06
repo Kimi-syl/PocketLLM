@@ -139,6 +139,14 @@ class CalculateTool : AgentTool {
                     ops.removeLast(); i++
                 }
                 c == '+' || c == '-' || c == '*' || c == '/' || c == '^' -> {
+                    // Unary minus/plus: at start, after '(' or after another
+                    // operator. Encode as "0 - x" so the binary evaluator
+                    // handles it; without this, "-5+3" threw NoSuchElementException.
+                    if (c == '-' && (i == 0 || input[i - 1] == '(' ||
+                            input[i - 1] == '+' || input[i - 1] == '-' ||
+                            input[i - 1] == '*' || input[i - 1] == '/' || input[i - 1] == '^')) {
+                        output.addLast(0.0)
+                    }
                     // ^ is right-associative: only pop operators with STRICTLY
                     // higher precedence. Other operators are left-associative
                     // and pop with >= precedence.

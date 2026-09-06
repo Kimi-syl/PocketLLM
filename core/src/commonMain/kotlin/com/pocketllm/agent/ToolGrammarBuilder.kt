@@ -31,11 +31,14 @@ object ToolGrammarBuilder {
 
         for ((i, tool) in tools.withIndex()) {
             val required = tool.parameters.filter { it.required }
+            // A " or \ inside a name would corrupt the GBNF and can hang the
+            // grammar sampler — strip anything outside the safe charset.
+            fun safe(name: String) = name.filter { it.code in 32..126 && it != '"' && it != '\\' }
             val body = if (required.isEmpty()) {
-                "\"${tool.name}\""
+                "\"${safe(tool.name)}\""
             } else {
                 val pairs = required.joinToString(" \";\" $sp ") { p ->
-                    "\"${p.name}\" $sp \"=\" $sp value"
+                    "\"${safe(p.name)}\" $sp \"=\" $sp value"
                 }
                 "\"${tool.name}\" $sp \"ARGS:\" $sp $pairs"
             }

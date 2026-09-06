@@ -31,6 +31,10 @@ class SherpaTtsEngine(private val context: Context) {
         private const val TAG = "SherpaTts"
         // sherpa-onnx release tarball includes the .onnx, tokens.txt, AND espeak-ng-data
         private const val MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-medium.tar.bz2"
+        // SHA-256 of the release asset (computed 2026-09-05 by downloading and
+        // hashing it — the release publishes no checksum). A tampered archive
+        // is rejected before extraction.
+        private const val MODEL_SHA256 = "9a5d1fc497f85e8022b785bff5f8105203b1e33099ee6265203efc70b0cb0264"
     }
 
     sealed interface State {
@@ -159,6 +163,7 @@ class SherpaTtsEngine(private val context: Context) {
                 }
                 Log.d(TAG, "Download complete: $received bytes")
             }
+            verifySha256(tmpFile, MODEL_SHA256)
             _state.value = State.Extracting(label)
             _status.value = "Extracting $label…"
             extractTarBz2(tmpFile, targetDirFile)
@@ -168,14 +173,38 @@ class SherpaTtsEngine(private val context: Context) {
         }
     }
 
+    private fun verifySha256(file: File, expectedHex: String) {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        val hex = digest.digest().joinToString("") { "%02x".format(it) }
+        if (!hex.equals(expectedHex, ignoreCase = true)) {
+            file.delete()
+            error("Checksum mismatch — download may be corrupted or tampered with")
+        }
+    }
+
     private fun extractTarBz2(archive: File, targetDir: File) {
+        val canonicalTarget = targetDir.canonicalPath
         FileInputStream(archive).use { fis ->
             BufferedInputStream(fis).use { bis ->
                 BZip2CompressorInputStream(bis).use { bzis ->
                     TarArchiveInputStream(bzis).use { tis ->
                         var entry: ArchiveEntry? = tis.nextEntry
                         while (entry != null) {
+                            // A malicious archive could contain "../" entry
+                            // names and write outside the model directory.
                             val outFile = File(targetDir, entry.name)
+                            if (!outFile.canonicalPath.startsWith(canonicalTarget + File.separator) &&
+                                outFile.canonicalPath != canonicalTarget) {
+                                error("Unsafe path in archive: ${entry.name}")
+                            }
                             if (entry.isDirectory) {
                                 outFile.mkdirs()
                             } else {
@@ -227,14 +256,23 @@ class SherpaTtsEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Generation counter: stop()/shutdown() bump it so an in-flight speak()
+     * thread abandons playback instead of creating an AudioTrack after the
+     * engine was released (orphan audio writing to dead state).
+     */
+    @Volatile private var speakGeneration = 0
+
     fun speak(text: String, speed: Float = 1.0f) {
         val engine = tts ?: return
         if (text.isBlank()) return
         stop()
+        val generation = ++speakGeneration
 
         Thread {
             try {
                 val audio = engine.generate(text, sid = 0, speed = speed)
+                if (generation != speakGeneration) return@Thread // superseded/stopped
                 val pcmData = ShortArray(audio.samples.size) { i ->
                     (audio.samples[i] * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
                 }
@@ -246,10 +284,13 @@ class SherpaTtsEngine(private val context: Context) {
     }
 
     private fun playPcm(pcmData: ShortArray, sampleRate: Int) {
-        val bufferSize = maxOf(
-            AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT),
-            pcmData.size * 2
-        )
+        // Long computation: pcmData.size * 2 overflows Int for >1B samples and
+        // silently mis-sized buffers throw inside the AudioTrack builder.
+        val minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            .coerceAtLeast(4096)
+        val needed = pcmData.size.toLong() * 2L
+        val bufferSize = maxOf(minBuf.toLong(), needed)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
