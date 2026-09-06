@@ -71,6 +71,57 @@ static void diagf(const char *fmt, ...) {
     va_end(ap);
 }
 
+/* Return value for detect_gpu_vendor: which GPU family this device has.
+ * 0 = adreno, 1 = mali, 2 = powervr, 3 = tegra, 4 = unknown */
+static int detect_gpu_vendor(void) {
+    /* (1) ro.hardware.vulkan (Android 10+) is the most authoritative:
+     *     "qcom" -> Adreno, "arm" -> Mali, "imgtec" -> PowerVR, "nvidia" -> Tegra. */
+    FILE *fp = popen("getprop ro.hardware.vulkan 2>/dev/null", "r");
+    char buf[64] = {0};
+    if (fp) {
+        if (fgets(buf, sizeof(buf), fp)) {
+            char *nl = strchr(buf, '\n'); if (nl) *nl = 0;
+            pclose(fp);
+            if (strstr(buf, "qcom"))    return 0;
+            if (strstr(buf, "arm"))     return 1;
+            if (strstr(buf, "imgtec"))  return 2;
+            if (strstr(buf, "nvidia"))  return 3;
+        } else { pclose(fp); }
+    }
+    /* (2) Fall back to /proc/cpuinfo "Hardware" line. */
+    FILE *cpu = fopen("/proc/cpuinfo", "r");
+    if (!cpu) return 4;
+    while (fgets(buf, sizeof(buf), cpu)) {
+        if (strncmp(buf, "Hardware", 8) == 0) {
+            char *colon = strchr(buf, ':');
+            if (!colon) continue;
+            char *hw = colon + 1;
+            while (*hw == ' ' || *hw == '\t') hw++;
+            fclose(cpu);
+            if (strstr(hw, "Qualcomm") || strstr(hw, "MSM") || strstr(hw, "APQ") || strstr(hw, "SDM"))
+                return 0; /* adreno */
+            if (strstr(hw, "Rockchip") || strstr(hw, "Exynos")  || strstr(hw, "MediaTek") ||
+                strstr(hw, "Unisoc")   || strstr(hw, "Spreadtrum") || strstr(hw, "HiSilicon") ||
+                strstr(hw, "Kirin")    || strstr(hw, "MT") || strstr(hw, "rk3399") || strstr(hw, "rk3288"))
+                return 1; /* mali */
+            if (strstr(hw, "Tegra"))     return 3;
+            return 4;
+        }
+    }
+    fclose(cpu);
+    return 4;
+}
+
+static const char *gpu_vendor_name(int v) {
+    switch (v) {
+        case 0:  return "Adreno";
+        case 1:  return "Mali";
+        case 2:  return "PowerVR";
+        case 3:  return "Tegra";
+        default: return "unknown";
+    }
+}
+
 static void load_system_fallback(void) {
     void *h = dlopen("/system/lib64/libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     if (!h) {
@@ -91,6 +142,9 @@ static void load_system_fallback(void) {
 __attribute__((constructor)) static void vulkan_shim_init(void) {
     diagf("vulkan shim init\n");
 
+    int vendor = detect_gpu_vendor();
+    diagf("gpu vendor: %s\n", gpu_vendor_name(vendor));
+
     /* Locate our own lib dir (the turnip driver ships next to us). */
     Dl_info info;
     void *self = (void *)&vulkan_shim_init;
@@ -99,6 +153,18 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
      * settings created the flag file. */
     int turnip_enabled = access("/data/data/com.pocketllm/files/turnip.on", F_OK) == 0;
     diagf("turnip opt-in flag: %s\n", turnip_enabled ? "on" : "off (default)");
+    if (turnip_enabled && vendor != 0) {
+        /* Turnip is the Mesa Adreno (freedreno) driver. It is not a generic
+         * Vulkan ICD — it talks directly to the freedreno kernel driver,
+         * which only exists on Qualcomm SoCs. On Mali/PowerVR/Tegra devices
+         * the .so will load (it's a self-contained Mesa build) but every
+         * vkCreateInstance / vkAllocateMemory will fail or crash inside the
+         * driver. Refuse to load it here so the user gets a clear message
+         * instead of a native crash they can't recover from. */
+        diagf("turnip NOT loaded: bundled driver is for Adreno (Qualcomm), but this device has %s. Falling back to system Vulkan.\n",
+               gpu_vendor_name(vendor));
+        turnip_enabled = 0;
+    }
     if (dladdr(self, &info) && info.dli_fname && turnip_enabled) {
         char path[512];
         snprintf(path, sizeof(path), "%s", info.dli_fname);
