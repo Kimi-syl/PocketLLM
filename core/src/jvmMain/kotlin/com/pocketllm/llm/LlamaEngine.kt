@@ -30,25 +30,32 @@ object LlamaEngine : ChatEngine {
         PLog.log("LlamaEngine init: state=${_state.value}")
     }
 
-    suspend fun load(file: File, contextSize: Int, threads: Int, gpuOffload: Boolean = true) {
+    suspend fun load(
+        file: File,
+        contextSize: Int,
+        threads: Int,
+        gpuOffload: Boolean = true,
+        batchSize: Int = 2048,
+    ) {
         mutex.withLock {
             LlamaBridge.backendInit()
             unloadInternal()
             _state.value = EngineState.Loading(file.name)
             val threadCount = threads.coerceIn(1, 8)
+            val effectiveBatch = batchSize.coerceIn(128, 8192)
             // Gate GPU offload on actual native support. Cheap tablets (e.g. Rockchip P20HD)
             // report no Vulkan backend; sending gpuLayers=99 anyway segfaults llama_decode.
             val nativeSupportsGpu = try { LlamaBridge.supportsGpuOffload() } catch (_: Throwable) { false }
             runCatching { PLog.log("backend info:\n" + LlamaBridge.backendInfo()) }
             val effectiveGpuLayers = if (gpuOffload && nativeSupportsGpu) 99 else 0
             PLog.log(
-                "load: ${file.name} ctx=$contextSize threads=$threadCount gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → gpuLayers=$effectiveGpuLayers"
+                "load: ${file.name} ctx=$contextSize batch=$effectiveBatch threads=$threadCount gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → gpuLayers=$effectiveGpuLayers"
             )
             val h = withContext(dispatcher) {
                 LlamaBridge.loadModel(
                     file.absolutePath,
                     contextSize,
-                    2048,
+                    effectiveBatch,
                     threadCount,
                     effectiveGpuLayers,
                 )

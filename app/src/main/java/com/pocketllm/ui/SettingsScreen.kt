@@ -197,42 +197,131 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                // Context window slider
-                var contextSize by remember(settings.contextSize) {
-                    mutableStateOf(settings.contextSize.toFloat())
-                }
+                // Speed preset
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Context window")
-                            Text(
-                                "Max tokens the model sees. Larger = more chat history + tool results, but uses more RAM. Takes effect on next model load.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(
-                            "${contextSize.toInt()}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
-                    Slider(
-                        value = contextSize,
-                        onValueChange = { contextSize = it },
-                        valueRange = 512f..32768f,
-                        steps = 15,  // 512, 2560, 4608, ..., 32768
-                        onValueChangeFinished = {
-                            vm.updateContextSize(contextSize.toInt().toString())
-                        },
+                    Text(
+                        "Speed preset",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Together sets context size, batch size, and GPU offload. See the labels below. Takes effect on next model load.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val presets = listOf(
+                        com.pocketllm.settings.SpeedPreset.BatterySaver to "Battery",
+                        com.pocketllm.settings.SpeedPreset.Balanced to "Balanced",
+                        com.pocketllm.settings.SpeedPreset.MaxSpeed to "Max",
+                        com.pocketllm.settings.SpeedPreset.Custom to "Custom",
                     )
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Text("512", style = MaterialTheme.typography.labelSmall)
-                        Text("8K", style = MaterialTheme.typography.labelSmall)
-                        Text("32K", style = MaterialTheme.typography.labelSmall)
+                        for ((value, label) in presets) {
+                            FilterChip(
+                                selected = settings.speedPreset == value,
+                                onClick = { vm.updateSpeedPreset(value) },
+                                label = { Text(label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    val resolved = settings.resolve()
+                    val presetHint = when (settings.speedPreset) {
+                        com.pocketllm.settings.SpeedPreset.BatterySaver ->
+                            "ctx=512 · batch=512 · CPU only (lowest RAM)"
+                        com.pocketllm.settings.SpeedPreset.Balanced ->
+                            "ctx=2048 · batch=1024 · GPU if available"
+                        com.pocketllm.settings.SpeedPreset.MaxSpeed ->
+                            "ctx=1024 · batch=2048 · GPU if available"
+                        com.pocketllm.settings.SpeedPreset.Custom ->
+                            "using your ctx=${resolved.contextSize} · batch=${resolved.batchSize} settings below"
+                    }
+                    Text(
+                        presetHint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (settings.speedPreset == com.pocketllm.settings.SpeedPreset.Custom) {
+                    // Context window slider (Custom preset only)
+                    var contextSize by remember(settings.contextSize) {
+                        mutableStateOf(settings.contextSize.toFloat())
+                    }
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Context window")
+                                Text(
+                                    "Max tokens the model sees. Larger = more chat history + tool results, but uses more RAM. Takes effect on next model load.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                "${contextSize.toInt()}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                        Slider(
+                            value = contextSize,
+                            onValueChange = { contextSize = it },
+                            valueRange = 512f..32768f,
+                            steps = 15,  // 512, 2560, 4608, ..., 32768
+                            onValueChangeFinished = {
+                                vm.updateContextSize(contextSize.toInt().toString())
+                            },
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("512", style = MaterialTheme.typography.labelSmall)
+                            Text("8K", style = MaterialTheme.typography.labelSmall)
+                            Text("32K", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    // Batch size slider (Custom preset only)
+                    var batchSize by remember(settings.batchSize) {
+                        mutableStateOf(settings.batchSize.toFloat())
+                    }
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Batch size")
+                                Text(
+                                    "Tokens decoded per pass. Larger amortizes GPU launch cost; too large wastes memory on CPU-only.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                "${batchSize.toInt()}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                        Slider(
+                            value = batchSize,
+                            onValueChange = { batchSize = it },
+                            valueRange = 128f..4096f,
+                            steps = 15,
+                            onValueChangeFinished = {
+                                vm.updateBatchSize(batchSize.toInt().toString())
+                            },
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("128", style = MaterialTheme.typography.labelSmall)
+                            Text("2K", style = MaterialTheme.typography.labelSmall)
+                            Text("4096", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
                 // Max generation tokens slider

@@ -21,6 +21,7 @@ import com.pocketllm.sessions.ChatSessionRepository
 import com.pocketllm.sessions.SessionMessage
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
+import com.pocketllm.settings.SpeedPreset
 import com.pocketllm.util.TtsManager
 import com.pocketllm.util.WebSearch
 import com.pocketllm.usage.UsageRecord
@@ -447,7 +448,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun loadModel(name: String) {
         val file = modelRepo.file(name) ?: return
         viewModelScope.launch {
-            engine.load(file, settings.current().contextSize, CpuInfo.recommendedThreads(), settings.current().gpuOffload)
+            val resolved = settings.current().resolve()
+            com.pocketllm.server.PLog.log("loadModel: preset=${settings.current().speedPreset} → ctx=${resolved.contextSize} batch=${resolved.batchSize} gpu=${resolved.gpuOffload}")
+            engine.load(
+                file = file,
+                contextSize = resolved.contextSize,
+                threads = CpuInfo.recommendedThreads(),
+                gpuOffload = resolved.gpuOffload,
+                batchSize = resolved.batchSize,
+            )
             refreshModels()
         }
     }
@@ -517,6 +526,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun updateContextSize(sizeText: String) {
         val size = sizeText.toIntOrNull()?.coerceIn(256, 32768) ?: return
         updateSettings { it.copy(contextSize = size) }
+    }
+
+    fun updateBatchSize(sizeText: String) {
+        val size = sizeText.toIntOrNull()?.coerceIn(128, 8192) ?: return
+        updateSettings { it.copy(batchSize = size) }
+    }
+
+    fun updateSpeedPreset(preset: SpeedPreset) {
+        updateSettings { it.copy(speedPreset = preset) }
     }
 
     fun updateMaxGenerationTokens(tokens: Int) {
