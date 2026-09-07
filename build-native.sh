@@ -57,6 +57,19 @@ if [ ! -f "$JNI_DIR/libc++_shared.so" ] && [ -f /opt/tusr/lib/libc++_shared.so ]
     echo "  Copied libc++_shared.so"
 fi
 
+# Shims may lack a SONAME, in which case the linker records the
+# build-machine path in DT_NEEDED (e.g. /root/.../libvkshim.so) and the
+# Android loader fails with "<lib> not found". Rewrite any absolute NEEDED
+# entry to the bare soname.
+for f in "$JNI_DIR"/lib*.so; do
+    while read -r dep; do
+        case "$dep" in
+            /*) echo "  Rewriting NEEDED $dep -> $(basename "$dep")"
+                patchelf --replace-needed "$dep" "$(basename "$dep")" "$f" ;;
+        esac
+    done < <(readelf -d -W "$f" | awk '/NEEDED/ {gsub(/[][]/,"",$4); print $4}')
+done
+
 # Patch versioned SONAMEs (libllama.so.0 → libllama.so)
 echo "=== Patching SONAMEs ==="
 python3 - <<'PYEOF'
