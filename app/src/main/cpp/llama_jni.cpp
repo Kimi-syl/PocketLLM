@@ -296,7 +296,21 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(seed)));
     }
 
-    if (nPrompt <= 0 || llama_decode(ctx, llama_batch_get_one(tokens.data(), nPrompt)) != 0) {
+    // Prompt evaluation must be chunked: llama.cpp asserts (GGML_ASSERT, aborts
+    // the process) that a single llama_decode call carries at most n_batch
+    // tokens. Agent-mode prompts - system + tool block + history - routinely
+    // exceed small batch sizes such as the BatterySaver/Balanced presets.
+    // Each chunk's logits are produced only for its last token, so the final
+    // chunk leaves exactly the logits llama_sampler_sample(..., -1) needs.
+    const int nBatch = (int)llama_n_batch(ctx);
+    bool promptOk = nPrompt > 0;
+    for (int i = 0; promptOk && i < nPrompt; i += nBatch) {
+        const int chunk = std::min(nBatch, nPrompt - i);
+        if (llama_decode(ctx, llama_batch_get_one(tokens.data() + i, chunk)) != 0) {
+            promptOk = false;
+        }
+    }
+    if (!promptOk) {
         llama_sampler_free(sampler);
         return nullptr;
     }

@@ -185,8 +185,19 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
             llama_sampler_chain_add(sampler, llama_sampler_init_dist(0xFFFFFFFFu));
         }
 
-        if (nPrompt <= 0 || llama_decode(self->_ctx,
-                llama_batch_get_one(tokens.data(), nPrompt)) != 0) {
+        // Chunked prompt eval: llama.cpp GGML_ASSERTs (process abort) if one
+        // llama_decode carries more than n_batch tokens; agent prompts with the
+        // tool block easily exceed small batch sizes. Last-token-only logits per
+        // chunk leaves exactly what llama_sampler_sample(..., -1) reads.
+        const int nBatch = (int)llama_n_batch(self->_ctx);
+        bool promptOk = nPrompt > 0;
+        for (int i = 0; promptOk && i < nPrompt; i += nBatch) {
+            const int chunk = std::min(nBatch, nPrompt - i);
+            if (llama_decode(self->_ctx, llama_batch_get_one(tokens.data() + i, chunk)) != 0) {
+                promptOk = false;
+            }
+        }
+        if (!promptOk) {
             llama_sampler_free(sampler);
             completion(0, 0, NO);
             return;
