@@ -27,9 +27,8 @@ jobs:
           # .ts/.js/.cs only exist inside the untracked llama.cpp checkout,
           # so there is deliberately no job for them.
           #
-          # build-mode none: llama.cpp is gitignored, so a real native build
-          # cannot run in CI; source-only extraction still covers our .kt/.swift/.c/.cpp.
-          # Swift is the exception - it needs a real build (xcodebuild), so it
+          # build-mode none works for the interpreted + source-only languages.
+          # Swift is the exception: it needs a real build (xcodebuild), so it
           # gets build-mode manual with an explicit build step below.
           - language: java-kotlin
             runs-on: ubuntu-latest
@@ -53,7 +52,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          config-file: ./.github/codeql/codeql-config.yml
+          queries: security-extended
 
       # Swift needs a real build for CodeQL to trace. The iOS app links against
       # a llama static archive; build it the same way ios.yml does. CodeQL only
@@ -62,7 +61,8 @@ jobs:
         name: Build llama static archive for Swift tracing
         run: |
           set -e
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp ci-llama
+          git clone https://github.com/ggml-org/llama.cpp ci-llama
+          git -C ci-llama fetch --depth=1 origin f280b26983ad0fdb705a0d9ebf0503e76f2899b0
           git -C ci-llama checkout f280b26983ad0fdb705a0d9ebf0503e76f2899b0
           cmake -S ci-llama -B build-ios \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
