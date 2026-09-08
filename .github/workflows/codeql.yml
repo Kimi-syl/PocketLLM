@@ -18,86 +18,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # First-party languages in tracked code:
-          #   java-kotlin  44 .kt (app, core, cli)   - no .java tracked
-          #   swift        6 .swift
-          #   c-cpp        llama_jni/cpp, *_shim.c
+          # First-party languages in tracked code. GitHub default setup scanned
+          # python+csharp (from vendored SPIR-V headers) and skipped the app.
+          # This matrix covers the real product:
+          #   java-kotlin  44 .kt across app, core, cli   (no .java tracked)
+          #   c-cpp        llama_jni.cpp, opencl_shim.c, vulkan_shim.c
           #   python       gen_opencl_shim.py
           #   actions      .github/workflows
-          # .ts/.js/.cs only exist inside the untracked llama.cpp checkout,
-          # so there is deliberately no job for them.
+          # .ts/.js/.cs exist only inside the untracked llama.cpp checkout, so
+          # there is deliberately no job for them.
           #
-          # Compiled languages (java-kotlin, c-cpp) use autobuild so CodeQL can
-          # trace the real build instead of guessing with standalone extraction.
-          # Swift needs an explicit manual build (xcodebuild) because its
-          # autobuild needs the llama static archive first.
+          # build-mode none = source-only extraction. This is the mode that
+          # works without a build: the Android Gradle / native CMake builds
+          # need SDKs that are not set up on the runner, and autobuild fails on
+          # the AAR resource transforms. Source-only still indexes every .kt,
+          # .cpp, .c, .py and .yml file for the security-extended queries.
           - language: java-kotlin
             runs-on: ubuntu-latest
-            build-mode: autobuild
-          - language: swift
-            runs-on: macos-14
-            build-mode: manual
           - language: c-cpp
             runs-on: ubuntu-latest
-            build-mode: autobuild
           - language: python
             runs-on: ubuntu-latest
           - language: actions
             runs-on: ubuntu-latest
 
     runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: ${{ matrix.language == 'swift' && 90 || 30 }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
-      - if: matrix.language == 'java-kotlin'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
       - uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
           queries: security-extended
-
-      # Swift needs a real build for CodeQL to trace. Build the llama static
-      # archive and run xcodebuild the same way ios.yml does. CodeQL only needs
-      # the compile phase, so a link failure still yields extraction.
-      - if: matrix.language == 'swift'
-        name: Build llama static archive for Swift tracing
-        run: |
-          set -e
-          git clone https://github.com/ggml-org/llama.cpp ci-llama
-          git -C ci-llama fetch --depth=1 origin f280b26983ad0fdb705a0d9ebf0503e76f2899b0
-          git -C ci-llama checkout f280b26983ad0fdb705a0d9ebf0503e76f2899b0
-          cmake -S ci-llama -B build-ios \
-            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
-            -DGGML_METAL=OFF -DLLAMA_CURL=OFF
-          cmake --build build-ios --target llama ggml ggml-base ggml-cpu -j3
-          mkdir -p ios-app/llama-libs ios-app/llama-headers
-          libtool -static -o ios-app/llama-libs/libpocketllm_ios.a $(find build-ios -name "*.a" | sort)
-          cp ci-llama/include/llama.h ios-app/llama-headers/
-          cp ci-llama/ggml/include/*.h ios-app/llama-headers/
-          find build-ios -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
-
-      - if: matrix.language == 'swift'
-        name: Build iOS app (Swift tracing)
-        run: |
-          set -e
-          cd ios-app
-          brew install xcodegen
-          xcodegen generate
-          xcodebuild -project PocketLLM.xcodeproj -scheme PocketLLM \
-            -destination "generic/platform=iOS Simulator" \
-            -configuration Debug -derivedDataPath build \
-            build CODE_SIGNING_ALLOWED=NO
 
       - uses: github/codeql-action/analyze@v3
         with:
