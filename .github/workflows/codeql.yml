@@ -1,0 +1,72 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default setup scanned python+csharp, which came entirely from
+          # vendored SPIR-V headers, and skipped Kotlin/Swift/C - i.e. it was
+          # analysing the dependencies and ignoring the app. This matrix is
+          # the set of languages that exist in tracked first-party code:
+          #   java-kotlin  44 .kt (app, core, cli)   - no .java tracked
+          #   swift        6 .swift (*.mm is Obj-C++, not Swift)
+          #   c-cpp        llama_jni.cpp, *_shim.c
+          #   python       gen_opencl_shim.py
+          #   actions      .github/workflows
+          # .ts/.js/.cs only exist inside the untracked llama.cpp checkout,
+          # so there is deliberately no job for them.
+          #
+          # build-mode none: llama.cpp is gitignored, so a full native build
+          # is impossible here; extraction is source-only instead.
+          - language: java-kotlin
+            runs-on: ubuntu-latest
+          - language: swift
+            runs-on: macos-14
+          - language: c-cpp
+            runs-on: ubuntu-latest
+          - language: python
+            runs-on: ubuntu-latest
+          - language: actions
+            runs-on: ubuntu-latest
+
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+          paths-ignore: |
+            vulkan-host/**
+            opencl-host/**
+            third_party/**
+            build-native/**
+            build-native-desktop/**
+            app/src/main/cpp/llama.cpp/**
+            **/build/**
+            **/node_modules/**
+            **/*.jar
+            **/*.aar
+            **/*.so
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
