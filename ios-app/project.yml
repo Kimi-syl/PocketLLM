@@ -17,6 +17,17 @@ targets:
         embed: true
     info:
       path: PocketLLM/Info.plist
+      # xcodegen REGENERATES this plist on every run, so keys belong here;
+      # hand-edits to PocketLLM/Info.plist are overwritten and lost.
+      properties:
+        # LAN servers are plain http:// by default, so ATS must allow
+        # arbitrary loads or remote-server mode cannot connect.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
