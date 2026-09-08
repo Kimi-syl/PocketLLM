@@ -1,17 +1,16 @@
 name: "PocketLLM CodeQL"
 
-# Vendored/generated trees are excluded so results stay about our code.
-# Without this the scanner reports on SPIR-V and OpenCL headers, which is how
-# default setup picked "python" and "csharp" as the repo languages.
-paths-ignore:
-  - vulkan-host/**
-  - opencl-host/**
-  - third_party/**
-  - build-native/**
-  - build-native-desktop/**
-  - app/src/main/cpp/llama.cpp/**
-  - "**/build/**"
-  - "**/node_modules/**"
+# Whitelist first-party source. A blacklist (paths-ignore) kept over-matching
+# and dropping the Kotlin/C++ source, which made those jobs fail with
+# "detected code written in X but could not process any of it".
+paths:
+  - app/src
+  - core/src
+  - cli/src
+  - ios-app
+  - scripts
+  - .github
+  - stress-test
 
 queries:
   - uses: security-extended
