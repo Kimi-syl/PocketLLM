@@ -79,3 +79,45 @@ jobs:
           name: PocketLLM-simulator.app
           path: ios-app/build/Build/Products/Debug-iphonesimulator/PocketLLM.app
           if-no-files-found: error
+
+      - name: Build llama.cpp for iOS (device, arm64)
+        run: |
+          # Device slice of the pinned llama.cpp. CPU-only for now: Metal is a
+          # separate roadmap item and needs the .metallib bundled in the app.
+          cmake -S ci-llama -B build-ios-dev \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
+            -DGGML_METAL=OFF -DLLAMA_CURL=OFF
+          cmake --build build-ios-dev --target llama ggml ggml-base ggml-cpu -j3
+          mkdir -p ios-app/llama-libs-device
+          libtool -static -o ios-app/llama-libs-device/libpocketllm_ios.a $(find build-ios-dev -name "*.a" | sort)
+
+      - name: Build iOS app (device, unsigned)
+        run: |
+          cd ios-app
+          # Unsigned on purpose: free-Apple-ID re-signing (Sideloadly/AltStore)
+          # rejects binaries carrying a different signature, and CI has no
+          # signing identity. LIBRARY_SEARCH_PATHS overrides the project value
+          # so the linker picks the device .a instead of the simulator one.
+          xcodebuild -project PocketLLM.xcodeproj -scheme PocketLLM \
+            -destination "generic/platform=iOS" \
+            -configuration Release -derivedDataPath build-device \
+            build CODE_SIGNING_ALLOWED=NO \
+            LIBRARY_SEARCH_PATHS="\$(SRCROOT)/llama-libs-device"
+
+      - name: Package unsigned .ipa
+        run: |
+          cd ios-app/build-device/Build/Products/Release-iphoneos
+          rm -rf Payload
+          mkdir Payload && cp -R PocketLLM.app Payload/
+          zip -qry PocketLLM-unsigned.ipa Payload
+
+      - name: Upload device .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketLLM-device-unsigned
+          path: ios-app/build-device/Build/Products/Release-iphoneos/PocketLLM-unsigned.ipa
+          if-no-files-found: error
