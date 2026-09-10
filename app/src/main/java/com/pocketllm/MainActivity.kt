@@ -30,6 +30,7 @@ class MainActivity : ComponentActivity() {
         installCrashHandler()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        restoreCompanionIfEnabled()
         setContent {
             val vm: AppViewModel = viewModel()
             val settings by vm.currentSettings.collectAsState()
@@ -53,6 +54,21 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = settings.dynamicColor,
             ) {
                 AppRoot(vm)
+            }
+        }
+    }
+
+    /**
+     * Bring the floating bubble back if the user had it switched on. Done here
+     * rather than from a boot receiver: Android 14 restricts starting a
+     * `specialUse` foreground service from BOOT_COMPLETED, so launching the app
+     * is the safe trigger.
+     */
+    private fun restoreCompanionIfEnabled() {
+        runCatching {
+            val settings = com.pocketllm.settings.SettingsRepository(applicationContext).current()
+            if (settings.companionEnabled && android.provider.Settings.canDrawOverlays(this)) {
+                com.pocketllm.companion.CompanionOverlayService.start(this)
             }
         }
     }

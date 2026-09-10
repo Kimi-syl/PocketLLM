@@ -59,6 +59,25 @@ data class AppSettings(
     val speedPreset: SpeedPreset = SpeedPreset.Balanced,
     /** Only used when [speedPreset] is [SpeedPreset.Custom]: max tokens per decode batch. */
     val batchSize: Int = 2048,
+
+    // --- Floating companion -------------------------------------------------
+    /** Master switch for the floating bubble (survives leaving the app). */
+    val companionEnabled: Boolean = false,
+    /** Extra persona text prepended to the built-in companion prompt. */
+    val companionPersona: String = "",
+    /** Speak companion replies out loud using the configured TTS engine. */
+    val companionTts: Boolean = false,
+    /** Last bubble position, persisted so it reappears where the user left it. */
+    val companionBubbleX: Int = -1,
+    val companionBubbleY: Int = 400,
+
+    // --- Cloud entry --------------------------------------------------------
+    /** Allow the companion to call a remote OpenAI-compatible endpoint. */
+    val cloudEnabled: Boolean = false,
+    /** Base URL including the version segment, e.g. https://api.openai.com/v1 */
+    val cloudBaseUrl: String = "",
+    val cloudApiKey: String = "",
+    val cloudModel: String = "",
 ) {
     /**
      * Concrete (contextSize, batchSize, gpuOffload) for the active preset.

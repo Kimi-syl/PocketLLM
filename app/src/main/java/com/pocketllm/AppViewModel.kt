@@ -558,6 +558,57 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(startupPrompt = prompt) }
     }
 
+    // --- Floating companion -------------------------------------------------
+
+    /**
+     * Turning the bubble on also starts the overlay service; turning it off
+     * tears the service down so no notification is left behind.
+     */
+    fun updateCompanionEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settings.update { it.copy(companionEnabled = enabled) }
+            _currentSettings.value = settings.current()
+            val ctx = getApplication<android.app.Application>()
+            if (enabled) {
+                com.pocketllm.companion.CompanionOverlayService.start(ctx)
+            } else {
+                com.pocketllm.companion.CompanionOverlayService.stop(ctx)
+            }
+        }
+    }
+
+    fun updateCompanionPersona(text: String) {
+        updateSettings { it.copy(companionPersona = text) }
+    }
+
+    fun updateCompanionTts(enabled: Boolean) {
+        updateSettings { it.copy(companionTts = enabled) }
+    }
+
+    fun updateCloudEnabled(enabled: Boolean) {
+        updateSettings { it.copy(cloudEnabled = enabled) }
+    }
+
+    fun updateCloudBaseUrl(url: String) {
+        updateSettings { it.copy(cloudBaseUrl = url.trim()) }
+    }
+
+    fun updateCloudApiKey(key: String) {
+        updateSettings { it.copy(cloudApiKey = key.trim()) }
+    }
+
+    fun updateCloudModel(model: String) {
+        updateSettings { it.copy(cloudModel = model.trim()) }
+    }
+
+    /** Called after the user returns from the overlay-permission screen. */
+    fun restartCompanionIfEnabled() {
+        val ctx = getApplication<android.app.Application>()
+        if (_currentSettings.value.companionEnabled) {
+            com.pocketllm.companion.CompanionOverlayService.start(ctx)
+        }
+    }
+
     fun updateHttps(enabled: Boolean) {
         viewModelScope.launch {
             settings.update { it.copy(httpsEnabled = enabled) }

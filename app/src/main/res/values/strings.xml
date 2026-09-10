@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PocketLLM</string>
+    <string name="companion_accessibility_summary">Lets the floating companion read the page on screen when you ask it to summarize.</string>
+    <string name="companion_accessibility_description">PocketLLM\'s companion reads the text on your screen only at the moment you tap "Summary" on the bubble. It cannot tap, type, or act on other apps.</string>
 </resources>

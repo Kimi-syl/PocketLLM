@@ -18,6 +18,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,9 +27,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.pocketllm.AppViewModel
 import com.pocketllm.util.WebSearch
 
@@ -92,6 +96,14 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                     )
                 }
             }
+        }
+
+        item {
+            CompanionSettingsSection(vm)
+        }
+
+        item {
+            CloudEntrySettingsSection(vm)
         }
 
         item {
@@ -596,6 +608,194 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         }
     }
 }
+
+/**
+ * The bubble needs two special permissions that can only be granted in system
+ * settings, so this section re-reads them whenever the screen resumes (the user
+ * leaves to a system screen and comes back).
+ */
+@Composable
+private fun CompanionSettingsSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var overlayGranted by remember { mutableStateOf(android.provider.Settings.canDrawOverlays(context)) }
+    var accessGranted by remember {
+        mutableStateOf(com.pocketllm.companion.CompanionAccessibilityService.isConnected())
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                overlayGranted = android.provider.Settings.canDrawOverlays(context)
+                accessGranted = com.pocketllm.companion.CompanionAccessibilityService.isConnected()
+                // If the user flipped the switch before granting the overlay
+                // permission, bring the bubble up now that it can be shown.
+                if (settings.companionEnabled) vm.restartCompanionIfEnabled()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    fun openOverlaySettings() {
+        runCatching {
+            context.startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:${context.packageName}"),
+                )
+            )
+        }
+    }
+
+    SectionCard("Floating companion") {
+        Text(
+            "A small bubble that stays on screen after you leave PocketLLM — tap it for company or a quick summary.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Show companion bubble")
+                Text(
+                    if (overlayGranted) "Ready — tap the bubble any time"
+                    else "Needs the \"Display over other apps\" permission",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionEnabled,
+                onCheckedChange = { enabled ->
+                    if (enabled && !overlayGranted) openOverlaySettings()
+                    else vm.updateCompanionEnabled(enabled)
+                },
+            )
+        }
+        if (!overlayGranted) {
+            TextButton(onClick = { openOverlaySettings() }) { Text("Grant overlay permission") }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Companion screen access")
+                Text(
+                    if (accessGranted) "On — can read the page when you tap Summary"
+                    else "Off — required for page summaries",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = accessGranted,
+                onCheckedChange = {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        )
+                    }
+                },
+            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Speak replies out loud")
+                Text(
+                    "Uses your device text-to-speech voice",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionTts,
+                onCheckedChange = { vm.updateCompanionTts(it) },
+            )
+        }
+
+        var persona by remember(settings.companionPersona) { mutableStateOf(settings.companionPersona) }
+        OutlinedTextField(
+            value = persona,
+            onValueChange = { persona = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Extra persona (optional)") },
+            minLines = 2,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = { vm.updateCompanionPersona(persona) },
+                enabled = persona != settings.companionPersona,
+            ) { Text("Save persona") }
+        }
+    }
+}
+
+@Composable
+private fun CloudEntrySettingsSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+
+    SectionCard("Cloud entry") {
+        Text(
+            "Optional. Used when no local model is loaded, and for longer page summaries. Any OpenAI-compatible endpoint works.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Allow cloud model")
+                Text(
+                    "Your text leaves the device when this runs",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = settings.cloudEnabled, onCheckedChange = { vm.updateCloudEnabled(it) })
+        }
+
+        var baseUrl by remember(settings.cloudBaseUrl) { mutableStateOf(settings.cloudBaseUrl) }
+        var apiKey by remember(settings.cloudApiKey) { mutableStateOf(settings.cloudApiKey) }
+        var model by remember(settings.cloudModel) { mutableStateOf(settings.cloudModel) }
+
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Base URL (ending in /v1)") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("API key") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Model name") },
+            singleLine = true,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = {
+                    vm.updateCloudBaseUrl(baseUrl)
+                    vm.updateCloudApiKey(apiKey)
+                    vm.updateCloudModel(model)
+                },
+                enabled = baseUrl != settings.cloudBaseUrl ||
+                    apiKey != settings.cloudApiKey ||
+                    model != settings.cloudModel,
+            ) { Text("Save") }
+        }
+    }
+}
+
 
 
 private fun currentKeyFor(engine: String, settings: com.pocketllm.settings.AppSettings): String = when (engine) {
