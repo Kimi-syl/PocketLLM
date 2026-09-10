@@ -61,14 +61,22 @@ fi
 # build-machine path in DT_NEEDED (e.g. /root/.../libvkshim.so) and the
 # Android loader fails with "<lib> not found". Rewrite any absolute NEEDED
 # entry to the bare soname.
+#
+# Note: this reads via a temp file rather than process substitution. proot
+# does not always provide /dev/fd, and `< <(...)` then fails the whole build.
+NEEDED_TMP="$(mktemp)"
 for f in "$JNI_DIR"/lib*.so; do
+    [ -f "$f" ] || continue
+    readelf -d -W "$f" 2>/dev/null | awk '/NEEDED/ {gsub(/[][]/,"",$5); print $5}' > "$NEEDED_TMP" || true
     while read -r dep; do
+        [ -n "$dep" ] || continue
         case "$dep" in
             /*) echo "  Rewriting NEEDED $dep -> $(basename "$dep")"
                 patchelf --replace-needed "$dep" "$(basename "$dep")" "$f" ;;
         esac
-    done < <(readelf -d -W "$f" | awk '/NEEDED/ {gsub(/[][]/,"",$4); print $4}')
+    done < "$NEEDED_TMP"
 done
+rm -f "$NEEDED_TMP"
 
 # Patch versioned SONAMEs (libllama.so.0 → libllama.so)
 echo "=== Patching SONAMEs ==="
