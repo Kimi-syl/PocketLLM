@@ -40,6 +40,7 @@ class CompanionOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var brain: CompanionBrain
+    private lateinit var store: CompanionStore
     private var rootView: ComposeView? = null
     private var owner: OverlayLifecycleOwner? = null
     private var tts: TextToSpeech? = null
@@ -50,8 +51,8 @@ class CompanionOverlayService : Service() {
 
     private var bubbleX = 0
     private var bubbleY = 0
-    /** Where the bubble sat before the panel was opened, restored on collapse. */
-    private var bubbleYBeforeExpand = 0
+    /** Epoch millis of the last user interaction, for the proactive check-in. */
+    private var lastInteractionAt = 0L
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -61,11 +62,16 @@ class CompanionOverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         brain = CompanionBrain { settings() }
+        store = CompanionStore(applicationContext)
+        restoreTranscript()
         ui.status = brain.backendLabel()
         ui.onExpand = { expand() }
         ui.onCollapse = { collapse() }
         ui.onSend = { text -> submit(text) }
         ui.onSummarize = { summarizePage() }
+        ui.onExplain = { explainPage() }
+        ui.onCheer = { cheerUp() }
+        ui.onNewChat = { resetConversation() }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
 
@@ -156,12 +162,16 @@ class CompanionOverlayService : Service() {
         ui.expanded = true
         ui.status = brain.backendLabel()
         val view = rootView ?: return
-        // Lift the panel toward the top: an overlay window low on the screen
-        // would have its input row covered by the soft keyboard.
-        bubbleYBeforeExpand = bubbleY
-        bubbleY = dp(48)
-        val params = layoutParams(expanded = true)
-        bubbleX = params.x
+        val metrics = resources.displayMetrics
+        val params = layoutParams(expanded = true).apply {
+            // Center the panel, but never write this back to bubbleX/bubbleY:
+            // the panel is wider than the bubble, so its clamped x is a
+            // different coordinate. Overwriting the bubble's position here is
+            // what used to drag the collapsed bubble to the middle of the screen.
+            x = ((metrics.widthPixels - width) / 2).coerceAtLeast(0)
+            y = dp(48)
+        }
+        maybeGreet()
         runCatching { windowManager.updateViewLayout(view, params) }
     }
 
@@ -169,7 +179,8 @@ class CompanionOverlayService : Service() {
         if (!ui.expanded) return
         ui.expanded = false
         val view = rootView ?: return
-        bubbleY = bubbleYBeforeExpand
+        // bubbleX/bubbleY were left untouched while expanded, so this restores
+        // the bubble exactly where the user parked it.
         val params = layoutParams(expanded = false)
         runCatching { windowManager.updateViewLayout(view, params) }
     }
@@ -206,12 +217,77 @@ class CompanionOverlayService : Service() {
 
     // --- Conversation -------------------------------------------------------
 
+    /** Rebuild the visible transcript and the model's short-term memory. */
+    private fun restoreTranscript() {
+        val turns = store.load()
+        if (turns.isEmpty()) return
+        ui.messages.addAll(turns.map { CompanionMsg(it.fromUser, it.text) })
+        // Only the tail seeds the model; the file may hold far more than fits
+        // a phone-sized context.
+        for (turn in turns.takeLast(MAX_HISTORY)) {
+            history.addLast((if (turn.fromUser) "user" else "assistant") to turn.text)
+        }
+        lastInteractionAt = System.currentTimeMillis()
+    }
+
+    private fun saveChat() {
+        val turns = ui.messages.map { CompanionTurn(it.fromUser, it.text) }
+        scope.launch(Dispatchers.IO) { store.save(turns) }
+    }
+
+    private fun resetConversation() {
+        ui.messages.clear()
+        history.clear()
+        scope.launch(Dispatchers.IO) { store.clear() }
+        ui.messages.add(CompanionMsg(false, "Fresh start. What's on your mind?"))
+        // Reset the clock too, otherwise the absence greeting would fire the
+        // moment they reopen the panel.
+        lastInteractionAt = System.currentTimeMillis()
+    }
+
+    /**
+     * Reaches out first — the whole point of a companion rather than an
+     * assistant. Only when the panel has been closed for a while, so it never
+     * interrupts an active conversation.
+     */
+    private fun maybeGreet() {
+        val now = System.currentTimeMillis()
+        val quietFor = now - lastInteractionAt
+        val isFirstOpen = ui.messages.isEmpty()
+        if (!isFirstOpen && quietFor < PROACTIVE_QUIET_MS) return
+        if (ui.busy) return
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val line = when {
+            isFirstOpen -> openerFor(hour)
+            quietFor > LONG_ABSENCE_MS -> "It's been a while. I'm still here if you feel like talking."
+            else -> return
+        }
+        ui.messages.add(CompanionMsg(fromUser = false, text = line))
+        lastInteractionAt = now
+        saveChat()
+    }
+
+    private fun openerFor(hour: Int): String = when {
+        hour < 5 -> "You're up late. I'm here if you want some company."
+        hour < 12 -> "Morning. How are you feeling today?"
+        hour < 18 -> "Hey — how's your day going?"
+        else -> "Evening. Want to talk about anything?"
+    }
+
+    private fun cheerUp() {
+        submit(
+            "I'm feeling a bit low right now. Please say something warm and steadying.",
+            display = "Cheer me up",
+        )
+    }
+
     private fun submit(text: String, display: String = text) {
         if (text.isBlank() || ui.busy) return
         ui.messages.add(CompanionMsg(fromUser = true, text = display))
         ui.messages.add(CompanionMsg(fromUser = false, text = ""))
         ui.busy = true
         ui.status = "thinking…"
+        lastInteractionAt = System.currentTimeMillis()
 
         scope.launch {
             val result = brain.respond(history.toList(), text) { delta ->
@@ -238,6 +314,7 @@ class CompanionOverlayService : Service() {
             }
             ui.busy = false
             ui.status = brain.backendLabel()
+            saveChat()
         }
     }
 
@@ -246,7 +323,17 @@ class CompanionOverlayService : Service() {
      * for a plain-language summary. Page text is capped much lower for the
      * local model: a phone-sized context cannot hold a whole article.
      */
-    private fun summarizePage() {
+    private fun summarizePage() = pageTask(
+        opener = "Please summarize what I'm looking at right now.",
+        display = "Summarize this page",
+    )
+
+    private fun explainPage() = pageTask(
+        opener = "Please explain what I'm looking at, in simple plain language, as if I'm new to it.",
+        display = "Explain this",
+    )
+
+    private fun pageTask(opener: String, display: String) {
         val accessibility = CompanionAccessibilityService.instance
         if (accessibility == null) {
             ui.messages.add(
@@ -262,12 +349,12 @@ class CompanionOverlayService : Service() {
         val budget = if (brain.localReady()) LOCAL_PAGE_CHARS else CLOUD_PAGE_CHARS
         val body = page.text.take(budget)
         val prompt = buildString {
-            appendLine("Please summarize what I'm looking at right now.")
+            appendLine(opener)
             page.url?.let { appendLine("URL: $it") }
             appendLine()
             appendLine(body)
         }
-        submit(prompt, display = "Summarize this page")
+        submit(prompt, display = display)
     }
 
     private fun speak(text: String) {
@@ -335,6 +422,10 @@ class CompanionOverlayService : Service() {
         private const val MAX_HISTORY = 12
         private const val LOCAL_PAGE_CHARS = 2500
         private const val CLOUD_PAGE_CHARS = 8000
+        /** Don't greet if the user was here more recently than this. */
+        private const val PROACTIVE_QUIET_MS = 20 * 60 * 1000L
+        /** Above this, the greeting acknowledges the gap instead of saying hello. */
+        private const val LONG_ABSENCE_MS = 6 * 60 * 60 * 1000L
 
         fun start(context: Context) {
             val intent = Intent(context, CompanionOverlayService::class.java)

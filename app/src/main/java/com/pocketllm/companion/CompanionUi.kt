@@ -55,6 +55,12 @@ class CompanionUiState {
 
     var onSend: ((String) -> Unit)? = null
     var onSummarize: (() -> Unit)? = null
+    /** Explain the current page in plain language. */
+    var onExplain: (() -> Unit)? = null
+    /** One-tap emotional support opener. */
+    var onCheer: (() -> Unit)? = null
+    /** Start a fresh conversation and forget the stored transcript. */
+    var onNewChat: (() -> Unit)? = null
     /** Bubble tapped: open the chat panel. */
     var onExpand: (() -> Unit)? = null
     /** Panel "Hide" tapped: shrink back to the bubble. */
@@ -147,8 +153,21 @@ private fun CompanionPanel(state: CompanionUiState) {
                         )
                     }
                 }
-                PanelAction("Summary", enabled = !state.busy) { state.onSummarize?.invoke() }
+                PanelAction("New", enabled = !state.busy) { state.onNewChat?.invoke() }
                 PanelAction("Hide") { state.onCollapse?.invoke() }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // One-tap actions: the common asks shouldn't require typing, and
+            // "Cheer me up" is the emotional-support entry point.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                QuickChip("Cheer me up", !state.busy) { state.onCheer?.invoke() }
+                QuickChip("Summary", !state.busy) { state.onSummarize?.invoke() }
+                QuickChip("Explain", !state.busy) { state.onExplain?.invoke() }
             }
 
             Spacer(Modifier.height(6.dp))
@@ -239,6 +258,23 @@ private fun MessageBubble(message: CompanionMsg) {
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun QuickChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.clickable(enabled = enabled) { onClick() },
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+        )
     }
 }
 
