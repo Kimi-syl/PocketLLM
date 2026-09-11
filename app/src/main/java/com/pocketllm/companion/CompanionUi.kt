@@ -55,6 +55,11 @@ class CompanionUiState {
     var input by mutableStateOf("")
     val messages = mutableStateListOf<CompanionMsg>()
 
+    /** Microphone is on and the recognizer is capturing. */
+    var listening by mutableStateOf(false)
+    /** Whether the mic button should be offered at all. */
+    var voiceInputEnabled by mutableStateOf(false)
+
     /** Identity / appearance, mirrored from settings so the overlay reflects them live. */
     var name by mutableStateOf("Momo")
     var glyph by mutableStateOf("\uD83D\uDC31")
@@ -75,6 +80,8 @@ class CompanionUiState {
     var onExpand: (() -> Unit)? = null
     /** Panel "Hide" tapped: shrink back to the bubble. */
     var onCollapse: (() -> Unit)? = null
+    /** Microphone button tapped: start or stop listening. */
+    var onMicToggle: (() -> Unit)? = null
     var onDrag: ((Float, Float) -> Unit)? = null
     var onDragEnd: (() -> Unit)? = null
 }
@@ -202,6 +209,24 @@ private fun CompanionPanel(state: CompanionUiState) {
             Spacer(Modifier.height(6.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.voiceInputEnabled) {
+                    val micColor = if (state.listening) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.surfaceVariant
+                    val micTint = if (state.listening) MaterialTheme.colorScheme.onError
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    Surface(
+                        shape = CircleShape,
+                        color = micColor,
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clickable(enabled = !state.busy) { state.onMicToggle?.invoke() },
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(text = "\uD83C\uDFA4", fontSize = 16.sp, color = micTint)
+                        }
+                    }
+                    Spacer(Modifier.width(6.dp))
+                }
                 Surface(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(18.dp),
@@ -220,7 +245,7 @@ private fun CompanionPanel(state: CompanionUiState) {
                         decorationBox = { inner ->
                             if (state.input.isEmpty()) {
                                 Text(
-                                    text = "talk to me…",
+                                    text = if (state.listening) "listening…" else "talk to me…",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

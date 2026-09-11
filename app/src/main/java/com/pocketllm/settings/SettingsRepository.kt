@@ -67,6 +67,8 @@ data class AppSettings(
     val companionPersona: String = "",
     /** Speak companion replies out loud using the configured TTS engine. */
     val companionTts: Boolean = false,
+    /** Show a microphone button in the panel to talk instead of typing. */
+    val companionVoiceInput: Boolean = true,
     /** Last bubble position, persisted so it reappears where the user left it. */
     val companionBubbleX: Int = -1,
     val companionBubbleY: Int = 400,

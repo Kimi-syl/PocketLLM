@@ -585,6 +585,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(companionTts = enabled) }
     }
 
+    /** Shows/hides the microphone button in the panel. */
+    fun updateCompanionVoiceInput(enabled: Boolean) {
+        updateCompanionSetting { it.copy(companionVoiceInput = enabled) }
+    }
+
     // --- Companion identity & personality -----------------------------------
 
     fun updateCompanionName(name: String) {

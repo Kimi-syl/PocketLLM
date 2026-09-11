@@ -1,5 +1,6 @@
 package com.pocketllm.companion
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,15 +8,21 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -67,6 +74,8 @@ class CompanionOverlayService : Service() {
     private var extractJob: Job? = null
     /** Timer for proactive check-ins. */
     private var checkInJob: Job? = null
+    /** Active dictation session, if any. */
+    private var recognizer: SpeechRecognizer? = null
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -88,6 +97,7 @@ class CompanionOverlayService : Service() {
         ui.onExplain = { explainPage() }
         ui.onCheer = { cheerUp() }
         ui.onNewChat = { resetConversation() }
+        ui.onMicToggle = { toggleListening() }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
 
@@ -201,6 +211,129 @@ class CompanionOverlayService : Service() {
         runCatching { manager.notify(NUDGE_NOTIFICATION_ID, notification) }
     }
 
+    // --- Voice input --------------------------------------------------------
+
+    /**
+     * Dictation, so she can be talked to rather than typed at.
+     *
+     * The microphone belongs to the system recognition service, not to us —
+     * we only ask it to listen and hand back text. That keeps recording out of
+     * our process entirely; RECORD_AUDIO is what lets the recognizer accept
+     * our request at all.
+     */
+    private fun toggleListening() {
+        if (ui.listening) {
+            stopListening()
+            ui.status = brain.backendLabel()
+        } else {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        if (!hasMicPermission()) {
+            ui.status = "Microphone permission needed — turn it on in Settings"
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            ui.status = "No speech recognition available on this device"
+            return
+        }
+        // A previous recognizer must be torn down before a new one is created;
+        // the platform allows only one listening session per app.
+        releaseRecognizer()
+        val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer.setRecognitionListener(recognitionListener)
+        this.recognizer = recognizer
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        ui.listening = true
+        ui.status = "listening…"
+        runCatching { recognizer.startListening(intent) }.onFailure {
+            ui.listening = false
+            ui.status = "Couldn't start listening"
+            releaseRecognizer()
+        }
+    }
+
+    private fun stopListening() {
+        runCatching { recognizer?.stopListening() }
+        releaseRecognizer()
+        ui.listening = false
+    }
+
+    private fun releaseRecognizer() {
+        runCatching { recognizer?.destroy() }
+        recognizer = null
+    }
+
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** Errors are surfaced in the panel rather than thrown — dictation failing
+     *  should never interrupt the conversation. */
+    private fun recognitionErrorText(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_NO_MATCH,
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission needed"
+        SpeechRecognizer.ERROR_NETWORK,
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Speech needs a network connection"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer is busy — try again"
+        SpeechRecognizer.ERROR_AUDIO -> "Microphone error"
+        else -> "Couldn't hear you"
+    }
+
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            ui.status = "listening…"
+        }
+
+        override fun onBeginningOfSpeech() = Unit
+        override fun onRmsChanged(rmsdB: Float) = Unit
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+        override fun onEndOfSpeech() {
+            ui.status = "…"
+        }
+
+        override fun onError(error: Int) {
+            ui.listening = false
+            ui.status = recognitionErrorText(error)
+            releaseRecognizer()
+        }
+
+        override fun onResults(results: Bundle?) {
+            val text = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                .orEmpty()
+                .trim()
+            ui.listening = false
+            ui.status = brain.backendLabel()
+            releaseRecognizer()
+            // Speaking is a complete turn, so send it rather than leaving it in
+            // the box for another tap.
+            if (text.isNotEmpty()) submit(text)
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val text = partialResults
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+            if (!text.isNullOrBlank()) ui.input = text
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
     override fun onDestroy() {
         runCatching { rootView?.let { windowManager.removeView(it) } }
         owner?.stop()
@@ -210,6 +343,8 @@ class CompanionOverlayService : Service() {
         extractJob = null
         checkInJob?.cancel()
         checkInJob = null
+        // Never leave the microphone open behind us.
+        stopListening()
         tts?.shutdown()
         tts = null
         scope.cancel()
@@ -231,6 +366,7 @@ class CompanionOverlayService : Service() {
         ui.bubbleAlpha = (s.companionBubbleAlpha.coerceIn(20, 100)) / 100f
         // 0 is the "follow the theme" sentinel, so only a real tint overrides.
         ui.bubbleColor = if (s.companionBubbleColor != 0L) Color(s.companionBubbleColor) else null
+        ui.voiceInputEnabled = s.companionVoiceInput
 
         if (!ui.expanded) {
             val view = rootView ?: return
@@ -306,6 +442,12 @@ class CompanionOverlayService : Service() {
 
     private fun collapse() {
         if (!ui.expanded) return
+        // Hiding the panel should also close the microphone; leaving it
+        // recording behind a hidden panel would be indefensible.
+        if (ui.listening) {
+            stopListening()
+            ui.status = brain.backendLabel()
+        }
         ui.expanded = false
         val view = rootView ?: return
         // bubbleX/bubbleY were left untouched while expanded, so this restores

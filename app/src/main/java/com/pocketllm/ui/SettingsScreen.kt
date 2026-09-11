@@ -124,6 +124,10 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            CompanionVoiceSection(vm)
+        }
+
+        item {
             CloudEntrySettingsSection(vm)
         }
 
