@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,6 +54,12 @@ class CompanionUiState {
     var input by mutableStateOf("")
     val messages = mutableStateListOf<CompanionMsg>()
 
+    /** Identity / appearance, mirrored from settings so the overlay reflects them live. */
+    var name by mutableStateOf("Momo")
+    var glyph by mutableStateOf("\uD83D\uDC31")
+    var bubbleSizeDp by mutableStateOf(60)
+    var bubbleAlpha by mutableStateOf(1f)
+
     var onSend: ((String) -> Unit)? = null
     var onSummarize: (() -> Unit)? = null
     /** Explain the current page in plain language. */
@@ -69,6 +76,9 @@ class CompanionUiState {
     var onDragEnd: (() -> Unit)? = null
 }
 
+/** Fallback bubble face when the user clears the glyph field. */
+private const val BUBBLE_GLYPH = "\uD83D\uDC31" // 🐱
+
 @Composable
 fun CompanionRoot(
     state: CompanionUiState,
@@ -82,8 +92,6 @@ fun CompanionRoot(
         }
     }
 }
-
-private const val BUBBLE_GLYPH = "\uD83D\uDC31" // 🐱
 
 @Composable
 private fun CompanionBubble(state: CompanionUiState) {
@@ -106,13 +114,19 @@ private fun CompanionBubble(state: CompanionUiState) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .alpha(state.bubbleAlpha)
                 .background(MaterialTheme.colorScheme.primary, CircleShape)
                 .pointerInput(Unit) {
                     detectTapGestures(onTap = { state.onExpand?.invoke() })
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Text(BUBBLE_GLYPH, fontSize = 24.sp)
+            Text(
+                text = state.glyph.ifBlank { BUBBLE_GLYPH },
+                // Scale the face with the bubble so a large bubble isn't a big
+                // circle with a tiny dot in the middle.
+                fontSize = (state.bubbleSizeDp * 0.42f).sp,
+            )
         }
     }
 }
@@ -136,11 +150,11 @@ private fun CompanionPanel(state: CompanionUiState) {
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(BUBBLE_GLYPH, fontSize = 16.sp)
+                Text(state.glyph.ifBlank { BUBBLE_GLYPH }, fontSize = 16.sp)
                 Spacer(Modifier.width(6.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Companion",
+                        text = state.name.ifBlank { "Companion" },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )

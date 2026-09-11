@@ -585,12 +585,129 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(companionTts = enabled) }
     }
 
+    // --- Companion identity & personality -----------------------------------
+
+    fun updateCompanionName(name: String) {
+        updateCompanionSetting { it.copy(companionName = name.take(24)) }
+    }
+
+    /**
+     * Applying a preset also adopts its trait values, so picking "Straight
+     * talker" actually sounds different. The user can then move the sliders
+     * away from the preset.
+     */
+    fun updateCompanionStyle(presetId: String) {
+        val preset = com.pocketllm.companion.CompanionPersonas.byId(presetId)
+        updateCompanionSetting {
+            it.copy(
+                companionStyle = preset.id,
+                companionWarmth = preset.warmth,
+                companionDirectness = preset.directness,
+                companionPlayfulness = preset.playfulness,
+                companionVerbosity = preset.verbosity,
+            )
+        }
+    }
+
+    fun updateCompanionTraits(
+        warmth: Int? = null,
+        directness: Int? = null,
+        playfulness: Int? = null,
+        verbosity: Int? = null,
+    ) {
+        updateCompanionSetting {
+            it.copy(
+                companionWarmth = (warmth ?: it.companionWarmth).coerceIn(0, 100),
+                companionDirectness = (directness ?: it.companionDirectness).coerceIn(0, 100),
+                companionPlayfulness = (playfulness ?: it.companionPlayfulness).coerceIn(0, 100),
+                companionVerbosity = (verbosity ?: it.companionVerbosity).coerceIn(0, 100),
+            )
+        }
+    }
+
+    fun updateCompanionGlyph(glyph: String) {
+        updateCompanionSetting { it.copy(companionGlyph = glyph.take(4)) }
+    }
+
+    fun updateCompanionBubbleSize(sizeDp: Int) {
+        updateCompanionSetting { it.copy(companionBubbleSize = sizeDp.coerceIn(36, 120)) }
+    }
+
+    fun updateCompanionBubbleAlpha(alpha: Int) {
+        updateCompanionSetting { it.copy(companionBubbleAlpha = alpha.coerceIn(20, 100)) }
+    }
+
+    fun updateCompanionMemoryEnabled(enabled: Boolean) {
+        updateSettings { it.copy(companionMemoryEnabled = enabled) }
+    }
+
+    fun updateCompanionMemoryExtraction(enabled: Boolean) {
+        updateSettings { it.copy(companionMemoryExtraction = enabled) }
+    }
+
+    /**
+     * Writes a companion setting and then pushes it to the live overlay.
+     *
+     * The refresh must happen *after* the write completes: [updateSettings]
+     * launches a coroutine, so refreshing straight away could have the service
+     * read the file before the new value landed.
+     */
+    private fun updateCompanionSetting(transform: (AppSettings) -> AppSettings) {
+        viewModelScope.launch {
+            settings.update(transform)
+            _currentSettings.value = settings.current()
+            com.pocketllm.companion.CompanionOverlayService.sync(getApplication())
+        }
+    }
+
     fun updateCloudEnabled(enabled: Boolean) {
         updateSettings { it.copy(cloudEnabled = enabled) }
     }
 
     fun updateCloudBaseUrl(url: String) {
         updateSettings { it.copy(cloudBaseUrl = url.trim()) }
+    }
+
+    // --- Companion memory ---------------------------------------------------
+
+    private val companionMemory = com.pocketllm.companion.CompanionMemory(application)
+
+    private val _memoryFacts = MutableStateFlow<List<com.pocketllm.companion.MemoryFact>>(emptyList())
+    val memoryFacts: StateFlow<List<com.pocketllm.companion.MemoryFact>> = _memoryFacts
+
+    private fun refreshMemory() {
+        _memoryFacts.value = companionMemory.all().sortedByDescending { it.createdAt }
+    }
+
+    fun refreshCompanionMemory() = refreshMemory()
+
+    fun addMemoryFact(text: String) {
+        companionMemory.add(text)
+        refreshMemory()
+    }
+
+    fun updateMemoryFact(id: String, text: String) {
+        companionMemory.update(id, text)
+        refreshMemory()
+    }
+
+    fun removeMemoryFact(id: String) {
+        companionMemory.remove(id)
+        refreshMemory()
+    }
+
+    fun setMemoryFactPinned(id: String, pinned: Boolean) {
+        companionMemory.setPinned(id, pinned)
+        refreshMemory()
+    }
+
+    fun clearCompanionMemory() {
+        companionMemory.clear()
+        refreshMemory()
+    }
+
+    init {
+        refreshMemory()
     }
 
     fun updateCloudApiKey(key: String) {

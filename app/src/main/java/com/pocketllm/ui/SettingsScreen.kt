@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -100,6 +101,14 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
 
         item {
             CompanionSettingsSection(vm)
+        }
+
+        item {
+            CompanionPersonalitySection(vm)
+        }
+
+        item {
+            CompanionMemorySection(vm)
         }
 
         item {
@@ -808,3 +817,241 @@ private fun currentKeyFor(engine: String, settings: com.pocketllm.settings.AppSe
 
 private fun labelFor(engine: String): String =
     WebSearch.engines.firstOrNull { it.first == engine }?.second ?: engine
+
+/** Who she is, how she sounds, and what she looks like. */
+@Composable
+private fun CompanionPersonalitySection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+
+    SectionCard("Personality") {
+        var name by remember(settings.companionName) { mutableStateOf(settings.companionName) }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Her name") },
+            singleLine = true,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = { vm.updateCompanionName(name) },
+                enabled = name != settings.companionName,
+            ) { Text("Save name") }
+        }
+
+        Text("Style", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Picking a style also sets the sliders below — then adjust to taste.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.pocketllm.companion.CompanionPersonas.all.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pair.forEach { preset ->
+                        FilterChip(
+                            selected = settings.companionStyle == preset.id,
+                            onClick = { vm.updateCompanionStyle(preset.id) },
+                            label = { Text(preset.label) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+        Text(
+            com.pocketllm.companion.CompanionPersonas.byId(settings.companionStyle).blurb,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        TraitSlider("Warmth", settings.companionWarmth, "Reserved", "Affectionate") {
+            vm.updateCompanionTraits(warmth = it)
+        }
+        TraitSlider("Directness", settings.companionDirectness, "Gentle", "Blunt") {
+            vm.updateCompanionTraits(directness = it)
+        }
+        TraitSlider("Playfulness", settings.companionPlayfulness, "Sincere", "Playful") {
+            vm.updateCompanionTraits(playfulness = it)
+        }
+        TraitSlider("Talkativeness", settings.companionVerbosity, "Terse", "Chatty") {
+            vm.updateCompanionTraits(verbosity = it)
+        }
+
+        Text("Bubble", style = MaterialTheme.typography.bodyMedium)
+        var glyph by remember(settings.companionGlyph) { mutableStateOf(settings.companionGlyph) }
+        OutlinedTextField(
+            value = glyph,
+            onValueChange = { glyph = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Bubble face (an emoji)") },
+            singleLine = true,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = { vm.updateCompanionGlyph(glyph) },
+                enabled = glyph != settings.companionGlyph,
+            ) { Text("Save face") }
+        }
+        TraitSlider("Size", settings.companionBubbleSize, "Small", "Large", range = 36..120) {
+            vm.updateCompanionBubbleSize(it)
+        }
+        TraitSlider("Opacity", settings.companionBubbleAlpha, "Faint", "Solid", range = 20..100) {
+            vm.updateCompanionBubbleAlpha(it)
+        }
+    }
+}
+
+@Composable
+private fun TraitSlider(
+    label: String,
+    value: Int,
+    lowLabel: String,
+    highLabel: String,
+    range: IntRange = 0..100,
+    onChange: (Int) -> Unit,
+) {
+    // Held locally while dragging so the handle tracks the finger, and only
+    // committed when released: writing settings and refreshing the overlay on
+    // every frame would hammer the disk for no visible benefit.
+    var local by remember(value) { mutableStateOf(value.toFloat()) }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            Text(
+                "${local.toInt()}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Slider(
+            value = local,
+            onValueChange = { local = it },
+            onValueChangeFinished = { onChange(local.toInt()) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(lowLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(highLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * Human-readable view of what she has remembered. Editable on purpose: memory
+ * that the user cannot see or correct is worse than no memory at all.
+ */
+@Composable
+private fun CompanionMemorySection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    val facts by vm.memoryFacts.collectAsState()
+
+    SectionCard("Memory") {
+        Text(
+            "Things she has picked up about you, so she doesn't have to be told twice.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Remember things")
+                Text(
+                    if (settings.companionMemoryEnabled) "On" else "Off — nothing is stored",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionMemoryEnabled,
+                onCheckedChange = { vm.updateCompanionMemoryEnabled(it) },
+            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Learn new facts automatically")
+                Text(
+                    "Extra short model pass every few messages — slower on local models",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionMemoryExtraction,
+                onCheckedChange = { vm.updateCompanionMemoryExtraction(it) },
+                enabled = settings.companionMemoryEnabled,
+            )
+        }
+
+        var newFact by remember { mutableStateOf("") }
+        OutlinedTextField(
+            value = newFact,
+            onValueChange = { newFact = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Add something to remember") },
+            singleLine = true,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = {
+                    vm.addMemoryFact(newFact)
+                    newFact = ""
+                },
+                enabled = newFact.isNotBlank(),
+            ) { Text("Add") }
+        }
+
+        if (facts.isEmpty()) {
+            Text(
+                "Nothing remembered yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            for (fact in facts) {
+                var editing by remember(fact.id) { mutableStateOf(false) }
+                var draft by remember(fact.id) { mutableStateOf(fact.text) }
+
+                if (editing) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { editing = false }) { Text("Cancel") }
+                        TextButton(
+                            onClick = {
+                                vm.updateMemoryFact(fact.id, draft)
+                                editing = false
+                            },
+                            enabled = draft != fact.text,
+                        ) { Text("Save") }
+                    }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (fact.pinned) {
+                            Text("★ ", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            fact.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = {
+                            vm.setMemoryFactPinned(fact.id, !fact.pinned)
+                        }) { Text(if (fact.pinned) "Unpin" else "Pin") }
+                        TextButton(onClick = { editing = true }) { Text("Edit") }
+                        TextButton(onClick = { vm.removeMemoryFact(fact.id) }) { Text("Forget") }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { vm.clearCompanionMemory() }) { Text("Forget everything") }
+            }
+        }
+    }
+}

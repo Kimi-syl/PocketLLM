@@ -20,13 +20,17 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.pocketllm.MainActivity
 import com.pocketllm.R
+import com.pocketllm.llm.LlamaEngine
 import com.pocketllm.server.ServerLog
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -41,6 +45,7 @@ class CompanionOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var brain: CompanionBrain
     private lateinit var store: CompanionStore
+    private lateinit var memory: CompanionMemory
     private var rootView: ComposeView? = null
     private var owner: OverlayLifecycleOwner? = null
     private var tts: TextToSpeech? = null
@@ -53,6 +58,12 @@ class CompanionOverlayService : Service() {
     private var bubbleY = 0
     /** Epoch millis of the last user interaction, for the proactive check-in. */
     private var lastInteractionAt = 0L
+    /** Turns since the last memory-extraction pass. */
+    private var turnsSinceExtraction = 0
+    /** Page summaries are not conversation, so they are excluded from memory. */
+    private var lastTurnWasPageTask = false
+    /** In-flight background memory pass, so a real reply can pre-empt it. */
+    private var extractJob: Job? = null
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -60,8 +71,10 @@ class CompanionOverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        brain = CompanionBrain { settings() }
+        memory = CompanionMemory(applicationContext)
+        brain = CompanionBrain(settings = { settings() }, memory = { memory })
         store = CompanionStore(applicationContext)
         restoreTranscript()
         ui.status = brain.backendLabel()
@@ -76,6 +89,7 @@ class CompanionOverlayService : Service() {
         ui.onDragEnd = { persistPosition() }
 
         val s = settings()
+        applyAppearance(s)
         bubbleX = if (s.companionBubbleX >= 0) s.companionBubbleX else defaultBubbleX()
         bubbleY = s.companionBubbleY
 
@@ -95,7 +109,20 @@ class CompanionOverlayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        refreshFromSettings()
         return START_STICKY
+    }
+
+    /**
+     * Re-read settings and apply them to the live overlay. Public so the app's
+     * ViewModel can push changes straight in: the service and the UI share a
+     * process, so a direct call beats restarting the service (which is what a
+     * slider drag would otherwise do on every tick).
+     */
+    fun refreshFromSettings() {
+        if (!::brain.isInitialized) return
+        applyAppearance(settings())
+        ui.status = brain.backendLabel()
     }
 
     override fun onDestroy() {
@@ -103,13 +130,33 @@ class CompanionOverlayService : Service() {
         owner?.stop()
         rootView = null
         owner = null
+        extractJob?.cancel()
+        extractJob = null
         tts?.shutdown()
         tts = null
         scope.cancel()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
     // --- Overlay window -----------------------------------------------------
+
+    /**
+     * Push identity/appearance settings into the UI state and, when the bubble
+     * is visible, resize the window to match. Called on start and whenever the
+     * user changes something in Settings while the service is alive.
+     */
+    private fun applyAppearance(s: AppSettings) {
+        ui.name = s.companionName.ifBlank { "Momo" }
+        ui.glyph = s.companionGlyph.ifBlank { "\uD83D\uDC31" }
+        ui.bubbleSizeDp = s.companionBubbleSize.coerceIn(36, 120)
+        ui.bubbleAlpha = (s.companionBubbleAlpha.coerceIn(20, 100)) / 100f
+
+        if (!ui.expanded) {
+            val view = rootView ?: return
+            runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = false)) }
+        }
+    }
 
     private fun attachOverlay() {
         val lifecycleOwner = OverlayLifecycleOwner().also { it.start() }
@@ -138,8 +185,10 @@ class CompanionOverlayService : Service() {
             width = minOf(metrics.widthPixels - dp(24), dp(360))
             height = minOf(dp(470), metrics.heightPixels - dp(160))
         } else {
-            width = dp(64)
-            height = dp(64)
+            // Sized from the user's bubble-size setting, not a fixed 64dp.
+            val side = dp(ui.bubbleSizeDp)
+            width = side
+            height = side
         }
         return WindowManager.LayoutParams(
             width,
@@ -205,7 +254,7 @@ class CompanionOverlayService : Service() {
         y.coerceIn(0, maxOf(0, resources.displayMetrics.heightPixels - height))
 
     private fun defaultBubbleX(): Int =
-        (resources.displayMetrics.widthPixels - dp(64) - dp(12)).coerceAtLeast(0)
+        (resources.displayMetrics.widthPixels - dp(ui.bubbleSizeDp) - dp(12)).coerceAtLeast(0)
 
     private fun persistPosition() {
         // Only the collapsed bubble position is meaningful.
@@ -288,6 +337,15 @@ class CompanionOverlayService : Service() {
         ui.busy = true
         ui.status = "thinking…"
         lastInteractionAt = System.currentTimeMillis()
+        lastTurnWasPageTask = isPageTask(display)
+
+        // A queued memory pass must not delay the reply the user is waiting for.
+        abortBackgroundExtraction()
+
+        // Obvious facts land instantly with no model call.
+        if (settings().companionMemoryEnabled && !lastTurnWasPageTask) {
+            runCatching { memory.captureFromUserText(display) }
+        }
 
         scope.launch {
             val result = brain.respond(history.toList(), text) { delta ->
@@ -315,7 +373,64 @@ class CompanionOverlayService : Service() {
             ui.busy = false
             ui.status = brain.backendLabel()
             saveChat()
+            if (!lastTurnWasPageTask) maybeExtractMemory()
         }
+    }
+
+    /** Page text is not something to remember about a person. */
+    private fun isPageTask(display: String): Boolean =
+        display == "Summarize this page" || display == "Explain this"
+
+    /**
+     * Every few turns, ask the model to pull durable facts out of the recent
+     * exchange.
+     *
+     * This is a second generation pass, and on a local model it can take many
+     * seconds, so it waits for an idle moment and yields immediately if the
+     * user starts talking again — a real reply must never queue behind
+     * bookkeeping.
+     */
+    private fun maybeExtractMemory() {
+        val s = settings()
+        if (!s.companionMemoryEnabled || !s.companionMemoryExtraction) return
+        if (!brain.anyBackendReady()) return
+        turnsSinceExtraction++
+        if (turnsSinceExtraction < EXTRACT_EVERY_TURNS) return
+        turnsSinceExtraction = 0
+
+        val exchange = history.takeLast(6).joinToString("\n") { (role, text) -> "$role: $text" }
+        if (exchange.isBlank()) return
+        val idleAt = lastInteractionAt
+
+        extractJob = scope.launch {
+            delay(EXTRACT_IDLE_DELAY_MS)
+            // Something happened while we waited: leave it for another time.
+            if (ui.busy || lastInteractionAt != idleAt) return@launch
+            val added = runCatching {
+                val facts = brain.extractFacts(exchange)
+                if (facts.isEmpty()) 0 else memory.mergeExtracted(facts)
+            }.getOrDefault(0)
+            if (added > 0) {
+                ServerLog.log("companion: learned $added new fact(s)")
+                // The quietest possible signal: the status line, not the chat.
+                ui.status = "noted something to remember"
+            }
+        }
+    }
+
+    /**
+     * Stop a background memory pass so the user's next message gets the engine
+     * immediately. Safe to call when nothing is running.
+     */
+    private fun abortBackgroundExtraction() {
+        val job = extractJob ?: return
+        if (job.isActive) {
+            // The generation runs natively and cannot be cancelled directly;
+            // requestStop() makes it end cooperatively at the next token.
+            LlamaEngine.requestStop()
+            job.cancel()
+        }
+        extractJob = null
     }
 
     /**
@@ -426,6 +541,10 @@ class CompanionOverlayService : Service() {
         private const val PROACTIVE_QUIET_MS = 20 * 60 * 1000L
         /** Above this, the greeting acknowledges the gap instead of saying hello. */
         private const val LONG_ABSENCE_MS = 6 * 60 * 60 * 1000L
+        /** How often to run the fact-extraction pass, in user turns. */
+        private const val EXTRACT_EVERY_TURNS = 4
+        /** Wait this long after a turn before spending the engine on memory. */
+        private const val EXTRACT_IDLE_DELAY_MS = 20_000L
 
         fun start(context: Context) {
             val intent = Intent(context, CompanionOverlayService::class.java)
@@ -438,6 +557,32 @@ class CompanionOverlayService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, CompanionOverlayService::class.java))
+        }
+
+        /** The running service, if any. Same process as the UI, so this is safe. */
+        @Volatile
+        private var instance: CompanionOverlayService? = null
+
+        /**
+         * Apply settings changes to the live bubble. If the service is not
+         * running but the user has it switched on, start it. Falls back to a
+         * cold start only when there is something to show.
+         */
+        fun sync(context: Context) {
+            val running = instance
+            if (running != null) {
+                // updateViewLayout must run on the main thread; callers are
+                // Compose/ViewModel so this is already main, but be explicit.
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    runCatching { running.refreshFromSettings() }
+                }
+                return
+            }
+            if (SettingsRepository(context).current().companionEnabled &&
+                android.provider.Settings.canDrawOverlays(context)
+            ) {
+                start(context)
+            }
         }
     }
 }

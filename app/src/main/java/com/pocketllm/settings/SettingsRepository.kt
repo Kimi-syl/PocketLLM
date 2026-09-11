@@ -71,6 +71,30 @@ data class AppSettings(
     val companionBubbleX: Int = -1,
     val companionBubbleY: Int = 400,
 
+    // --- Companion identity & personality -----------------------------------
+    /** What she calls herself in the panel header. */
+    val companionName: String = "Momo",
+    /** Personality preset id; see PersonalityPreset. */
+    val companionStyle: String = "gentle",
+    /** 0-100 traits, blended into the system prompt. */
+    val companionWarmth: Int = 70,
+    val companionDirectness: Int = 35,
+    val companionPlayfulness: Int = 45,
+    /** 0-100; 0 = terse one-liners, 100 = likes to talk. */
+    val companionVerbosity: Int = 30,
+    /** Bubble face. Any short string, usually one emoji. */
+    val companionGlyph: String = "\uD83D\uDC31",
+    /** Bubble diameter in dp. */
+    val companionBubbleSize: Int = 60,
+    /** Bubble opacity, 20-100 percent. */
+    val companionBubbleAlpha: Int = 100,
+
+    // --- Companion memory ---------------------------------------------------
+    /** Remember durable facts about the user across conversations. */
+    val companionMemoryEnabled: Boolean = true,
+    /** Run the (extra) model pass that pulls facts out of the conversation. */
+    val companionMemoryExtraction: Boolean = true,
+
     // --- Cloud entry --------------------------------------------------------
     /** Allow the companion to call a remote OpenAI-compatible endpoint. */
     val cloudEnabled: Boolean = false,

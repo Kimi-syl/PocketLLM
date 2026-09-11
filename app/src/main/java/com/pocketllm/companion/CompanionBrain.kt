@@ -16,12 +16,15 @@ import com.pocketllm.settings.AppSettings
  */
 class CompanionBrain(
     private val settings: () -> AppSettings,
+    private val memory: () -> CompanionMemory?,
 ) {
 
     fun localReady(): Boolean = LlamaEngine.state.value is EngineState.Ready
 
     private fun cloudConfigured(s: AppSettings): Boolean =
         s.cloudEnabled && s.cloudBaseUrl.isNotBlank()
+
+    fun anyBackendReady(): Boolean = localReady() || cloudConfigured(settings())
 
     /** Short human-readable label for the panel's status line. */
     fun backendLabel(): String = when {
@@ -46,8 +49,8 @@ class CompanionBrain(
                 LlamaEngine.generate(
                     prompt = prompt,
                     params = GenParams(
-                        maxTokens = LOCAL_MAX_TOKENS,
-                        temperature = 0.85f,
+                        maxTokens = localMaxTokens(s),
+                        temperature = temperatureFor(s),
                         topP = 0.95f,
                         topK = 40,
                     ),
@@ -64,7 +67,7 @@ class CompanionBrain(
 
         if (cloudConfigured(s)) {
             return CloudLlmClient(s.cloudBaseUrl, s.cloudApiKey, s.cloudModel)
-                .complete(messages, maxTokens = CLOUD_MAX_TOKENS)
+                .complete(messages, maxTokens = CLOUD_MAX_TOKENS, temperature = temperatureFor(s).toDouble())
                 .onSuccess { onDelta(it) }
         }
 
@@ -76,56 +79,94 @@ class CompanionBrain(
         return Result.failure(IllegalStateException(message))
     }
 
+    /**
+     * Pulls durable facts out of an exchange. A separate, deliberately tiny
+     * pass — asking the conversational model to both chat and self-report is
+     * unreliable, and this way a failure costs nothing visible to the user.
+     */
+    suspend fun extractFacts(exchange: String): List<String> {
+        val s = settings()
+        if (!s.companionMemoryEnabled || !s.companionMemoryExtraction) return emptyList()
+        if (!anyBackendReady()) return emptyList()
+        val messages = listOf(
+            "system" to EXTRACTOR_PROMPT,
+            "user" to exchange.take(EXTRACT_MAX_CHARS),
+        )
+        val raw = when {
+            localReady() -> {
+                val prompt = LlamaEngine.chatPrompt(messages) ?: return emptyList()
+                val out = StringBuilder()
+                LlamaEngine.generate(prompt, GenParams(maxTokens = 140, temperature = 0.1f, topP = 0.9f, topK = 20)) { out.append(it) }
+                out.toString()
+            }
+            else -> CloudLlmClient(s.cloudBaseUrl, s.cloudApiKey, s.cloudModel)
+                .complete(messages, maxTokens = 140, temperature = 0.1)
+                .getOrNull().orEmpty()
+        }
+        return parseFacts(raw)
+    }
+
+    private fun parseFacts(raw: String): List<String> {
+        if (raw.isBlank() || raw.trim().equals("NONE", ignoreCase = true)) return emptyList()
+        return raw.lines()
+            .map { it.trim().removePrefix("-").removePrefix("*").trim() }
+            .filter { it.isNotEmpty() && !it.equals("NONE", ignoreCase = true) && it.length <= 200 }
+            .take(5)
+    }
+
     private fun buildMessages(
         history: List<Pair<String, String>>,
         userText: String,
         s: AppSettings,
     ): List<Pair<String, String>> {
-        val messages = ArrayList<Pair<String, String>>(history.size + 2)
-        messages.add("system" to systemPrompt(s))
-        // Keep the window small: the companion runs on phones with a modest
-        // context, and old small talk matters far less than what was just said.
-        messages.addAll(history.takeLast(MAX_HISTORY_MESSAGES))
-        messages.add("user" to userText)
-        return messages
+        // Only the recent window is searched for relevant memories, so a fact
+        // comes up because it matches what is being discussed right now.
+        val recent = (history.takeLast(4).joinToString(" ") { it.second } + " " + userText)
+        val memoryBlock = if (s.companionMemoryEnabled) memory()?.promptBlock(recent).orEmpty() else ""
+        return buildList {
+            add("system" to CompanionPersonas.systemPrompt(s, memoryBlock))
+            // Keep the window small: phones have a modest context, and old small
+            // talk matters far less than what was just said.
+            addAll(history.takeLast(MAX_HISTORY_MESSAGES))
+            add("user" to userText)
+        }
     }
 
-    private fun systemPrompt(s: AppSettings): String {
-        val custom = s.companionPersona.trim()
-        val base = if (custom.isNotEmpty()) custom else DEFAULT_PERSONA
-        return base + "\n\n" + COMPANION_RULES
+    /** Longer replies are offered, but the prompt still asks for brevity. */
+    private fun localMaxTokens(s: AppSettings): Int = when {
+        s.companionVerbosity >= 67 -> 480
+        s.companionVerbosity < 34 -> 220
+        else -> LOCAL_MAX_TOKENS
+    }
+
+    /** A touch more warmth/randomness for playful personalities, less for direct ones. */
+    private fun temperatureFor(s: AppSettings): Float = when {
+        s.companionPlayfulness >= 67 -> 0.95f
+        s.companionDirectness >= 67 -> 0.65f
+        else -> 0.85f
     }
 
     private companion object {
         const val LOCAL_MAX_TOKENS = 320
         const val CLOUD_MAX_TOKENS = 500
         const val MAX_HISTORY_MESSAGES = 8
+        const val EXTRACT_MAX_CHARS = 1800
 
-        val DEFAULT_PERSONA = """
-            You are a warm, gentle companion living in a small floating bubble on
-            the user's phone. You are a calm presence they can tap whenever they
-            want company, a moment of encouragement, or help with something small.
-        """.trimIndent()
+        val EXTRACTOR_PROMPT = """
+            You extract durable facts about the USER from a conversation.
 
-        val COMPANION_RULES = """
-            How you talk:
-            - Be warm, human and specific. Never sound like a corporate assistant.
-            - Keep replies short: 1-3 sentences unless asked for detail.
-            - Plain prose, no bullet lists, no headings, no emoji unless the user uses them.
-            - Ask at most one gentle follow-up question, and only when it feels natural.
+            Rules:
+            - Only facts likely to still matter weeks from now (name, people, pets,
+              work, studies, location, ongoing situations, strong preferences).
+            - Never store moods, one-off questions, or anything about the assistant.
+            - Write each fact as a short third-person sentence starting with "They".
+            - At most 3 facts. Output one per line, no numbering, no commentary.
+            - If there is nothing durable, output exactly: NONE
 
-            Emotional support:
-            - If the user sounds stressed, low, or overwhelmed: acknowledge the feeling
-              first, in your own words, before anything else.
-            - Do not lecture, diagnose, or give a list of instructions.
-            - Never say "as an AI". Do not claim to be a therapist or doctor.
-            - If someone hints at self-harm, gently and without alarm encourage them to
-              reach out to someone they trust or a local crisis line, and stay kind.
-
-            Tasks:
-            - When given page text to summarize, give the gist in a few sentences of
-              plain language, then one line on why it might matter to them.
-            - Stay honest about uncertainty. If you don't know, say so.
+            Examples:
+            They have a cat called Momo.
+            They are studying for a law degree.
+            They dislike being phoned unexpectedly.
         """.trimIndent()
     }
 }
