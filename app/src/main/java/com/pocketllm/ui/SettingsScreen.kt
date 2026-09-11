@@ -128,6 +128,10 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            CompanionRemindersSection(vm)
+        }
+
+        item {
             CloudEntrySettingsSection(vm)
         }
 

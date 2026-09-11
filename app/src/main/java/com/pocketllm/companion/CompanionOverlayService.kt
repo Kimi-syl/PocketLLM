@@ -87,6 +87,10 @@ class CompanionOverlayService : Service() {
      */
     private var heldPage: CapturedPage? = null
     private var heldPageTurns = 0
+    /** Subject awaiting a time, after "remind me to X" with no time given. */
+    private var pendingReminderSubject: String? = null
+    /** Reminders she is holding, so they can be listed and cancelled. */
+    private lateinit var reminders: CompanionReminderStore
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -99,6 +103,9 @@ class CompanionOverlayService : Service() {
         memory = CompanionMemory(applicationContext)
         brain = CompanionBrain(settings = { settings() }, memory = { memory })
         store = CompanionStore(applicationContext)
+        reminders = CompanionReminderStore(applicationContext)
+        // Forget reminders that fired long ago so the list stays meaningful.
+        scope.launch(Dispatchers.IO) { runCatching { reminders.prune() } }
         restoreTranscript()
         ui.status = brain.backendLabel()
         ui.onExpand = { expand() }
@@ -636,6 +643,7 @@ class CompanionOverlayService : Service() {
         ui.messages.clear()
         history.clear()
         clearHeldPage()
+        pendingReminderSubject = null
         scope.launch(Dispatchers.IO) { store.clear() }
         ui.messages.add(CompanionMsg(false, "Fresh start. What's on your mind?"))
         // Reset the clock too, otherwise the absence greeting would fire the
@@ -679,12 +687,83 @@ class CompanionOverlayService : Service() {
         )
     }
 
+    // --- Reminders ----------------------------------------------------------
+
+    /**
+     * Handles "remind me to ..." without going near the model.
+     *
+     * A reminder that lands at the wrong time is worse than no reminder, so
+     * this is deterministic: it recognises the phrasings it can be sure about,
+     * and when it can't find a time it asks rather than guessing.
+     *
+     * @return true when the message was fully handled here.
+     */
+    private fun handleReminderIfAny(text: String, display: String): Boolean {
+        // Waiting on the answer to "when?".
+        val waitingFor = pendingReminderSubject
+        if (waitingFor != null) {
+            pendingReminderSubject = null
+            val at = ReminderParser.parseTime(text)
+            if (at != null) {
+                createReminder(waitingFor, at, display)
+                return true
+            }
+            // Not a time — fall through and treat it as an ordinary message.
+        }
+
+        if (!ReminderParser.looksLikeReminder(text)) return false
+
+        val subject = ReminderParser.parseSubject(text)
+        val at = ReminderParser.parseTime(text)
+        when {
+            at != null -> {
+                createReminder(subject.ifBlank { "your reminder" }, at, display)
+                return true
+            }
+            subject.isNotBlank() -> {
+                pendingReminderSubject = subject
+                replyWithoutModel(display, "Sure — when should I remind you?")
+                return true
+            }
+            // "remind me" with no subject and no time: not enough to act on.
+            else -> return false
+        }
+    }
+
+    private fun createReminder(subject: String, triggerAt: Long, display: String) {
+        val reminder = CompanionReminder(subject = subject, triggerAt = triggerAt)
+        scope.launch(Dispatchers.IO) {
+            val saved = reminders.add(reminder)
+            ReminderScheduler.schedule(this@CompanionOverlayService, saved)
+        }
+        replyWithoutModel(
+            display,
+            "Okay — I'll remind you about ${subject.trimEnd('.')} " +
+                "${ReminderScheduler.describe(triggerAt)}.",
+        )
+    }
+
+    /** A reply that needs no model: reminders are confirmed instantly. */
+    private fun replyWithoutModel(display: String, reply: String) {
+        ui.messages.add(CompanionMsg(fromUser = true, text = display))
+        ui.messages.add(CompanionMsg(fromUser = false, text = reply))
+        history.addLast("user" to display)
+        history.addLast("assistant" to reply)
+        while (history.size > MAX_HISTORY) history.removeFirst()
+        lastInteractionAt = System.currentTimeMillis()
+        speak(reply)
+        saveChat()
+    }
+
     private fun submit(
         text: String,
         display: String = text,
         grounding: String? = null,
     ) {
         if (text.isBlank() || ui.busy) return
+        // Reminders are handled before anything else: they must be exact, and
+        // they don't need a model at all.
+        if (grounding == null && handleReminderIfAny(text, display)) return
         ui.messages.add(CompanionMsg(fromUser = true, text = display))
         ui.messages.add(CompanionMsg(fromUser = false, text = ""))
         ui.busy = true

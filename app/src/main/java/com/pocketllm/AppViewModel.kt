@@ -651,6 +651,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(companionMemoryEnabled = enabled) }
     }
 
+    // --- Companion reminders ------------------------------------------------
+
+    private val companionReminders =
+        com.pocketllm.companion.CompanionReminderStore(application)
+
+    private val _reminders =
+        MutableStateFlow<List<com.pocketllm.companion.CompanionReminder>>(emptyList())
+    val reminders: StateFlow<List<com.pocketllm.companion.CompanionReminder>> = _reminders
+
+    fun refreshReminders() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { companionReminders.prune() }
+            _reminders.value = companionReminders.all()
+        }
+    }
+
+    /** Also cancels the pending alarm, not just the stored entry. */
+    fun cancelReminder(context: android.content.Context, id: String) {
+        com.pocketllm.companion.ReminderScheduler.cancel(context, id)
+        viewModelScope.launch(Dispatchers.IO) {
+            companionReminders.remove(id)
+            _reminders.value = companionReminders.all()
+        }
+    }
+
     fun updateCompanionMemoryExtraction(enabled: Boolean) {
         updateSettings { it.copy(companionMemoryExtraction = enabled) }
     }
