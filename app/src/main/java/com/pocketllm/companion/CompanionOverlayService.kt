@@ -28,6 +28,9 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.pocketllm.MainActivity
 import com.pocketllm.R
+import com.pocketllm.agent.SearchConfig
+import com.pocketllm.agent.ToolResult
+import com.pocketllm.agent.WebSearchTool
 import com.pocketllm.llm.LlamaEngine
 import com.pocketllm.server.ServerLog
 import com.pocketllm.settings.AppSettings
@@ -40,6 +43,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Floating companion bubble, hosted in an overlay window owned by a foreground
@@ -96,6 +100,7 @@ class CompanionOverlayService : Service() {
         ui.onSummarize = { summarizePage() }
         ui.onExplain = { explainPage() }
         ui.onCheer = { cheerUp() }
+        ui.onLookUp = { lookUp() }
         ui.onNewChat = { resetConversation() }
         ui.onMicToggle = { toggleListening() }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
@@ -332,6 +337,120 @@ class CompanionOverlayService : Service() {
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    // --- Looking things up --------------------------------------------------
+
+    /**
+     * Answer a question with the web behind it.
+     *
+     * Deliberately search-then-answer rather than a full tool-calling loop:
+     * the search runs first and completes quickly, the grounding is injected
+     * for this turn only, and it works identically on the local model and on
+     * the cloud entry. A multi-turn tool loop would be slower on a phone and
+     * only available locally.
+     */
+    private fun lookUp() {
+        if (ui.busy) return
+        // Fall back to the last thing they asked, so "she didn't know" can be
+        // followed by a single tap without retyping.
+        val query = ui.input.trim().ifBlank {
+            ui.messages.lastOrNull { it.fromUser }?.text.orEmpty().trim()
+        }
+        if (query.isBlank()) {
+            ui.status = "Type a question first"
+            return
+        }
+        ui.input = ""
+        ui.messages.add(CompanionMsg(fromUser = true, text = query))
+        ui.messages.add(CompanionMsg(fromUser = false, text = ""))
+        ui.busy = true
+        ui.status = "searching…"
+        lastInteractionAt = System.currentTimeMillis()
+
+        scope.launch {
+            val grounding = runCatching { searchGrounding(query) }.getOrElse { error ->
+                ServerLog.log("companion: search failed — ${error.message}")
+                null
+            }
+            if (grounding == null) {
+                finishTurn(
+                    query,
+                    "I couldn't reach the web just now. Ask me again in a bit, " +
+                        "or tell me what you already know and we'll work from that.",
+                )
+                return@launch
+            }
+            ui.status = "reading…"
+            val result = brain.respond(history.toList(), query, grounding) { delta ->
+                val index = ui.messages.lastIndex
+                if (index >= 0) {
+                    ui.messages[index] = ui.messages[index].copy(text = ui.messages[index].text + delta)
+                }
+            }
+            result.onSuccess { reply ->
+                val index = ui.messages.lastIndex
+                if (index >= 0) ui.messages[index] = CompanionMsg(false, reply)
+                history.addLast("user" to query)
+                history.addLast("assistant" to reply)
+                while (history.size > MAX_HISTORY) history.removeFirst()
+                speak(reply)
+            }.onFailure { error ->
+                val index = ui.messages.lastIndex
+                if (index >= 0) {
+                    ui.messages[index] = CompanionMsg(
+                        false,
+                        error.message ?: "Something went wrong.",
+                    )
+                }
+            }
+            ui.busy = false
+            ui.status = brain.backendLabel()
+            saveChat()
+        }
+    }
+
+    /** Replace the in-flight reply with a fixed line and settle the turn. */
+    private fun finishTurn(userText: String, reply: String) {
+        val index = ui.messages.lastIndex
+        if (index >= 0) ui.messages[index] = CompanionMsg(false, reply)
+        history.addLast("user" to userText)
+        history.addLast("assistant" to reply)
+        while (history.size > MAX_HISTORY) history.removeFirst()
+        ui.busy = false
+        ui.status = brain.backendLabel()
+        saveChat()
+    }
+
+    /** Run a web search and format the hits as prompt grounding. */
+    private suspend fun searchGrounding(query: String): String? {
+        val s = settings()
+        val tool = WebSearchTool {
+            SearchConfig(
+                engine = s.searchEngine,
+                braveKey = s.braveKey,
+                tavilyKey = s.tavilyKey,
+                bingKey = s.bingKey,
+                firecrawlKey = s.firecrawlKey,
+            )
+        }
+        val result = tool.execute(mapOf("query" to JsonPrimitive(query)))
+        val hits = (result as? ToolResult.Search)?.results.orEmpty()
+        if (hits.isEmpty()) return null
+        return buildString {
+            appendLine("Web results for \"$query\":")
+            hits.take(LOOKUP_MAX_RESULTS).forEachIndexed { i, hit ->
+                appendLine("${i + 1}. ${hit.title}")
+                appendLine("   ${hit.url}")
+                if (hit.snippet.isNotBlank()) appendLine("   ${hit.snippet}")
+            }
+            appendLine()
+            appendLine(
+                "Answer their question using these results. They may be incomplete " +
+                    "or wrong — if they don't actually contain the answer, say so plainly " +
+                    "instead of guessing. Mention the source only if it matters."
+            )
+        }
     }
 
     override fun onDestroy() {
@@ -761,6 +880,8 @@ class CompanionOverlayService : Service() {
         private const val ACTION_EXPAND = "com.pocketllm.companion.EXPAND"
         /** Don't reach out if they were here more recently than this. */
         private const val NUDGE_MIN_IDLE_MS = 45 * 60 * 1000L
+        /** Search hits fed to the model; more than this just crowds the prompt. */
+        private const val LOOKUP_MAX_RESULTS = 5
         private const val MAX_HISTORY = 12
         private const val LOCAL_PAGE_CHARS = 2500
         private const val CLOUD_PAGE_CHARS = 8000

@@ -74,6 +74,8 @@ class CompanionUiState {
     var onExplain: (() -> Unit)? = null
     /** One-tap emotional support opener. */
     var onCheer: (() -> Unit)? = null
+    /** Search the web and answer from the results. */
+    var onLookUp: (() -> Unit)? = null
     /** Start a fresh conversation and forget the stored transcript. */
     var onNewChat: (() -> Unit)? = null
     /** Bubble tapped: open the chat panel. */
@@ -184,14 +186,16 @@ private fun CompanionPanel(state: CompanionUiState) {
             Spacer(Modifier.height(6.dp))
 
             // One-tap actions: the common asks shouldn't require typing, and
-            // "Cheer me up" is the emotional-support entry point.
+            // "Cheer me up" is the emotional-support entry point. Each chip
+            // takes an equal share so all four always fit the panel width.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                QuickChip("Cheer me up", !state.busy) { state.onCheer?.invoke() }
-                QuickChip("Summary", !state.busy) { state.onSummarize?.invoke() }
-                QuickChip("Explain", !state.busy) { state.onExplain?.invoke() }
+                QuickChip("Cheer me up", !state.busy, Modifier.weight(1f)) { state.onCheer?.invoke() }
+                QuickChip("Summary", !state.busy, Modifier.weight(1f)) { state.onSummarize?.invoke() }
+                QuickChip("Explain", !state.busy, Modifier.weight(1f)) { state.onExplain?.invoke() }
+                QuickChip("Look up", !state.busy, Modifier.weight(1f)) { state.onLookUp?.invoke() }
             }
 
             Spacer(Modifier.height(6.dp))
@@ -304,18 +308,23 @@ private fun MessageBubble(message: CompanionMsg) {
 }
 
 @Composable
-private fun QuickChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun QuickChip(
+    label: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
-        modifier = Modifier.clickable(enabled = enabled) { onClick() },
+        modifier = modifier.clickable(enabled = enabled) { onClick() },
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
             maxLines = 1,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 5.dp),
         )
     }
 }

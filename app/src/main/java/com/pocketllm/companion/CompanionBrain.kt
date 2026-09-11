@@ -37,10 +37,11 @@ class CompanionBrain(
     suspend fun respond(
         history: List<Pair<String, String>>,
         userText: String,
+        grounding: String? = null,
         onDelta: (String) -> Unit,
     ): Result<String> {
         val s = settings()
-        val messages = buildMessages(history, userText, s)
+        val messages = buildMessages(history, userText, s, grounding)
 
         if (localReady()) {
             val prompt = LlamaEngine.chatPrompt(messages)
@@ -118,13 +119,23 @@ class CompanionBrain(
         history: List<Pair<String, String>>,
         userText: String,
         s: AppSettings,
+        grounding: String? = null,
     ): List<Pair<String, String>> {
         // Only the recent window is searched for relevant memories, so a fact
         // comes up because it matches what is being discussed right now.
         val recent = (history.takeLast(4).joinToString(" ") { it.second } + " " + userText)
         val memoryBlock = if (s.companionMemoryEnabled) memory()?.promptBlock(recent).orEmpty() else ""
+        val system = buildString {
+            append(CompanionPersonas.systemPrompt(s, memoryBlock))
+            // Grounding goes last so it sits closest to the question, and only
+            // for this turn — it must never enter the stored transcript.
+            if (!grounding.isNullOrBlank()) {
+                append("\n\n")
+                append(grounding)
+            }
+        }
         return buildList {
-            add("system" to CompanionPersonas.systemPrompt(s, memoryBlock))
+            add("system" to system)
             // Keep the window small: phones have a modest context, and old small
             // talk matters far less than what was just said.
             addAll(history.takeLast(MAX_HISTORY_MESSAGES))
