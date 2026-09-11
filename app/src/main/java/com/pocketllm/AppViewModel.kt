@@ -637,6 +637,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateCompanionSetting { it.copy(companionBubbleAlpha = alpha.coerceIn(20, 100)) }
     }
 
+    /** 0 restores the theme colour; see [AppSettings.companionBubbleColor]. */
+    fun updateCompanionBubbleColor(argb: Long) {
+        updateCompanionSetting { it.copy(companionBubbleColor = argb) }
+    }
+
     fun updateCompanionMemoryEnabled(enabled: Boolean) {
         updateSettings { it.copy(companionMemoryEnabled = enabled) }
     }
@@ -725,8 +730,82 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refreshMemory()
     }
 
+    // --- Companion profiles -------------------------------------------------
+
+    private val companionProfiles = com.pocketllm.companion.CompanionProfileStore(application)
+
+    private val _profiles =
+        MutableStateFlow<List<com.pocketllm.companion.CompanionProfile>>(emptyList())
+    val profiles: StateFlow<List<com.pocketllm.companion.CompanionProfile>> = _profiles
+
+    private fun refreshProfiles() {
+        _profiles.value = companionProfiles.all().sortedByDescending { it.createdAt }
+    }
+
+    fun refreshCompanionProfiles() = refreshProfiles()
+
+    /** Snapshot the companion currently in settings as a reusable profile. */
+    fun saveCurrentAsProfile(name: String) {
+        val s = _currentSettings.value
+        viewModelScope.launch {
+            companionProfiles.save(
+                com.pocketllm.companion.CompanionProfile(
+                    name = name.trim().ifBlank { s.companionName },
+                    style = s.companionStyle,
+                    warmth = s.companionWarmth,
+                    directness = s.companionDirectness,
+                    playfulness = s.companionPlayfulness,
+                    verbosity = s.companionVerbosity,
+                    persona = s.companionPersona,
+                    glyph = s.companionGlyph,
+                    bubbleColor = s.companionBubbleColor,
+                )
+            )
+            refreshProfiles()
+        }
+    }
+
+    /** Apply a saved profile onto the active companion. */
+    fun applyProfile(id: String) {
+        val profile = _profiles.value.firstOrNull { it.id == id } ?: return
+        updateCompanionSetting {
+            it.copy(
+                companionName = profile.name,
+                companionStyle = profile.style,
+                companionWarmth = profile.warmth,
+                companionDirectness = profile.directness,
+                companionPlayfulness = profile.playfulness,
+                companionVerbosity = profile.verbosity,
+                companionPersona = profile.persona,
+                companionGlyph = profile.glyph,
+                companionBubbleColor = profile.bubbleColor,
+            )
+        }
+    }
+
+    fun deleteProfile(id: String) {
+        viewModelScope.launch {
+            companionProfiles.delete(id)
+            refreshProfiles()
+        }
+    }
+
+    fun exportProfiles(): String = companionProfiles.export()
+
+    /**
+     * Import a shared/exported bundle. Returns how many were added (0 if they
+     * were all already in the library); throws [IllegalArgumentException] with
+     * a readable message on bad input, since the text comes from a paste box.
+     */
+    suspend fun importProfiles(text: String): Int {
+        val added = companionProfiles.importAll(text)
+        refreshProfiles()
+        return added
+    }
+
     init {
         refreshMemory()
+        refreshProfiles()
     }
 
     fun updateCloudApiKey(key: String) {

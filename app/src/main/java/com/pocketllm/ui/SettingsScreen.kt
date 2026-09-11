@@ -108,6 +108,14 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            CompanionAppearanceSection(vm)
+        }
+
+        item {
+            CompanionProfilesSection(vm)
+        }
+
+        item {
             CompanionMemorySection(vm)
         }
 

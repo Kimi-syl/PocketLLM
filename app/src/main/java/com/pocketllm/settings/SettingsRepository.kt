@@ -88,6 +88,12 @@ data class AppSettings(
     val companionBubbleSize: Int = 60,
     /** Bubble opacity, 20-100 percent. */
     val companionBubbleAlpha: Int = 100,
+    /**
+     * Bubble tint as packed ARGB in a Long. 0 means "use the theme colour",
+     * which is why it is a Long rather than an Int - it has to be able to
+     * round-trip a fully transparent sentinel without sign ambiguity.
+     */
+    val companionBubbleColor: Long = 0L,
 
     // --- Companion memory ---------------------------------------------------
     /** Remember durable facts about the user across conversations. */

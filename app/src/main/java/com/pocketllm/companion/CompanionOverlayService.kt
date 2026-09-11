@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.WindowManager
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -228,6 +229,8 @@ class CompanionOverlayService : Service() {
         ui.glyph = s.companionGlyph.ifBlank { "\uD83D\uDC31" }
         ui.bubbleSizeDp = s.companionBubbleSize.coerceIn(36, 120)
         ui.bubbleAlpha = (s.companionBubbleAlpha.coerceIn(20, 100)) / 100f
+        // 0 is the "follow the theme" sentinel, so only a real tint overrides.
+        ui.bubbleColor = if (s.companionBubbleColor != 0L) Color(s.companionBubbleColor) else null
 
         if (!ui.expanded) {
             val view = rootView ?: return

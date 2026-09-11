@@ -20,6 +20,9 @@ data class PersonalityPreset(
 
 object CompanionPersonas {
 
+    /** Preset used when none is set, or when a stored id is unrecognised. */
+    const val DEFAULT_ID = "gentle"
+
     val all: List<PersonalityPreset> = listOf(
         PersonalityPreset(
             id = "gentle",

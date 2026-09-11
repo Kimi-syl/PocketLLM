@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -59,6 +60,8 @@ class CompanionUiState {
     var glyph by mutableStateOf("\uD83D\uDC31")
     var bubbleSizeDp by mutableStateOf(60)
     var bubbleAlpha by mutableStateOf(1f)
+    /** Explicit bubble tint; null follows the app theme. */
+    var bubbleColor by mutableStateOf<Color?>(null)
 
     var onSend: ((String) -> Unit)? = null
     var onSummarize: (() -> Unit)? = null
@@ -115,7 +118,7 @@ private fun CompanionBubble(state: CompanionUiState) {
             modifier = Modifier
                 .fillMaxSize()
                 .alpha(state.bubbleAlpha)
-                .background(MaterialTheme.colorScheme.primary, CircleShape)
+                .background(state.bubbleColor ?: MaterialTheme.colorScheme.primary, CircleShape)
                 .pointerInput(Unit) {
                     detectTapGestures(onTap = { state.onExpand?.invoke() })
                 },
