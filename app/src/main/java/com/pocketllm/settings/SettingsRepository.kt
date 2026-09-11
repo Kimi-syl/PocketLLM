@@ -96,6 +96,35 @@ data class AppSettings(
      * round-trip a fully transparent sentinel without sign ambiguity.
      */
     val companionBubbleColor: Long = 0L,
+    /** Outline around the bubble; see [com.pocketllm.companion.BubbleShape]. */
+    val companionBubbleShape: String = "circle",
+    /** Outline width in dp. 0 draws no outline. */
+    val companionBubbleBorderWidth: Int = 0,
+    /** Outline colour as packed ARGB; 0 derives a contrasting one. */
+    val companionBubbleBorderColor: Long = 0L,
+    /** Glyph size as a percentage of the bubble, so 42 is the designed size. */
+    val companionGlyphScale: Int = 42,
+    /**
+     * Opacity the bubble rests at when idle, as a percentage of the normal
+     * opacity. Lower keeps her out of the way without hiding her; 100 disables
+     * the dimming entirely.
+     */
+    val companionBubbleIdleAlpha: Int = 65,
+    /** A double-tap on the bubble. See [com.pocketllm.companion.BubbleGesture]. */
+    val companionBubbleDoubleTap: String = "summarize",
+    /** A long-press on the bubble. */
+    val companionBubbleLongPress: String = "expand",
+    /**
+     * Spoken reply rate and pitch, as TextToSpeech multiplies 1.0.
+     * These apply to the system voice only; the Piper/sherpa model has its own
+     * fixed prosody and ignores them.
+     */
+    val companionSpeechRate: Float = 1.0f,
+    val companionSpeechPitch: Float = 1.0f,
+    /** Panel text scale as a percentage, so 100 is untouched. */
+    val companionPanelFontScale: Int = 100,
+    /** Snap the bubble against the nearest screen edge when a drag ends. */
+    val companionSnapToEdge: Boolean = true,
 
     // --- Companion memory ---------------------------------------------------
     /** Remember durable facts about the user across conversations. */

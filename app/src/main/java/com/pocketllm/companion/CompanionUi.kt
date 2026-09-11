@@ -1,6 +1,14 @@
 package com.pocketllm.companion
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,20 +33,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pocketllm.ui.theme.PocketLLMTheme
+import kotlinx.coroutines.delay
 
 /** One line in the companion conversation. */
 data class CompanionMsg(val fromUser: Boolean, val text: String)
@@ -74,6 +88,25 @@ class CompanionUiState {
     var bubbleAlpha by mutableStateOf(1f)
     /** Explicit bubble tint; null follows the app theme. */
     var bubbleColor by mutableStateOf<Color?>(null)
+    /** Outline of the bubble. */
+    var bubbleShape by mutableStateOf(BubbleShape.Circle)
+    var bubbleBorderWidthDp by mutableStateOf(0)
+    /** Explicit outline colour; null derives one from the fill. */
+    var bubbleBorderColor by mutableStateOf<Color?>(null)
+    /** Glyph size as a percentage of the bubble. */
+    var glyphScale by mutableStateOf(42)
+    /**
+     * Multiplier applied to the bubble's opacity while it is idle, so she can
+     * recede without disappearing. 1f disables the dimming.
+     */
+    var bubbleIdleFactor by mutableStateOf(0.65f)
+    /** True briefly after a touch, so the bubble shows at full strength. */
+    var bubbleAwake by mutableStateOf(true)
+    /** What the bubble gestures do; see [BubbleGesture]. */
+    var doubleTapAction by mutableStateOf(BubbleGesture.Off)
+    var longPressAction by mutableStateOf(BubbleGesture.Expand)
+    /** Panel text scale, 1.0 being the designed size. */
+    var panelFontScale by mutableStateOf(1f)
 
     var onSend: ((String) -> Unit)? = null
     var onSummarize: (() -> Unit)? = null
@@ -89,10 +122,24 @@ class CompanionUiState {
     var onNewChat: (() -> Unit)? = null
     /** Bubble tapped: open the chat panel. */
     var onExpand: (() -> Unit)? = null
+    /** A double-tap or long-press fired; carries what it should do. */
+    var onBubbleGesture: ((BubbleGesture) -> Unit)? = null
+    /** The bubble was touched, so it should show at full strength. */
+    var onWake: (() -> Unit)? = null
     /** Panel "Hide" tapped: shrink back to the bubble. */
     var onCollapse: (() -> Unit)? = null
     /** Microphone button tapped: start or stop listening. */
     var onMicToggle: (() -> Unit)? = null
+    /** Stop button tapped while she is mid-reply. */
+    var onStop: (() -> Unit)? = null
+    /** Translate the current page. */
+    var onTranslate: (() -> Unit)? = null
+    /** Guided breathing is running and drawn over the panel. */
+    var breathing by mutableStateOf(false)
+    /** Spoken cue for each breathing phase. */
+    var onBreathCue: ((String) -> Unit)? = null
+    /** The breathing exercise's Done button. */
+    var onBreathDone: (() -> Unit)? = null
     var onDrag: ((Float, Float) -> Unit)? = null
     var onDragEnd: (() -> Unit)? = null
 }
@@ -107,7 +154,15 @@ fun CompanionRoot(
 ) {
     PocketLLMTheme(themeMode = themeMode, dynamicColor = false) {
         if (state.expanded) {
-            CompanionPanel(state)
+            // Scale text only, by overriding the font scale rather than the
+            // density: that leaves paddings and the panel's own dp sizes alone,
+            // so a large text setting doesn't also inflate the whole layout.
+            val base = LocalDensity.current
+            CompositionLocalProvider(
+                LocalDensity provides Density(base.density, base.fontScale * state.panelFontScale),
+            ) {
+                CompanionPanel(state)
+            }
         } else {
             CompanionBubble(state)
         }
@@ -116,11 +171,23 @@ fun CompanionRoot(
 
 @Composable
 private fun CompanionBubble(state: CompanionUiState) {
+    val fill = state.bubbleColor ?: MaterialTheme.colorScheme.primary
+    // An outlined bubble needs an edge that reads against the fill; when the
+    // user has not chosen one, the surface colour is picked, which contrasts
+    // with a tinted bubble and disappears harmlessly on an untinted one.
+    val border = state.bubbleBorderColor ?: MaterialTheme.colorScheme.surface
+
+    // She recedes when nothing is happening but comes fully back the moment the
+    // finger lands — the dimming is a resting state, never a state you have to
+    // fight to interact through.
+    val opacity = state.bubbleAlpha * if (state.bubbleAwake) 1f else state.bubbleIdleFactor
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
                 detectDragGestures(
+                    onDragStart = { state.onWake?.invoke() },
                     onDrag = { change, drag ->
                         change.consume()
                         state.onDrag?.invoke(drag.x, drag.y)
@@ -132,21 +199,91 @@ private fun CompanionBubble(state: CompanionUiState) {
             .padding(4.dp),
         contentAlignment = Alignment.Center,
     ) {
+        BubbleVisual(
+            sizeDp = state.bubbleSizeDp,
+            shape = state.bubbleShape,
+            fill = fill,
+            borderWidthDp = state.bubbleBorderWidthDp,
+            borderColor = border,
+            glyph = state.glyph.ifBlank { BUBBLE_GLYPH },
+            glyphScale = state.glyphScale,
+            opacity = opacity,
+            // The only outward sign that she is working; without it a long local
+            // generation looks like nothing happened.
+            busy = state.busy,
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(state.doubleTapAction, state.longPressAction) {
+                    detectTapGestures(
+                        onTap = {
+                            state.onWake?.invoke()
+                            state.onExpand?.invoke()
+                        },
+                        onDoubleTap = state.doubleTapAction
+                            .takeIf { it != BubbleGesture.Off }
+                            ?.let { gesture -> { _: Offset -> state.onBubbleGesture?.invoke(gesture) } },
+                        onLongPress = state.longPressAction
+                            .takeIf { it != BubbleGesture.Off }
+                            ?.let { gesture -> { _: Offset -> state.onBubbleGesture?.invoke(gesture) } },
+                    )
+                },
+        )
+    }
+}
+
+/**
+ * The bubble itself, with no interaction and no dependency on the service.
+ *
+ * Separate from [CompanionBubble] so the Settings preview can render exactly
+ * what the overlay will draw. Styling six controls against no preview is how
+ * someone ends up with a bubble they did not want and cannot picture.
+ */
+@Composable
+fun BubbleVisual(
+    sizeDp: Int,
+    shape: BubbleShape,
+    fill: Color,
+    borderWidthDp: Int,
+    borderColor: Color,
+    glyph: String,
+    glyphScale: Int,
+    opacity: Float,
+    busy: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val shapeSpec = shape.shapeFor(sizeDp)
+
+    // A slow pulse while she is working. Animated here rather than by the
+    // service so it costs nothing when idle.
+    val pulse = rememberInfiniteTransition(label = "busy")
+    val pulseAlpha by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.45f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "busyAlpha",
+    )
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .alpha(state.bubbleAlpha)
-                .background(state.bubbleColor ?: MaterialTheme.colorScheme.primary, CircleShape)
-                .pointerInput(Unit) {
-                    detectTapGestures(onTap = { state.onExpand?.invoke() })
-                },
+                .alpha(if (busy) opacity * pulseAlpha else opacity)
+                .background(fill, shapeSpec)
+                .then(
+                    if (borderWidthDp > 0) {
+                        Modifier.border(borderWidthDp.dp, borderColor, shapeSpec)
+                    } else Modifier
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = state.glyph.ifBlank { BUBBLE_GLYPH },
-                // Scale the face with the bubble so a large bubble isn't a big
-                // circle with a tiny dot in the middle.
-                fontSize = (state.bubbleSizeDp * 0.42f).sp,
+                text = glyph,
+                // Scaled by the user's preference so a large bubble is not a big
+                // circle with a tiny dot in the middle, and vice versa.
+                fontSize = (sizeDp * (glyphScale / 100f)).sp,
             )
         }
     }
@@ -163,6 +300,7 @@ private fun CompanionPanel(state: CompanionUiState) {
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         shape = RoundedCornerShape(18.dp),
@@ -228,6 +366,7 @@ private fun CompanionPanel(state: CompanionUiState) {
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     QuickChip("Cheer me up", !state.busy, Modifier.weight(1f)) { state.onCheer?.invoke() }
+                    QuickChip("Breathe", !state.busy, Modifier.weight(1f)) { state.breathing = true }
                     QuickChip("How am I?", !state.busy, Modifier.weight(1f)) { state.onMoodCheckIn?.invoke() }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -237,6 +376,13 @@ private fun CompanionPanel(state: CompanionUiState) {
                 ) {
                     QuickChip("Summary", !state.busy, Modifier.weight(1f)) { state.onSummarize?.invoke() }
                     QuickChip("Explain", !state.busy, Modifier.weight(1f)) { state.onExplain?.invoke() }
+                    QuickChip("Translate", !state.busy, Modifier.weight(1f)) { state.onTranslate?.invoke() }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     QuickChip("Look up", !state.busy, Modifier.weight(1f)) { state.onLookUp?.invoke() }
                 }
             }
@@ -302,32 +448,137 @@ private fun CompanionPanel(state: CompanionUiState) {
                     )
                 }
                 Spacer(Modifier.width(6.dp))
-                val canSend = state.input.isNotBlank() && !state.busy
-                Surface(
-                    shape = CircleShape,
-                    color = if (canSend) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clickable(enabled = canSend) {
-                            val text = state.input.trim()
-                            state.input = ""
-                            state.onSend?.invoke(text)
-                        },
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (state.busy) "…" else "\u2191", // ↑
-                            color = if (canSend) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 16.sp,
-                        )
+                // While she is replying the same slot becomes a stop button:
+                // mid-generation "send" is meaningless and "stop" is the thing
+                // people reach for.
+                if (state.busy) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clickable { state.onStop?.invoke() },
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "\u25A0", // ■
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontSize = 13.sp,
+                            )
+                        }
+                    }
+                } else {
+                    val canSend = state.input.isNotBlank()
+                    Surface(
+                        shape = CircleShape,
+                        color = if (canSend) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clickable(enabled = canSend) {
+                                val text = state.input.trim()
+                                state.input = ""
+                                state.onSend?.invoke(text)
+                            },
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "\u2191", // ↑
+                                color = if (canSend) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 16.sp,
+                            )
+                        }
                     }
                 }
             }
         }
     }
+        // Drawn over the whole panel rather than swapped in for the content, so
+        // the conversation is still there when the exercise ends.
+        if (state.breathing) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                BreathingGuide(state)
+            }
+        }
+    }
 }
+
+/**
+ * A paced breathing exercise: four counts in, hold, four out, hold.
+ *
+ * Box breathing is the pattern used because every phase is the same length —
+ * easy to follow without counting, and easy to narrate.
+ */
+@Composable
+private fun BreathingGuide(state: CompanionUiState) {
+    // Driven imperatively rather than by a target value: animateFloatAsState
+    // starts *at* its first target, which would make the opening "breathe in"
+    // a circle that never grows — the one moment the user is watching.
+    val scale = remember { Animatable(SMALL) }
+    var label by remember { mutableStateOf("Breathe in") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            label = "Breathe in"
+            state.onBreathCue?.invoke(label)
+            scale.animateTo(LARGE, tween(BREATH_MS, easing = LinearEasing))
+
+            label = "Hold"
+            state.onBreathCue?.invoke(label)
+            delay(BREATH_MS.toLong())
+
+            label = "Breathe out"
+            state.onBreathCue?.invoke(label)
+            scale.animateTo(SMALL, tween(BREATH_MS, easing = LinearEasing))
+
+            label = "Hold"
+            state.onBreathCue?.invoke(label)
+            delay(BREATH_MS.toLong())
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier.size(140.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size((96 * scale.value).dp)
+                    .alpha(0.35f + 0.5f * scale.value)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape),
+            )
+        }
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Follow the circle. Let your shoulders drop.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(18.dp))
+        PanelAction("Done") { state.onBreathDone?.invoke() }
+    }
+}
+
+/** Breathing pace and the extremes the guide circle moves between. */
+private const val BREATH_MS = 4_000
+private const val SMALL = 0.55f
+private const val LARGE = 1f
 
 @Composable
 private fun MessageBubble(message: CompanionMsg) {

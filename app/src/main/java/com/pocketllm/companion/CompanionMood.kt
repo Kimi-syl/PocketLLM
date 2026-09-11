@@ -89,6 +89,35 @@ class MoodJournalStore(context: Context) {
     }
 
     /**
+     * One average per calendar day for the last [days], oldest first, with null
+     * for a day that has no check-in.
+     *
+     * Days are cut at local midnight rather than by dividing the epoch, so the
+     * bars line up with the user's days. A DST shift can make a "day" an hour
+     * long or short, which does not matter for a chart.
+     */
+    fun dailyAverages(days: Int, now: Long = System.currentTimeMillis()): List<Double?> {
+        val starts = ArrayList<Long>(days)
+        repeat(days) { back ->
+            val cal = java.util.Calendar.getInstance()
+            cal.timeInMillis = now
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -back)
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+            cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+            starts.add(cal.timeInMillis)
+        }
+        starts.reverse()
+        val entries = all()
+        val dayMs = 24L * 60 * 60 * 1000
+        return starts.map { start ->
+            val inDay = entries.filter { it.at >= start && it.at < start + dayMs }
+            if (inDay.isEmpty()) null else inDay.sumOf { it.score }.toDouble() / inDay.size
+        }
+    }
+
+    /**
      * A gentle line for the system prompt, or empty when there is nothing
      * worth saying. Deliberately understated: she should be a little more
      * careful with someone having a hard week, not narrate their mood back at

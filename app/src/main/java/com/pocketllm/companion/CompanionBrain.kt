@@ -28,6 +28,17 @@ class CompanionBrain(
 
     fun anyBackendReady(): Boolean = localReady() || cloudConfigured(settings())
 
+    /**
+     * Ask the local model to stop mid-reply.
+     *
+     * Upstream cuts the generation short and returns what it had produced, so
+     * the partial answer survives. A cloud stream cannot be interrupted this
+     * way; the service settles that turn on a timer instead.
+     */
+    fun stop() {
+        runCatching { LlamaEngine.requestStop() }
+    }
+
     /** Short human-readable label for the panel's status line. */
     fun backendLabel(): String = when {
         localReady() -> "local model"
@@ -86,13 +97,21 @@ class CompanionBrain(
      * Pulls durable facts out of an exchange. A separate, deliberately tiny
      * pass — asking the conversational model to both chat and self-report is
      * unreliable, and this way a failure costs nothing visible to the user.
+     *
+     * [known] is handed to the model so it does not spend its few output tokens
+     * restating facts already stored. Dedup would catch an exact repeat, but a
+     * paraphrase would slip through and slowly fill memory with noise.
      */
-    suspend fun extractFacts(exchange: String): List<String> {
+    suspend fun extractFacts(exchange: String, known: List<String> = emptyList()): List<String> {
         val s = settings()
         if (!s.companionMemoryEnabled || !s.companionMemoryExtraction) return emptyList()
         if (!anyBackendReady()) return emptyList()
+        val system = if (known.isEmpty()) EXTRACTOR_PROMPT else {
+            EXTRACTOR_PROMPT + "\n\nAlready known — do NOT repeat these or rephrase them:\n" +
+                known.take(KNOWN_FACTS_IN_PROMPT).joinToString("\n") { "- $it" }
+        }
         val messages = listOf(
-            "system" to EXTRACTOR_PROMPT,
+            "system" to system,
             "user" to exchange.take(EXTRACT_MAX_CHARS),
         )
         val raw = when {
@@ -171,6 +190,11 @@ class CompanionBrain(
         const val CLOUD_MAX_TOKENS = 500
         const val MAX_HISTORY_MESSAGES = 8
         const val EXTRACT_MAX_CHARS = 1800
+        /**
+         * How many known facts to show the extractor. Capped because on a phone
+         * -sized context the exchange itself matters more than a long inventory.
+         */
+        private const val KNOWN_FACTS_IN_PROMPT = 40
 
         val EXTRACTOR_PROMPT = """
             You extract durable facts about the USER from a conversation.

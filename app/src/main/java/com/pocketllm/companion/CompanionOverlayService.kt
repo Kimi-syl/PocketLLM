@@ -1,16 +1,19 @@
 package com.pocketllm.companion
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -28,6 +31,7 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.pocketllm.MainActivity
 import com.pocketllm.R
+import com.pocketllm.agent.CalculateTool
 import com.pocketllm.agent.SearchConfig
 import com.pocketllm.agent.ToolResult
 import com.pocketllm.agent.WebSearchTool
@@ -68,6 +72,8 @@ class CompanionOverlayService : Service() {
 
     private var bubbleX = 0
     private var bubbleY = 0
+    /** When the bubble was last dragged, so a settings refresh cannot fight it. */
+    private var lastDragAt = 0L
     /** Epoch millis of the last user interaction, for the proactive check-in. */
     private var lastInteractionAt = 0L
     /** Turns since the last memory-extraction pass. */
@@ -78,6 +84,8 @@ class CompanionOverlayService : Service() {
     private var extractJob: Job? = null
     /** Timer for proactive check-ins. */
     private var checkInJob: Job? = null
+    /** Countdown that dims the bubble once it has been left alone. */
+    private var idleJob: Job? = null
     /** Active dictation session, if any. */
     private var recognizer: SpeechRecognizer? = null
     /**
@@ -93,6 +101,11 @@ class CompanionOverlayService : Service() {
     private lateinit var reminders: CompanionReminderStore
     /** Explicit mood check-ins, used to be a little more careful with them. */
     private lateinit var mood: MoodJournalStore
+    /**
+     * Set when the user asks her to stop, and cleared at the start of each
+     * turn. Used as the guard for the stop safety net below.
+     */
+    private var stopRequested = false
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -118,16 +131,24 @@ class CompanionOverlayService : Service() {
         restoreTranscript()
         ui.status = brain.backendLabel()
         ui.onExpand = { expand() }
+        ui.onBubbleGesture = { gesture -> handleBubbleGesture(gesture) }
+        ui.onWake = { wakeBubble() }
         ui.onCollapse = { collapse() }
         ui.onSend = { text -> submit(text) }
         ui.onSummarize = { summarizePage() }
         ui.onExplain = { explainPage() }
+        ui.onTranslate = { translatePage() }
         ui.onCheer = { cheerUp() }
         ui.onLookUp = { lookUp() }
         ui.onMoodCheckIn = { beginMoodCheckIn() }
         ui.onMoodPicked = { score -> recordMood(score) }
         ui.onNewChat = { resetConversation() }
         ui.onMicToggle = { toggleListening() }
+        ui.onStop = { stopGeneration() }
+        // The breathing exercise runs in the panel; the service only supplies
+        // the voice, so the cues stay in step with the animation.
+        ui.onBreathCue = { cue -> speak(cue) }
+        ui.onBreathDone = { ui.breathing = false }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
 
@@ -136,7 +157,11 @@ class CompanionOverlayService : Service() {
         bubbleX = if (s.companionBubbleX >= 0) s.companionBubbleX else defaultBubbleX()
         bubbleY = s.companionBubbleY
 
-        tts = TextToSpeech(applicationContext) { /* speak() is a no-op until ready */ }
+        tts = TextToSpeech(applicationContext) { status ->
+            // The voice is only usable once initialised, so the saved rate and
+            // pitch are applied from the callback rather than here.
+            if (status == TextToSpeech.SUCCESS) applySpeechSettings(settings())
+        }
 
         startInForeground()
         if (!canDrawOverlays()) {
@@ -154,6 +179,9 @@ class CompanionOverlayService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_EXPAND -> expand()
+            ACTION_REPLY -> {
+                remoteReplyText(intent)?.let { handleNotificationReply(it) }
+            }
         }
         refreshFromSettings()
         return START_STICKY
@@ -168,8 +196,21 @@ class CompanionOverlayService : Service() {
     fun refreshFromSettings() {
         if (!::brain.isInitialized) return
         applyAppearance(settings())
+        applySpeechSettings(settings())
         ui.status = brain.backendLabel()
         restartCheckInLoop()
+    }
+
+    /**
+     * Push the user's chosen rate and pitch onto the system voice.
+     *
+     * Clamped rather than trusted: a stored value outside TextToSpeech's range
+     * would be silently ignored, which looks like the setting doing nothing.
+     */
+    private fun applySpeechSettings(s: AppSettings) {
+        val engine = tts ?: return
+        runCatching { engine.setSpeechRate(s.companionSpeechRate.coerceIn(0.5f, 2f)) }
+        runCatching { engine.setPitch(s.companionSpeechPitch.coerceIn(0.5f, 2f)) }
     }
 
     // --- Proactive check-ins ------------------------------------------------
@@ -236,9 +277,68 @@ class CompanionOverlayService : Service() {
             .setSmallIcon(R.drawable.ic_companion)
             .setAutoCancel(true)
             .setContentIntent(if (canDrawOverlays()) expand else open)
+            .addAction(replyAction())
             .build()
         // Distinct id: never overwrite the ongoing bubble notification.
         runCatching { manager.notify(NUDGE_NOTIFICATION_ID, notification) }
+    }
+
+    // --- Replying from a notification ---------------------------------------
+
+    /**
+     * The notification's inline reply box.
+     *
+     * MUTABLE on purpose: the system writes the typed text into the intent
+     * before starting the service, and an immutable intent refuses that, so the
+     * reply silently disappears. This is the documented exception to the
+     * immutable-PendingIntent rule.
+     */
+    private fun replyAction(): Notification.Action {
+        val reply = PendingIntent.getService(
+            this, 4,
+            Intent(this, CompanionOverlayService::class.java).setAction(ACTION_REPLY),
+            PendingIntent.FLAG_MUTABLE,
+        )
+        val input = RemoteInput.Builder(REPLY_KEY)
+            .setLabel("Reply…")
+            .build()
+        return Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_companion),
+            "Reply",
+            reply,
+        ).addRemoteInput(input).build()
+    }
+
+    /**
+     * Text typed into the check-in notification's reply box, or null.
+     *
+     * A remote reply needs a *mutable* PendingIntent — the system, not we, fills
+     * in the results. That is the documented exception to the immutable rule,
+     * and using an immutable intent here silently produces nothing.
+     */
+    private fun remoteReplyText(intent: Intent): String? =
+        RemoteInput.getResultsFromIntent(intent)
+            ?.getCharSequence(REPLY_KEY)
+            ?.toString()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Answer her from the notification itself.
+     *
+     * The panel is opened first so the reply is visible: answering into a
+     * conversation that happens entirely off-screen would be worse than not
+     * offering the box at all. The greeting is suppressed for the same reason —
+     * a "how's your day going?" would otherwise land above the answer to it.
+     */
+    private fun handleNotificationReply(text: String) {
+        if (!::brain.isInitialized) return
+        runCatching {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .cancel(NUDGE_NOTIFICATION_ID)
+        }
+        if (!ui.expanded) expand(greet = false)
+        submit(text)
     }
 
     // --- Voice input --------------------------------------------------------
@@ -387,6 +487,7 @@ class CompanionOverlayService : Service() {
             return
         }
         ui.input = ""
+        stopRequested = false
         ui.messages.add(CompanionMsg(fromUser = true, text = query))
         ui.messages.add(CompanionMsg(fromUser = false, text = ""))
         ui.busy = true
@@ -447,6 +548,30 @@ class CompanionOverlayService : Service() {
         saveChat()
     }
 
+    /**
+     * Stop an in-flight reply.
+     *
+     * The local model honours the request and returns its partial answer, which
+     * is left on screen — a half-finished reply the user chose to cut short is
+     * still worth keeping. A cloud stream has no such control, so a short
+     * safety net settles the turn regardless; otherwise a stopped cloud request
+     * would leave the panel stuck on "thinking" forever.
+     */
+    private fun stopGeneration() {
+        if (!ui.busy) return
+        stopRequested = true
+        ui.status = "stopping…"
+        brain.stop()
+        scope.launch {
+            delay(STOP_SETTLE_MS)
+            if (stopRequested && ui.busy) {
+                ui.busy = false
+                ui.status = brain.backendLabel()
+                saveChat()
+            }
+        }
+    }
+
     /** Run a web search and format the hits as prompt grounding. */
     private suspend fun searchGrounding(query: String): String? {
         val s = settings()
@@ -487,6 +612,8 @@ class CompanionOverlayService : Service() {
         extractJob = null
         checkInJob?.cancel()
         checkInJob = null
+        idleJob?.cancel()
+        idleJob = null
         // Never leave the microphone open behind us.
         stopListening()
         tts?.shutdown()
@@ -494,6 +621,55 @@ class CompanionOverlayService : Service() {
         scope.cancel()
         if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    // --- Bubble idle state and gestures -------------------------------------
+
+    /**
+     * Bring the bubble back to full strength and restart the idle countdown.
+     *
+     * Called on every touch, so the bubble is only ever dimmed while genuinely
+     * untouched — the dimming is a resting state, never something the user has
+     * to aim at.
+     */
+    private fun wakeBubble() {
+        ui.bubbleAwake = true
+        idleJob?.cancel()
+        idleJob = null
+        // Nothing to schedule when dimming is switched off.
+        if (ui.bubbleIdleFactor >= 0.99f) return
+        idleJob = scope.launch {
+            delay(IDLE_DIM_MS)
+            // Never while the panel is open: she is being looked at.
+            if (!ui.expanded) ui.bubbleAwake = false
+        }
+    }
+
+    /**
+     * Run whatever the user chose for a bubble gesture.
+     *
+     * Actions that need a page or a question check for one first, so a gesture
+     * configured for something unavailable says so instead of doing nothing.
+     */
+    private fun handleBubbleGesture(gesture: BubbleGesture) {
+        when (gesture) {
+            BubbleGesture.Off -> Unit
+            BubbleGesture.Expand -> expand()
+            BubbleGesture.Summarize -> summarizePage()
+            BubbleGesture.Explain -> explainPage()
+            BubbleGesture.Cheer -> cheerUp()
+            BubbleGesture.LookUp -> lookUp()
+            BubbleGesture.NewChat -> resetConversation()
+            BubbleGesture.Hide -> {
+                // "Hide" leaves the bubble off until it is switched back on, so
+                // the gesture has to actually turn the setting off — otherwise
+                // it would reappear the next time the app starts.
+                scope.launch {
+                    runCatching { settingsRepo().update { it.copy(companionEnabled = false) } }
+                    CompanionOverlayService.stop(this@CompanionOverlayService)
+                }
+            }
+        }
     }
 
     // --- Overlay window -----------------------------------------------------
@@ -510,12 +686,35 @@ class CompanionOverlayService : Service() {
         ui.bubbleAlpha = (s.companionBubbleAlpha.coerceIn(20, 100)) / 100f
         // 0 is the "follow the theme" sentinel, so only a real tint overrides.
         ui.bubbleColor = if (s.companionBubbleColor != 0L) Color(s.companionBubbleColor) else null
+        ui.bubbleShape = BubbleShape.byId(s.companionBubbleShape)
+        ui.bubbleBorderWidthDp = s.companionBubbleBorderWidth.coerceIn(0, 8)
+        ui.bubbleBorderColor = if (s.companionBubbleBorderColor != 0L) Color(s.companionBubbleBorderColor) else null
+        ui.glyphScale = s.companionGlyphScale.coerceIn(20, 80)
+        ui.bubbleIdleFactor = (s.companionBubbleIdleAlpha.coerceIn(20, 100)) / 100f
+        ui.doubleTapAction = BubbleGesture.byId(s.companionBubbleDoubleTap)
+        ui.longPressAction = BubbleGesture.byId(s.companionBubbleLongPress)
+        ui.panelFontScale = (s.companionPanelFontScale.coerceIn(80, 140)) / 100f
         ui.voiceInputEnabled = s.companionVoiceInput
 
         if (!ui.expanded) {
+            syncBubblePosition(s)
             val view = rootView ?: return
             runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = false)) }
         }
+    }
+
+    /**
+     * Adopt the stored position, unless the user just moved her by hand.
+     *
+     * Settings writes are asynchronous, so re-reading the position on every
+     * settings change can pick up a value from before a drag that has not been
+     * saved yet — which would make the bubble snap back under the finger. The
+     * short window after a drag is skipped for exactly that reason.
+     */
+    private fun syncBubblePosition(s: AppSettings) {
+        if (System.currentTimeMillis() - lastDragAt < DRAG_SETTLE_MS) return
+        bubbleX = if (s.companionBubbleX >= 0) s.companionBubbleX else defaultBubbleX()
+        bubbleY = s.companionBubbleY.coerceAtLeast(0)
     }
 
     private fun attachOverlay() {
@@ -534,6 +733,10 @@ class CompanionOverlayService : Service() {
             .onFailure {
                 ServerLog.log("companion: addView failed: ${it.message}")
                 stopSelf()
+            }
+            .onSuccess {
+                // Start the idle countdown from the moment she appears.
+                wakeBubble()
             }
     }
 
@@ -566,7 +769,7 @@ class CompanionOverlayService : Service() {
         }
     }
 
-    private fun expand() {
+    private fun expand(greet: Boolean = true) {
         if (ui.expanded) return
         ui.expanded = true
         ui.status = brain.backendLabel()
@@ -580,7 +783,7 @@ class CompanionOverlayService : Service() {
             x = ((metrics.widthPixels - width) / 2).coerceAtLeast(0)
             y = dp(48)
         }
-        maybeGreet()
+        if (greet) maybeGreet()
         runCatching { windowManager.updateViewLayout(view, params) }
     }
 
@@ -592,6 +795,12 @@ class CompanionOverlayService : Service() {
             stopListening()
             ui.status = brain.backendLabel()
         }
+        // Same reasoning for the breathing exercise: its cues would otherwise
+        // keep speaking with nothing on screen to follow.
+        ui.breathing = false
+        // The panel was being looked at, so the bubble starts awake and its
+        // idle countdown begins from the moment it is revealed again.
+        wakeBubble()
         ui.expanded = false
         val view = rootView ?: return
         // bubbleX/bubbleY were left untouched while expanded, so this restores
@@ -610,6 +819,7 @@ class CompanionOverlayService : Service() {
         params.y = clampY(params.y + dy.toInt(), params.height)
         bubbleX = params.x
         bubbleY = params.y
+        lastDragAt = System.currentTimeMillis()
         runCatching { windowManager.updateViewLayout(view, params) }
     }
 
@@ -625,8 +835,38 @@ class CompanionOverlayService : Service() {
     private fun persistPosition() {
         // Only the collapsed bubble position is meaningful.
         if (ui.expanded) return
+        if (settings().companionSnapToEdge) snapToNearestEdge()
         scope.launch {
             runCatching { settingsRepo().update { it.copy(companionBubbleX = bubbleX, companionBubbleY = bubbleY) } }
+        }
+    }
+
+    /**
+     * Slide the bubble to whichever side it was dropped nearest.
+     *
+     * Only the horizontal position moves: the height the user chose is theirs,
+     * and adjusting it on their behalf would be taking a liberty. `bubbleX` is
+     * set before animating so the persisted value is the resting place, not
+     * wherever the finger happened to lift.
+     */
+    private fun snapToNearestEdge() {
+        val view = rootView ?: return
+        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
+        val metrics = resources.displayMetrics
+        val target = if (params.x + params.width / 2 <= metrics.widthPixels / 2) {
+            0
+        } else {
+            (metrics.widthPixels - params.width).coerceAtLeast(0)
+        }
+        bubbleX = target
+        if (target == params.x) return
+        ValueAnimator.ofInt(params.x, target).apply {
+            duration = 180
+            addUpdateListener { anim ->
+                params.x = anim.animatedValue as Int
+                runCatching { windowManager.updateViewLayout(view, params) }
+            }
+            start()
         }
     }
 
@@ -696,6 +936,53 @@ class CompanionOverlayService : Service() {
             "I'm feeling a bit low right now. Please say something warm and steadying.",
             display = "Cheer me up",
         )
+    }
+
+    // --- Exactly-answerable requests ----------------------------------------
+
+    /**
+     * Maths and the current date/time, answered without the model.
+     *
+     * A model asked "what's 15% of 240" will often answer confidently and
+     * wrongly; the same for today's date. These have exact answers, so they are
+     * computed. It also means they work with no model loaded.
+     *
+     * @return true when the message was fully handled here.
+     */
+    private fun handleQuickToolsIfAny(text: String, display: String): Boolean {
+        // Date/time is pure formatting, so it can be answered immediately.
+        CompanionQuickTools.dateTimeAnswer(text)?.let { answer ->
+            replyWithoutModel(display, answer)
+            return true
+        }
+        val expression = CompanionQuickTools.mathExpression(text) ?: return false
+        calculateAndReply(expression, display)
+        return true
+    }
+
+    /** Runs the calculator and settles the turn, mirroring the look-up flow. */
+    private fun calculateAndReply(expression: String, display: String) {
+        stopRequested = false
+        ui.messages.add(CompanionMsg(fromUser = true, text = display))
+        ui.messages.add(CompanionMsg(fromUser = false, text = ""))
+        ui.busy = true
+        ui.status = "calculating…"
+        lastInteractionAt = System.currentTimeMillis()
+        scope.launch {
+            val result = runCatching {
+                CalculateTool().execute(mapOf("expression" to JsonPrimitive(expression)))
+            }.getOrNull()
+            // "12*8 = 96" -> "96"
+            val answer = (result as? ToolResult.Text)?.summary?.substringAfterLast(" = ")?.trim()
+            val reply = when {
+                answer.isNullOrBlank() -> "I couldn't work that one out."
+                // 1/0 evaluates to Infinity; that is not an answer.
+                !answer.matches(Regex("^-?[0-9.]+(?:[eE][+-]?\\d+)?$")) ->
+                    "That one doesn't have a normal answer — check the numbers."
+                else -> answer
+            }
+            finishTurn(display, reply)
+        }
     }
 
     // --- Mood check-ins -----------------------------------------------------
@@ -820,9 +1107,14 @@ class CompanionOverlayService : Service() {
         grounding: String? = null,
     ) {
         if (text.isBlank() || ui.busy) return
+        // Any earlier stop belongs to the previous turn; leaving it set would
+        // let its safety net cancel this one.
+        stopRequested = false
         // Reminders are handled before anything else: they must be exact, and
         // they don't need a model at all.
         if (grounding == null && handleReminderIfAny(text, display)) return
+        // Maths and the date have exact answers; never let the model guess them.
+        if (grounding == null && handleQuickToolsIfAny(text, display)) return
         ui.messages.add(CompanionMsg(fromUser = true, text = display))
         ui.messages.add(CompanionMsg(fromUser = false, text = ""))
         ui.busy = true
@@ -909,7 +1201,9 @@ class CompanionOverlayService : Service() {
             // Something happened while we waited: leave it for another time.
             if (ui.busy || lastInteractionAt != idleAt) return@launch
             val added = runCatching {
-                val facts = brain.extractFacts(exchange)
+                // Told what is already stored, so a limited output budget is
+                // spent on genuinely new facts rather than restatements.
+                val facts = brain.extractFacts(exchange, memory.all().map { it.text })
                 if (facts.isEmpty()) 0 else memory.mergeExtracted(facts)
             }.getOrDefault(0)
             if (added > 0) {
@@ -949,6 +1243,23 @@ class CompanionOverlayService : Service() {
         opener = "Please explain what I'm looking at, in simple plain language, as if I'm new to it.",
         display = "Explain this",
     )
+
+    /**
+     * Translate the page into the phone's language.
+     *
+     * The target comes from the device locale rather than its own setting: the
+     * language someone reads their phone in is the one they want a page in, and
+     * another control for it would be one more thing to configure.
+     */
+    private fun translatePage() {
+        val locale = java.util.Locale.getDefault()
+        val language = locale.getDisplayLanguage(locale)
+        pageTask(
+            opener = "Please translate what I'm looking at into $language. " +
+                "Keep the meaning faithful and the result easy to read.",
+            display = "Translate this",
+        )
+    }
 
     private fun pageTask(opener: String, display: String) {
         val accessibility = CompanionAccessibilityService.instance
@@ -1073,6 +1384,9 @@ class CompanionOverlayService : Service() {
         private const val NUDGE_NOTIFICATION_ID = 4712
         private const val ACTION_STOP = "com.pocketllm.companion.STOP"
         private const val ACTION_EXPAND = "com.pocketllm.companion.EXPAND"
+        private const val ACTION_REPLY = "com.pocketllm.companion.REPLY"
+        /** Key the notification's reply text arrives under. */
+        private const val REPLY_KEY = "companion_reply"
         /** Don't reach out if they were here more recently than this. */
         private const val NUDGE_MIN_IDLE_MS = 45 * 60 * 1000L
         /** Search hits fed to the model; more than this just crowds the prompt. */
@@ -1095,6 +1409,12 @@ class CompanionOverlayService : Service() {
         private const val EXTRACT_EVERY_TURNS = 4
         /** Wait this long after a turn before spending the engine on memory. */
         private const val EXTRACT_IDLE_DELAY_MS = 20_000L
+        /** How long to wait for a backend to honour a stop before settling anyway. */
+        private const val STOP_SETTLE_MS = 2_000L
+        /** Untouched for this long and the bubble dims to its idle opacity. */
+        private const val IDLE_DIM_MS = 4_000L
+        /** Grace period after a drag before settings may reposition the bubble. */
+        private const val DRAG_SETTLE_MS = 2_000L
 
         fun start(context: Context) {
             val intent = Intent(context, CompanionOverlayService::class.java)

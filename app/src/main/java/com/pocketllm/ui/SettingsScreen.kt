@@ -1,6 +1,11 @@
 package com.pocketllm.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -8,13 +13,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,15 +36,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.pocketllm.AppViewModel
 import com.pocketllm.util.WebSearch
+import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -> Unit = {}) {
@@ -905,11 +919,37 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
 
         Text("Bubble", style = MaterialTheme.typography.bodyMedium)
         var glyph by remember(settings.companionGlyph) { mutableStateOf(settings.companionGlyph) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            com.pocketllm.companion.BUBBLE_GLYPH_CHOICES.forEach { face ->
+                Surface(
+                    shape = CircleShape,
+                    color = if (settings.companionGlyph == face) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clickable {
+                            glyph = face
+                            // Applied immediately: picking a face is the whole
+                            // gesture, so a separate Save step is just a chore.
+                            vm.updateCompanionGlyph(face)
+                        },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(face, fontSize = 17.sp)
+                    }
+                }
+            }
+        }
         OutlinedTextField(
             value = glyph,
             onValueChange = { glyph = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Bubble face (an emoji)") },
+            label = { Text("Bubble face (any emoji)") },
             singleLine = true,
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -924,6 +964,263 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
         TraitSlider("Opacity", settings.companionBubbleAlpha, "Faint", "Solid", range = 20..100) {
             vm.updateCompanionBubbleAlpha(it)
         }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Snap to edge", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Slide her against the nearest side when you let go",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionSnapToEdge,
+                onCheckedChange = { vm.updateCompanionSnapToEdge(it) },
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            // A bubble dragged somewhere awkward — or off the edge on a screen
+            // rotation — is otherwise only fixable by dragging it back.
+            TextButton(onClick = { vm.resetCompanionBubblePosition() }) {
+                Text("Reset position")
+            }
+        }
+
+        // Renders the real bubble composable, so what is configured here is
+        // exactly what appears on screen — styling by sliders alone means
+        // guessing at the result.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val previewShape = com.pocketllm.companion.BubbleShape.byId(settings.companionBubbleShape)
+            val previewFill = if (settings.companionBubbleColor != 0L) {
+                Color(settings.companionBubbleColor)
+            } else {
+                MaterialTheme.colorScheme.primary
+            }
+            val previewBorder = if (settings.companionBubbleBorderColor != 0L) {
+                Color(settings.companionBubbleBorderColor)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+            Box(
+                modifier = Modifier.size(
+                    // The bubble is often larger than a settings row; scaling the
+                    // preview down keeps a 120dp bubble from dominating the page
+                    // while still showing the shape and proportions honestly.
+                    (settings.companionBubbleSize * 1.4f).dp.coerceAtMost(110.dp),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                com.pocketllm.companion.BubbleVisual(
+                    sizeDp = settings.companionBubbleSize,
+                    shape = previewShape,
+                    fill = previewFill,
+                    borderWidthDp = settings.companionBubbleBorderWidth,
+                    borderColor = previewBorder,
+                    glyph = settings.companionGlyph.ifBlank { "🐱" },
+                    glyphScale = settings.companionGlyphScale,
+                    // Awake, not idle: the fade is a behaviour described by its
+                    // own slider, and previewing it faint would misrepresent the
+                    // colour the user is choosing.
+                    opacity = settings.companionBubbleAlpha / 100f,
+                    busy = false,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+
+        Text("Style", style = MaterialTheme.typography.bodySmall)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            com.pocketllm.companion.BUBBLE_PRESETS.forEach { preset ->
+                FilterChip(
+                    selected = settings.companionBubbleShape == preset.shapeId &&
+                        settings.companionBubbleSize == preset.size &&
+                        settings.companionBubbleBorderWidth == preset.borderWidth &&
+                        settings.companionGlyphScale == preset.glyphScale &&
+                        settings.companionBubbleIdleAlpha == preset.idleAlpha,
+                    onClick = { vm.applyCompanionBubblePreset(preset) },
+                    label = { Text(preset.label) },
+                )
+            }
+        }
+
+        Text("Shape", style = MaterialTheme.typography.bodySmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            com.pocketllm.companion.BubbleShape.entries.forEach { shape ->
+                val selected = settings.companionBubbleShape == shape.id
+                Surface(
+                    shape = shape.shapeFor(40),
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clickable { vm.updateCompanionBubbleShape(shape.id) },
+                ) {}
+            }
+        }
+
+        TraitSlider(
+            label = "Face size",
+            value = settings.companionGlyphScale,
+            lowLabel = "Tiny",
+            highLabel = "Fills it",
+            range = 20..80,
+        ) { vm.updateCompanionGlyphScale(it) }
+
+        TraitSlider(
+            label = "Outline",
+            value = settings.companionBubbleBorderWidth,
+            lowLabel = "None",
+            highLabel = "Thick",
+            range = 0..8,
+        ) { vm.updateCompanionBubbleBorderWidth(it) }
+
+        if (settings.companionBubbleBorderWidth > 0) {
+            Text("Outline colour", style = MaterialTheme.typography.bodySmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // 0 is "pick one for me", which is the only sane default when the
+                // fill colour is itself theme-driven.
+                (BUBBLE_BORDER_COLORS).forEach { (argb, label) ->
+                    val selected = settings.companionBubbleBorderColor == argb
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(
+                                if (argb == 0L) MaterialTheme.colorScheme.surfaceVariant else Color(argb),
+                                CircleShape,
+                            )
+                            .border(
+                                width = if (selected) 3.dp else 1.dp,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant,
+                                shape = CircleShape,
+                            )
+                            .clickable { vm.updateCompanionBubbleBorderColor(argb) },
+                    ) {}
+                    if (argb == 0L) {
+                        Text(
+                            "Auto",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.CenterVertically),
+                        )
+                    }
+                }
+            }
+        }
+
+        TraitSlider(
+            label = "Fade when idle",
+            value = settings.companionBubbleIdleAlpha,
+            lowLabel = "Faint",
+            highLabel = "No fade",
+            range = 20..100,
+        ) { vm.updateCompanionBubbleIdleAlpha(it) }
+
+        GesturePicker(
+            label = "Double-tap",
+            current = com.pocketllm.companion.BubbleGesture.byId(settings.companionBubbleDoubleTap),
+            onPick = { vm.updateCompanionBubbleDoubleTap(it.id) },
+        )
+        GesturePicker(
+            label = "Long-press",
+            current = com.pocketllm.companion.BubbleGesture.byId(settings.companionBubbleLongPress),
+            onPick = { vm.updateCompanionBubbleLongPress(it.id) },
+        )
+        Text(
+            "A single tap always opens the chat.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Text("Speech", style = MaterialTheme.typography.bodyMedium)
+        // Stored as a multiplier but shown as a percentage, which reads far more
+        // naturally than "1.15".
+        TraitSlider(
+            label = "Rate",
+            value = (settings.companionSpeechRate * 100).roundToInt(),
+            lowLabel = "Slow",
+            highLabel = "Brisk",
+            range = 50..200,
+        ) { vm.updateCompanionSpeechRate(it / 100f) }
+        TraitSlider(
+            label = "Pitch",
+            value = (settings.companionSpeechPitch * 100).roundToInt(),
+            lowLabel = "Low",
+            highLabel = "High",
+            range = 50..200,
+        ) { vm.updateCompanionSpeechPitch(it / 100f) }
+        Text(
+            "Applies to the system voice. The downloaded Piper voice keeps its own.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Text("Panel", style = MaterialTheme.typography.bodyMedium)
+        TraitSlider(
+            label = "Text size",
+            value = settings.companionPanelFontScale,
+            lowLabel = "Small",
+            highLabel = "Large",
+            range = 80..140,
+        ) { vm.updateCompanionPanelFontScale(it) }
+    }
+}
+
+/**
+ * Outline colours for the bubble. 0 means "derive one", which is the only
+ * sensible default when the fill may itself be following the theme.
+ */
+private val BUBBLE_BORDER_COLORS: List<Pair<Long, String>> = listOf(
+    0L to "Auto",
+    0xFFFFFFFF to "White",
+    0xFF000000 to "Black",
+    0xFFE91E63 to "Rose",
+)
+
+/**
+ * A one-tap cycling picker for a gesture action.
+ *
+ * Cycles rather than opening a dropdown: there are seven options and the list
+ * is inside a scrolling settings column, where a popup menu is fiddly and a row
+ * of seven chips would not fit.
+ */
+@Composable
+private fun GesturePicker(
+    label: String,
+    current: com.pocketllm.companion.BubbleGesture,
+    onPick: (com.pocketllm.companion.BubbleGesture) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                val entries = com.pocketllm.companion.BubbleGesture.entries
+                onPick(entries[(entries.indexOf(current) + 1) % entries.size])
+            }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        Text(
+            current.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
     }
 }
 
@@ -1009,6 +1306,83 @@ private fun CompanionMemorySection(vm: AppViewModel) {
             )
         }
 
+        val staleCount by vm.staleMemoryCount.collectAsState()
+        val notice by vm.memoryNotice.collectAsState()
+        var query by remember { mutableStateOf("") }
+        var categoryFilter by remember {
+            mutableStateOf<com.pocketllm.companion.MemoryCategory?>(null)
+        }
+
+        // Counts are computed here rather than in the ViewModel because they are
+        // purely a view of the list it already exposes.
+        val counts = facts.groupingBy { it.categoryValue }.eachCount()
+        val shown = facts.filter { fact ->
+            (categoryFilter == null || fact.categoryValue == categoryFilter) &&
+                (query.isBlank() || fact.text.contains(query, ignoreCase = true))
+        }
+
+        // Only worth showing a category row for categories that exist.
+        if (counts.isNotEmpty()) {
+            Text(
+                "${facts.size} remembered" + if (staleCount > 0) " · $staleCount may be out of date" else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterChip(
+                    selected = categoryFilter == null,
+                    onClick = { categoryFilter = null },
+                    label = { Text("All") },
+                )
+                counts.entries.sortedByDescending { it.value }.forEach { (category, count) ->
+                    FilterChip(
+                        selected = categoryFilter == category,
+                        onClick = {
+                            categoryFilter = if (categoryFilter == category) null else category
+                        },
+                        label = { Text("${category.label} $count") },
+                    )
+                }
+            }
+        }
+
+        if (staleCount > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "$staleCount fact${if (staleCount == 1) "" else "s"} haven't come up in a long time.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { vm.forgetStaleMemory() }) { Text("Forget those") }
+            }
+        }
+
+        notice?.let { message ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { vm.dismissMemoryNotice() }) { Text("OK") }
+            }
+        }
+
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Search what she knows") },
+            singleLine = true,
+        )
+
         var newFact by remember { mutableStateOf("") }
         OutlinedTextField(
             value = newFact,
@@ -1027,14 +1401,14 @@ private fun CompanionMemorySection(vm: AppViewModel) {
             ) { Text("Add") }
         }
 
-        if (facts.isEmpty()) {
+        if (shown.isEmpty()) {
             Text(
-                "Nothing remembered yet.",
+                if (facts.isEmpty()) "Nothing remembered yet." else "Nothing matches that.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            for (fact in facts) {
+            for (fact in shown) {
                 var editing by remember(fact.id) { mutableStateOf(false) }
                 var draft by remember(fact.id) { mutableStateOf(fact.text) }
 
@@ -1056,25 +1430,89 @@ private fun CompanionMemorySection(vm: AppViewModel) {
                         ) { Text("Save") }
                     }
                 } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (fact.pinned) {
-                            Text("★ ", style = MaterialTheme.typography.bodySmall)
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (fact.pinned) {
+                                Text("★ ", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text(
+                                fact.text,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
-                        Text(
-                            fact.text,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = {
-                            vm.setMemoryFactPinned(fact.id, !fact.pinned)
-                        }) { Text(if (fact.pinned) "Unpin" else "Pin") }
-                        TextButton(onClick = { editing = true }) { Text("Edit") }
-                        TextButton(onClick = { vm.removeMemoryFact(fact.id) }) { Text("Forget") }
+                        // Second line: what kind of fact this is, how sure she is,
+                        // and how often it has actually been used. All three are
+                        // cheap to show and make the list auditable at a glance.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                buildString {
+                                    append(fact.categoryValue.label)
+                                    append(" · ")
+                                    append("${(fact.confidence * 100).roundToInt()}% sure")
+                                    if (fact.reinforcements > 0) append(" · heard ${fact.reinforcements}×")
+                                    if (fact.isStale()) append(" · may be out of date")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (fact.isStale()) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            // Tapping cycles the category — same reasoning as the
+                            // gesture picker: a dropdown per row is heavy.
+                            TextButton(onClick = {
+                                val all = com.pocketllm.companion.MemoryCategory.entries
+                                val next = all[(all.indexOf(fact.categoryValue) + 1) % all.size]
+                                vm.setMemoryFactCategory(fact.id, next)
+                            }) { Text("Type") }
+                            if (fact.isStale()) {
+                                TextButton(onClick = { vm.confirmMemoryFact(fact.id) }) { Text("Still true") }
+                            }
+                            TextButton(onClick = {
+                                vm.setMemoryFactPinned(fact.id, !fact.pinned)
+                            }) { Text(if (fact.pinned) "Unpin" else "Pin") }
+                            TextButton(onClick = { editing = true }) { Text("Edit") }
+                            TextButton(onClick = { vm.removeMemoryFact(fact.id) }) { Text("Forget") }
+                        }
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            val clipboard = LocalClipboardManager.current
+            var importOpen by remember { mutableStateOf(false) }
+            var importText by remember { mutableStateOf("") }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(vm.exportCompanionMemory()))
+                }) { Text("Export") }
+                TextButton(onClick = { importOpen = !importOpen }) { Text("Import") }
                 TextButton(onClick = { vm.clearCompanionMemory() }) { Text("Forget everything") }
+            }
+
+            if (importOpen) {
+                Text(
+                    "Paste an export to merge it in. Existing facts are kept.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = importText,
+                    onValueChange = { importText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Paste export here") },
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        vm.importCompanionMemory(importText)
+                        importText = ""
+                        importOpen = false
+                    }, enabled = importText.isNotBlank()) { Text("Merge") }
+                }
             }
         }
     }

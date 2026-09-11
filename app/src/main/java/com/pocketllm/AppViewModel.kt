@@ -647,6 +647,82 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateCompanionSetting { it.copy(companionBubbleColor = argb) }
     }
 
+    fun updateCompanionBubbleShape(shapeId: String) {
+        updateCompanionSetting { it.copy(companionBubbleShape = shapeId) }
+    }
+
+    /**
+     * Apply a whole style bundle in one write.
+     *
+     * Deliberately one settings update rather than five: each update persists
+     * and notifies the running overlay, so a loop of setters would write the
+     * file and rebuild the bubble five times over.
+     */
+    fun applyCompanionBubblePreset(preset: com.pocketllm.companion.BubblePreset) {
+        updateCompanionSetting {
+            it.copy(
+                companionBubbleSize = preset.size,
+                companionBubbleShape = preset.shapeId,
+                companionBubbleBorderWidth = preset.borderWidth,
+                companionGlyphScale = preset.glyphScale,
+                companionBubbleIdleAlpha = preset.idleAlpha,
+            )
+        }
+    }
+
+    fun updateCompanionBubbleBorderWidth(widthDp: Int) {
+        updateCompanionSetting { it.copy(companionBubbleBorderWidth = widthDp.coerceIn(0, 8)) }
+    }
+
+    fun updateCompanionBubbleBorderColor(argb: Long) {
+        updateCompanionSetting { it.copy(companionBubbleBorderColor = argb) }
+    }
+
+    fun updateCompanionGlyphScale(percent: Int) {
+        updateCompanionSetting { it.copy(companionGlyphScale = percent.coerceIn(20, 80)) }
+    }
+
+    fun updateCompanionBubbleIdleAlpha(percent: Int) {
+        updateCompanionSetting { it.copy(companionBubbleIdleAlpha = percent.coerceIn(20, 100)) }
+    }
+
+    fun updateCompanionBubbleDoubleTap(actionId: String) {
+        updateCompanionSetting { it.copy(companionBubbleDoubleTap = actionId) }
+    }
+
+    fun updateCompanionBubbleLongPress(actionId: String) {
+        updateCompanionSetting { it.copy(companionBubbleLongPress = actionId) }
+    }
+
+    fun updateCompanionSpeechRate(rate: Float) {
+        updateCompanionSetting { it.copy(companionSpeechRate = rate.coerceIn(0.5f, 2f)) }
+    }
+
+    fun updateCompanionSpeechPitch(pitch: Float) {
+        updateCompanionSetting { it.copy(companionSpeechPitch = pitch.coerceIn(0.5f, 2f)) }
+    }
+
+    fun updateCompanionPanelFontScale(scale: Int) {
+        updateCompanionSetting { it.copy(companionPanelFontScale = scale.coerceIn(80, 140)) }
+    }
+
+    fun updateCompanionSnapToEdge(enabled: Boolean) {
+        updateCompanionSetting { it.copy(companionSnapToEdge = enabled) }
+    }
+
+    /**
+     * Put the bubble back in its default corner.
+     *
+     * -1 is the "never placed" sentinel the service already understands, so this
+     * reuses that path rather than inventing a second one. It also takes effect
+     * live: the service is told to re-read settings and moves the window.
+     */
+    fun resetCompanionBubblePosition() {
+        updateCompanionSetting {
+            it.copy(companionBubbleX = -1, companionBubbleY = 0)
+        }
+    }
+
     fun updateCompanionMemoryEnabled(enabled: Boolean) {
         updateSettings { it.copy(companionMemoryEnabled = enabled) }
     }
@@ -662,10 +738,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _moodSummary = MutableStateFlow("No check-ins yet.")
     val moodSummary: StateFlow<String> = _moodSummary
 
+    /** Average per day over the last fortnight, oldest first, null for gaps. */
+    private val _moodTrend = MutableStateFlow<List<Double?>>(emptyList())
+    val moodTrend: StateFlow<List<Double?>> = _moodTrend
+
     fun refreshMood() {
         viewModelScope.launch(Dispatchers.IO) {
             _moodEntries.value = companionMood.all()
             _moodSummary.value = companionMood.summary()
+            _moodTrend.value = companionMood.dailyAverages(14)
         }
     }
 
@@ -674,6 +755,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             companionMood.clear()
             _moodEntries.value = emptyList()
             _moodSummary.value = companionMood.summary()
+            _moodTrend.value = companionMood.dailyAverages(14)
         }
     }
 
@@ -755,8 +837,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _memoryFacts = MutableStateFlow<List<com.pocketllm.companion.MemoryFact>>(emptyList())
     val memoryFacts: StateFlow<List<com.pocketllm.companion.MemoryFact>> = _memoryFacts
 
+    /** Facts that may no longer be true; surfaced so the user can decide. */
+    private val _staleMemoryCount = MutableStateFlow(0)
+    val staleMemoryCount: StateFlow<Int> = _staleMemoryCount
+
+    /** One-off message from an import/export action, cleared once shown. */
+    private val _memoryNotice = MutableStateFlow<String?>(null)
+    val memoryNotice: StateFlow<String?> = _memoryNotice
+
     private fun refreshMemory() {
         _memoryFacts.value = companionMemory.all().sortedByDescending { it.createdAt }
+        _staleMemoryCount.value = companionMemory.stale().size
     }
 
     fun refreshCompanionMemory() = refreshMemory()
@@ -779,6 +870,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setMemoryFactPinned(id: String, pinned: Boolean) {
         companionMemory.setPinned(id, pinned)
         refreshMemory()
+    }
+
+    fun setMemoryFactCategory(id: String, category: com.pocketllm.companion.MemoryCategory) {
+        companionMemory.setCategory(id, category)
+        refreshMemory()
+    }
+
+    /** Confirm a stale fact is still true, which resets its staleness clock. */
+    fun confirmMemoryFact(id: String) {
+        companionMemory.reinforce(id)
+        refreshMemory()
+    }
+
+    fun forgetStaleMemory() {
+        val dropped = companionMemory.forgetStale()
+        refreshMemory()
+        _memoryNotice.value = if (dropped == 0) "Nothing looked out of date." else "Forgot $dropped."
+    }
+
+    fun exportCompanionMemory(): String = companionMemory.exportJson()
+
+    fun importCompanionMemory(raw: String) {
+        val added = runCatching { companionMemory.importJson(raw) }.getOrDefault(-1)
+        refreshMemory()
+        _memoryNotice.value = when {
+            added < 0 -> "That didn't look like an export."
+            added == 0 -> "Nothing new in there."
+            // Import merges rather than replaces, so say so plainly.
+            else -> "Added $added new fact${if (added == 1) "" else "s"}."
+        }
+    }
+
+    fun dismissMemoryNotice() {
+        _memoryNotice.value = null
     }
 
     fun clearCompanionMemory() {
