@@ -80,6 +80,13 @@ class CompanionOverlayService : Service() {
     private var checkInJob: Job? = null
     /** Active dictation session, if any. */
     private var recognizer: SpeechRecognizer? = null
+    /**
+     * The page she just read, kept so follow-up questions about it work.
+     * Cleared on a new chat, replaced when another page is captured, and
+     * dropped after a few turns so it cannot linger indefinitely.
+     */
+    private var heldPage: CapturedPage? = null
+    private var heldPageTurns = 0
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -628,6 +635,7 @@ class CompanionOverlayService : Service() {
     private fun resetConversation() {
         ui.messages.clear()
         history.clear()
+        clearHeldPage()
         scope.launch(Dispatchers.IO) { store.clear() }
         ui.messages.add(CompanionMsg(false, "Fresh start. What's on your mind?"))
         // Reset the clock too, otherwise the absence greeting would fire the
@@ -671,7 +679,11 @@ class CompanionOverlayService : Service() {
         )
     }
 
-    private fun submit(text: String, display: String = text) {
+    private fun submit(
+        text: String,
+        display: String = text,
+        grounding: String? = null,
+    ) {
         if (text.isBlank() || ui.busy) return
         ui.messages.add(CompanionMsg(fromUser = true, text = display))
         ui.messages.add(CompanionMsg(fromUser = false, text = ""))
@@ -688,8 +700,13 @@ class CompanionOverlayService : Service() {
             runCatching { memory.captureFromUserText(display) }
         }
 
+        // An explicit grounding (a freshly captured page) wins; otherwise this
+        // is an ordinary message, which may still be a follow-up about the page
+        // she last read.
+        val prompt = grounding ?: if (lastTurnWasPageTask) null else consumeHeldPage()
+
         scope.launch {
-            val result = brain.respond(history.toList(), text) { delta ->
+            val result = brain.respond(history.toList(), text, prompt) { delta ->
                 val index = ui.messages.lastIndex
                 if (index >= 0) {
                     ui.messages[index] = ui.messages[index].copy(text = ui.messages[index].text + delta)
@@ -712,7 +729,13 @@ class CompanionOverlayService : Service() {
                 }
             }
             ui.busy = false
-            ui.status = brain.backendLabel()
+            // Let them know follow-ups will work — otherwise the page she just
+            // read is invisible and the capability goes unused.
+            ui.status = if (lastTurnWasPageTask && heldPage != null) {
+                "ask me anything about this page"
+            } else {
+                brain.backendLabel()
+            }
             saveChat()
             if (!lastTurnWasPageTask) maybeExtractMemory()
         }
@@ -802,15 +825,49 @@ class CompanionOverlayService : Service() {
             ui.messages.add(CompanionMsg(false, "I couldn't read anything on this screen."))
             return
         }
-        val budget = if (brain.localReady()) LOCAL_PAGE_CHARS else CLOUD_PAGE_CHARS
-        val body = page.text.take(budget)
-        val prompt = buildString {
-            appendLine(opener)
-            page.url?.let { appendLine("URL: $it") }
+        // Hold the page so the follow-up questions people naturally want to ask
+        // ("what about the bit on X?") actually work.
+        holdPage(page)
+        submit(opener, display = display, grounding = pageGrounding(page))
+    }
+
+    /** Remember a page for the next few turns, capped so it can't grow unbounded. */
+    private fun holdPage(page: CapturedPage) {
+        heldPage = page.copy(text = page.text.take(CLOUD_PAGE_CHARS))
+        heldPageTurns = 0
+    }
+
+    private fun clearHeldPage() {
+        heldPage = null
+        heldPageTurns = 0
+    }
+
+    /**
+     * The held page as prompt grounding, truncated to what the active backend
+     * can afford. Built per turn because the backend can change between turns.
+     */
+    private fun pageGrounding(page: CapturedPage): String {
+        val budget = if (brain.localReady()) HELD_PAGE_CHARS_LOCAL else HELD_PAGE_CHARS_CLOUD
+        return buildString {
+            appendLine("The page they are looking at on screen right now:")
+            page.url?.takeIf { it.isNotBlank() }?.let { appendLine("URL: $it") }
             appendLine()
-            appendLine(body)
+            appendLine(page.text.take(budget))
         }
-        submit(prompt, display = display)
+    }
+
+    /**
+     * Grounding for an ordinary message: the held page, if there is one.
+     * Returns null once the page has been referenced for a few turns.
+     */
+    private fun consumeHeldPage(): String? {
+        val page = heldPage ?: return null
+        heldPageTurns++
+        if (heldPageTurns > MAX_HELD_PAGE_TURNS) {
+            clearHeldPage()
+            return null
+        }
+        return pageGrounding(page)
     }
 
     private fun speak(text: String) {
@@ -883,7 +940,14 @@ class CompanionOverlayService : Service() {
         /** Search hits fed to the model; more than this just crowds the prompt. */
         private const val LOOKUP_MAX_RESULTS = 5
         private const val MAX_HISTORY = 12
-        private const val LOCAL_PAGE_CHARS = 2500
+        /**
+         * How much of a held page is fed back on a follow-up. Smaller than the
+         * first read because the conversation itself now needs room too.
+         */
+        private const val HELD_PAGE_CHARS_LOCAL = 1600
+        private const val HELD_PAGE_CHARS_CLOUD = 6000
+        /** Follow-up turns a held page survives before being dropped. */
+        private const val MAX_HELD_PAGE_TURNS = 4
         private const val CLOUD_PAGE_CHARS = 8000
         /** Don't greet if the user was here more recently than this. */
         private const val PROACTIVE_QUIET_MS = 20 * 60 * 1000L
