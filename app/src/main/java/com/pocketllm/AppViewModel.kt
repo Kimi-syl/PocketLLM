@@ -651,6 +651,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(companionMemoryEnabled = enabled) }
     }
 
+    // --- Companion mood journal ---------------------------------------------
+
+    private val companionMood = com.pocketllm.companion.MoodJournalStore(application)
+
+    private val _moodEntries =
+        MutableStateFlow<List<com.pocketllm.companion.MoodEntry>>(emptyList())
+    val moodEntries: StateFlow<List<com.pocketllm.companion.MoodEntry>> = _moodEntries
+
+    private val _moodSummary = MutableStateFlow("No check-ins yet.")
+    val moodSummary: StateFlow<String> = _moodSummary
+
+    fun refreshMood() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _moodEntries.value = companionMood.all()
+            _moodSummary.value = companionMood.summary()
+        }
+    }
+
+    fun clearMoodJournal() {
+        viewModelScope.launch(Dispatchers.IO) {
+            companionMood.clear()
+            _moodEntries.value = emptyList()
+            _moodSummary.value = companionMood.summary()
+        }
+    }
+
     // --- Companion reminders ------------------------------------------------
 
     private val companionReminders =

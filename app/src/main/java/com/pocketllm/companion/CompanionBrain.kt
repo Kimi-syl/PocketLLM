@@ -17,6 +17,8 @@ import com.pocketllm.settings.AppSettings
 class CompanionBrain(
     private val settings: () -> AppSettings,
     private val memory: () -> CompanionMemory?,
+    /** Optional recent-mood hint, so she can be gentler after a hard week. */
+    private val mood: () -> MoodJournalStore? = { null },
 ) {
 
     fun localReady(): Boolean = LlamaEngine.state.value is EngineState.Ready
@@ -127,6 +129,13 @@ class CompanionBrain(
         val memoryBlock = if (s.companionMemoryEnabled) memory()?.promptBlock(recent).orEmpty() else ""
         val system = buildString {
             append(CompanionPersonas.systemPrompt(s, memoryBlock))
+            // Understated and last, so it colours the tone rather than becoming
+            // something she talks about.
+            val moodHint = runCatching { mood()?.promptHint() }.getOrNull().orEmpty()
+            if (moodHint.isNotBlank()) {
+                append("\n\n")
+                append(moodHint)
+            }
             // Grounding goes last so it sits closest to the question, and only
             // for this turn — it must never enter the stored transcript.
             if (!grounding.isNullOrBlank()) {

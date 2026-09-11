@@ -132,6 +132,10 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            CompanionMoodSection(vm)
+        }
+
+        item {
             CloudEntrySettingsSection(vm)
         }
 

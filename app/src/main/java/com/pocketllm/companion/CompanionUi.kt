@@ -59,6 +59,13 @@ class CompanionUiState {
     var listening by mutableStateOf(false)
     /** Whether the mic button should be offered at all. */
     var voiceInputEnabled by mutableStateOf(false)
+    /**
+     * She has asked how they are and is waiting for one of the mood faces.
+     * While true the action chips are replaced by the mood row.
+     */
+    var awaitingMood by mutableStateOf(false)
+    /** Face tapped for a mood check-in. */
+    var onMoodPicked: ((Int) -> Unit)? = null
 
     /** Identity / appearance, mirrored from settings so the overlay reflects them live. */
     var name by mutableStateOf("Momo")
@@ -76,6 +83,8 @@ class CompanionUiState {
     var onCheer: (() -> Unit)? = null
     /** Search the web and answer from the results. */
     var onLookUp: (() -> Unit)? = null
+    /** Ask how they are and offer the mood faces. */
+    var onMoodCheckIn: (() -> Unit)? = null
     /** Start a fresh conversation and forget the stored transcript. */
     var onNewChat: (() -> Unit)? = null
     /** Bubble tapped: open the chat panel. */
@@ -185,17 +194,51 @@ private fun CompanionPanel(state: CompanionUiState) {
 
             Spacer(Modifier.height(6.dp))
 
-            // One-tap actions: the common asks shouldn't require typing, and
-            // "Cheer me up" is the emotional-support entry point. Each chip
-            // takes an equal share so all four always fit the panel width.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                QuickChip("Cheer me up", !state.busy, Modifier.weight(1f)) { state.onCheer?.invoke() }
-                QuickChip("Summary", !state.busy, Modifier.weight(1f)) { state.onSummarize?.invoke() }
-                QuickChip("Explain", !state.busy, Modifier.weight(1f)) { state.onExplain?.invoke() }
-                QuickChip("Look up", !state.busy, Modifier.weight(1f)) { state.onLookUp?.invoke() }
+            // While she is waiting on a mood answer, the mood faces replace the
+            // action chips entirely — the question should have one obvious
+            // answer, not compete with four other buttons.
+            if (state.awaitingMood) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    MoodScale.choices.forEach { choice ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { state.onMoodPicked?.invoke(choice.score) },
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(choice.face, fontSize = 18.sp)
+                            }
+                        }
+                    }
+                }
+            } else {
+                // One-tap actions: the common asks shouldn't require typing, and
+                // "Cheer me up" is the emotional-support entry point. Two rows,
+                // so adding actions can't overflow a narrow panel.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    QuickChip("Cheer me up", !state.busy, Modifier.weight(1f)) { state.onCheer?.invoke() }
+                    QuickChip("How am I?", !state.busy, Modifier.weight(1f)) { state.onMoodCheckIn?.invoke() }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    QuickChip("Summary", !state.busy, Modifier.weight(1f)) { state.onSummarize?.invoke() }
+                    QuickChip("Explain", !state.busy, Modifier.weight(1f)) { state.onExplain?.invoke() }
+                    QuickChip("Look up", !state.busy, Modifier.weight(1f)) { state.onLookUp?.invoke() }
+                }
             }
 
             Spacer(Modifier.height(6.dp))

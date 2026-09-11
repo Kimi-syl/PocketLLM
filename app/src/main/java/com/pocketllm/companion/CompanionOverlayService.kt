@@ -91,6 +91,8 @@ class CompanionOverlayService : Service() {
     private var pendingReminderSubject: String? = null
     /** Reminders she is holding, so they can be listed and cancelled. */
     private lateinit var reminders: CompanionReminderStore
+    /** Explicit mood check-ins, used to be a little more careful with them. */
+    private lateinit var mood: MoodJournalStore
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -100,10 +102,17 @@ class CompanionOverlayService : Service() {
         super.onCreate()
         instance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        // All stores first: the brain closes over them, and a lateinit read
+        // before assignment would be a crash waiting for a code reorder.
         memory = CompanionMemory(applicationContext)
-        brain = CompanionBrain(settings = { settings() }, memory = { memory })
         store = CompanionStore(applicationContext)
         reminders = CompanionReminderStore(applicationContext)
+        mood = MoodJournalStore(applicationContext)
+        brain = CompanionBrain(
+            settings = { settings() },
+            memory = { memory },
+            mood = { mood },
+        )
         // Forget reminders that fired long ago so the list stays meaningful.
         scope.launch(Dispatchers.IO) { runCatching { reminders.prune() } }
         restoreTranscript()
@@ -115,6 +124,8 @@ class CompanionOverlayService : Service() {
         ui.onExplain = { explainPage() }
         ui.onCheer = { cheerUp() }
         ui.onLookUp = { lookUp() }
+        ui.onMoodCheckIn = { beginMoodCheckIn() }
+        ui.onMoodPicked = { score -> recordMood(score) }
         ui.onNewChat = { resetConversation() }
         ui.onMicToggle = { toggleListening() }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
@@ -685,6 +696,54 @@ class CompanionOverlayService : Service() {
             "I'm feeling a bit low right now. Please say something warm and steadying.",
             display = "Cheer me up",
         )
+    }
+
+    // --- Mood check-ins -----------------------------------------------------
+
+    /**
+     * "How am I?" — she asks, they tap a face, and that is the whole record.
+     *
+     * A tap rather than free text so the answer is unambiguous and the journal
+     * is a real signal rather than a guess at sentiment.
+     */
+    private fun beginMoodCheckIn() {
+        if (ui.busy) return
+        ui.awaitingMood = true
+        ui.messages.add(CompanionMsg(true, "How am I doing?"))
+        ui.messages.add(CompanionMsg(false, "How are you doing right now? No wrong answer."))
+        ui.status = "waiting for you"
+        saveChat()
+    }
+
+    private fun recordMood(score: Int) {
+        if (!ui.awaitingMood) return
+        ui.awaitingMood = false
+        val reply = buildString {
+            append("Thanks for telling me. ")
+            append(moodAcknowledgement(score))
+            // Only mention a pattern once there is one, and gently.
+            mood.averageOver(7)?.let { avg ->
+                if (avg <= 2.4 && score <= 2) {
+                    append(" That's a few low days in a row now — I'm not going anywhere.")
+                }
+            }
+        }
+        ui.messages.add(CompanionMsg(false, reply))
+        ui.status = brain.backendLabel()
+        scope.launch(Dispatchers.IO) {
+            runCatching { mood.add(score) }
+        }
+        speak(reply)
+        saveChat()
+        lastInteractionAt = System.currentTimeMillis()
+    }
+
+    private fun moodAcknowledgement(score: Int): String = when {
+        score <= 1 -> "Rough days are heavy. I'm glad you said so."
+        score == 2 -> "Low is still worth saying out loud."
+        score == 3 -> "Okay is a perfectly good place to be."
+        score == 4 -> "Good to hear. I'll take it."
+        else -> "That's lovely to hear."
     }
 
     // --- Reminders ----------------------------------------------------------
