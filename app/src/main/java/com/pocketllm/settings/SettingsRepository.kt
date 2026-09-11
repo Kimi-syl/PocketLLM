@@ -95,6 +95,15 @@ data class AppSettings(
     /** Run the (extra) model pass that pulls facts out of the conversation. */
     val companionMemoryExtraction: Boolean = true,
 
+    // --- Proactive check-ins ------------------------------------------------
+    /** Let her reach out with a notification while you are doing something else. */
+    val companionProactiveNudges: Boolean = false,
+    /** How often she may check in, in minutes. */
+    val companionNudgeIntervalMinutes: Int = 120,
+    /** Quiet hours, inclusive start / exclusive end, 24h clock. Handles wrap. */
+    val companionQuietStartHour: Int = 22,
+    val companionQuietEndHour: Int = 8,
+
     // --- Cloud entry --------------------------------------------------------
     /** Allow the companion to call a remote OpenAI-compatible endpoint. */
     val cloudEnabled: Boolean = false,

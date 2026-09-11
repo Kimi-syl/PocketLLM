@@ -112,6 +112,10 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
         }
 
         item {
+            CompanionCheckInSection(vm)
+        }
+
+        item {
             CloudEntrySettingsSection(vm)
         }
 
@@ -1055,3 +1059,4 @@ private fun CompanionMemorySection(vm: AppViewModel) {
         }
     }
 }
+

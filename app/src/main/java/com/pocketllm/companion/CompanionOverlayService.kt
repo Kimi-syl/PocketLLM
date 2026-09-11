@@ -64,6 +64,8 @@ class CompanionOverlayService : Service() {
     private var lastTurnWasPageTask = false
     /** In-flight background memory pass, so a real reply can pre-empt it. */
     private var extractJob: Job? = null
+    /** Timer for proactive check-ins. */
+    private var checkInJob: Job? = null
 
     private val density: Float get() = resources.displayMetrics.density
 
@@ -105,9 +107,12 @@ class CompanionOverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_EXPAND -> expand()
         }
         refreshFromSettings()
         return START_STICKY
@@ -123,6 +128,76 @@ class CompanionOverlayService : Service() {
         if (!::brain.isInitialized) return
         applyAppearance(settings())
         ui.status = brain.backendLabel()
+        restartCheckInLoop()
+    }
+
+    // --- Proactive check-ins ------------------------------------------------
+
+    /**
+     * She reaches out on her own.
+     *
+     * Scheduled inside the service rather than with WorkManager or an alarm:
+     * the service is already alive whenever the user has the bubble switched
+     * on (and deliberately not when they have switched it off), so a plain
+     * timer is both simpler and a more honest reflection of the toggle.
+     */
+    private fun restartCheckInLoop() {
+        checkInJob?.cancel()
+        checkInJob = null
+        if (!settings().companionEnabled || !settings().companionProactiveNudges) return
+        checkInJob = scope.launch {
+            while (isActive) {
+                val minutes = settings().companionNudgeIntervalMinutes.coerceIn(15, 24 * 60)
+                delay(minutes * 60_000L)
+                runCatching { maybeSendCheckIn() }
+            }
+        }
+    }
+
+    private fun maybeSendCheckIn() {
+        val s = settings()
+        if (!s.companionEnabled || !s.companionProactiveNudges) return
+        // Don't interrupt: they are looking at her, or mid-conversation.
+        if (ui.expanded || ui.busy) return
+        if (CompanionNudges.isQuietNow(s.companionQuietStartHour, s.companionQuietEndHour)) return
+        val idleFor = System.currentTimeMillis() - lastInteractionAt
+        if (idleFor < NUDGE_MIN_IDLE_MS) return
+
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val line = CompanionNudges.next(hour)
+        postCheckInNotification(line)
+        ServerLog.log("companion: check-in sent")
+    }
+
+    private fun postCheckInNotification(line: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(NUDGE_CHANNEL_ID) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    NUDGE_CHANNEL_ID,
+                    "Check-ins",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply { description = "When your companion reaches out first" }
+            )
+        }
+        val open = PendingIntent.getActivity(
+            this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+        )
+        val expand = PendingIntent.getService(
+            this, 3,
+            Intent(this, CompanionOverlayService::class.java).setAction(ACTION_EXPAND),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, NUDGE_CHANNEL_ID)
+            .setContentTitle(settings().companionName.ifBlank { "Momo" })
+            .setContentText(line)
+            .setStyle(Notification.BigTextStyle().bigText(line))
+            .setSmallIcon(R.drawable.ic_companion)
+            .setAutoCancel(true)
+            .setContentIntent(if (canDrawOverlays()) expand else open)
+            .build()
+        // Distinct id: never overwrite the ongoing bubble notification.
+        runCatching { manager.notify(NUDGE_NOTIFICATION_ID, notification) }
     }
 
     override fun onDestroy() {
@@ -132,6 +207,8 @@ class CompanionOverlayService : Service() {
         owner = null
         extractJob?.cancel()
         extractJob = null
+        checkInJob?.cancel()
+        checkInJob = null
         tts?.shutdown()
         tts = null
         scope.cancel()
@@ -532,8 +609,13 @@ class CompanionOverlayService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "pocketllm_companion"
+        private const val NUDGE_CHANNEL_ID = "pocketllm_companion_checkins"
         private const val NOTIFICATION_ID = 4711
+        private const val NUDGE_NOTIFICATION_ID = 4712
         private const val ACTION_STOP = "com.pocketllm.companion.STOP"
+        private const val ACTION_EXPAND = "com.pocketllm.companion.EXPAND"
+        /** Don't reach out if they were here more recently than this. */
+        private const val NUDGE_MIN_IDLE_MS = 45 * 60 * 1000L
         private const val MAX_HISTORY = 12
         private const val LOCAL_PAGE_CHARS = 2500
         private const val CLOUD_PAGE_CHARS = 8000

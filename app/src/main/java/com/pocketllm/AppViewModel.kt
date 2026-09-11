@@ -645,6 +645,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(companionMemoryExtraction = enabled) }
     }
 
+    // --- Proactive check-ins ------------------------------------------------
+
+    fun updateCompanionProactiveNudges(enabled: Boolean) {
+        updateCompanionSetting { it.copy(companionProactiveNudges = enabled) }
+    }
+
+    fun updateCompanionNudgeInterval(minutes: Int) {
+        updateCompanionSetting { it.copy(companionNudgeIntervalMinutes = minutes.coerceIn(15, 24 * 60)) }
+    }
+
+    fun updateCompanionQuietHours(startHour: Int, endHour: Int) {
+        updateCompanionSetting {
+            it.copy(
+                companionQuietStartHour = startHour.coerceIn(0, 23),
+                companionQuietEndHour = endHour.coerceIn(0, 23),
+            )
+        }
+    }
+
     /**
      * Writes a companion setting and then pushes it to the live overlay.
      *
