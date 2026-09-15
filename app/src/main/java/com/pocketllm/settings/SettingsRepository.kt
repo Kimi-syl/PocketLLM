@@ -69,6 +69,15 @@ data class AppSettings(
     val companionTts: Boolean = false,
     /** Show a microphone button in the panel to talk instead of typing. */
     val companionVoiceInput: Boolean = true,
+    /**
+     * BCP-47 tag handed to the recogniser, e.g. "en-US" or "zh-CN". Blank leaves
+     * the choice to the device, which is the safer default.
+     */
+    val companionSpeechLanguage: String = "",
+    /** Show recognised words as they arrive rather than only at the end. */
+    val companionSpeechPartialResults: Boolean = true,
+    /** Ask the recogniser to work on-device where it can. Advisory, not a guarantee. */
+    val companionSpeechPreferOffline: Boolean = false,
     /** Last bubble position, persisted so it reappears where the user left it. */
     val companionBubbleX: Int = -1,
     val companionBubbleY: Int = 400,
@@ -110,6 +119,56 @@ data class AppSettings(
      * the dimming entirely.
      */
     val companionBubbleIdleAlpha: Int = 65,
+    /**
+     * Drawn character shown in place of the emoji glyph. "off" keeps the emoji.
+     * See [com.pocketllm.companion.CompanionSpecies].
+     */
+    val companionCharacter: String = "cat",
+    /**
+     * Content URI of the user's own character art, used when
+     * [companionCharacter] is "image". Empty means none chosen.
+     */
+    val companionImageUri: String = "",
+    /** Frame grid of the chosen image: 1x1 is a single still picture. */
+    val companionImageColumns: Int = 1,
+    val companionImageRows: Int = 1,
+    /** Playback rate for a sprite sheet, in frames per second. */
+    val companionImageFps: Int = 9,
+    /**
+     * Bundled Live2D sample model, used when [companionCharacter] is "live2d".
+     * Only models shipped inside the APK are offered; importing a model is what
+     * would make this an "Expandable Application" under Live2D's licence.
+     */
+    val companionLive2DModel: String = "Hiyori",
+    /**
+     * Bundled VRM avatar to display when [companionCharacter] is "vrm".
+     */
+    val companionVrmModel: String = "Seed-san.vrm",
+    /**
+     * Her facial expression. "auto" mirrors the user's recent mood, so she reacts
+     * to it; any other value pins one on. See
+     * [com.pocketllm.companion.CompanionExpression].
+     */
+    val companionExpression: String = "auto",
+    /**
+     * Draw the character free-standing instead of inside a coloured circle.
+     * False keeps the original bubble.
+     */
+    val companionBareCharacter: Boolean = false,
+    /**
+     * Height of the free-standing character in dp. Only used when
+     * [companionBareCharacter] is set; the width follows from the figure's
+     * aspect so the character is never distorted.
+     */
+    val companionCharacterSize: Int = 170,
+    /** Panel left edge; -1 means "centre it", which is the initial behaviour. */
+    val companionPanelX: Int = -1,
+    /** Panel top edge; -1 means "near the top". */
+    val companionPanelY: Int = -1,
+    /** Panel width in dp, user-resizable by the corner grip. */
+    val companionPanelWidth: Int = 360,
+    /** Panel height in dp, user-resizable by the corner grip. */
+    val companionPanelHeight: Int = 470,
     /** A double-tap on the bubble. See [com.pocketllm.companion.BubbleGesture]. */
     val companionBubbleDoubleTap: String = "summarize",
     /** A long-press on the bubble. */

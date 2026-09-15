@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -28,7 +29,7 @@ import androidx.core.content.ContextCompat
 import com.pocketllm.AppViewModel
 
 /**
- * Voice input for the companion.
+ * Speech-to-text settings for the companion.
  *
  * Recording happens in the system recognition service, not in this app, so the
  * permission is only what lets the recognizer accept our requests. It is
@@ -52,8 +53,8 @@ fun CompanionVoiceSection(vm: AppViewModel) {
     ) { result -> granted = result }
 
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Voice", style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Speech to text", style = MaterialTheme.typography.titleMedium)
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -71,6 +72,7 @@ fun CompanionVoiceSection(vm: AppViewModel) {
                 )
             }
 
+            // Everything below only matters once the microphone is switched on.
             if (s.companionVoiceInput && s.companionEnabled) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -85,21 +87,60 @@ fun CompanionVoiceSection(vm: AppViewModel) {
                         }) { Text("Grant") }
                     }
                 }
-            }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Speak replies out loud", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Uses the TTS engine configured in the app's voice settings.",
-                        style = MaterialTheme.typography.bodySmall,
+                var language by remember(s.companionSpeechLanguage) {
+                    mutableStateOf(s.companionSpeechLanguage)
+                }
+                OutlinedTextField(
+                    value = language,
+                    onValueChange = { language = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Recognition language") },
+                    placeholder = { Text("e.g. en-US, zh-CN") },
+                    singleLine = true,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(
+                        onClick = { vm.updateCompanionSpeechLanguage(language.trim()) },
+                        enabled = language.trim() != s.companionSpeechLanguage,
+                    ) { Text("Save language") }
+                }
+                Text(
+                    "A BCP-47 tag such as en-US or zh-CN. Leave blank to use whatever " +
+                        "the device is set to.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Show words as you speak", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Displays recognised text while you are still talking, " +
+                                "instead of only at the end.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = s.companionSpeechPartialResults,
+                        onCheckedChange = { vm.updateCompanionSpeechPartialResults(it) },
                     )
                 }
-                Switch(
-                    checked = s.companionTts,
-                    enabled = s.companionEnabled,
-                    onCheckedChange = { vm.updateCompanionTts(it) },
-                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Prefer on-device recognition", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Asks the recognizer to work offline where it can. " +
+                                "Some engines ignore this.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = s.companionSpeechPreferOffline,
+                        onCheckedChange = { vm.updateCompanionSpeechPreferOffline(it) },
+                    )
+                }
             }
         }
     }

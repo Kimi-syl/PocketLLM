@@ -43,14 +43,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontFamily
 import com.pocketllm.ui.theme.PocketLLMTheme
 import kotlinx.coroutines.delay
 
@@ -100,6 +103,32 @@ class CompanionUiState {
      * recede without disappearing. 1f disables the dimming.
      */
     var bubbleIdleFactor by mutableStateOf(0.65f)
+    /**
+     * Drawn character to show instead of the emoji glyph; null means emoji.
+     */
+    var character by mutableStateOf<CompanionSpecies?>(CompanionSpecies.Cat)
+    /** Her expression, usually derived from the user's recent mood. */
+    var expression by mutableStateOf(CompanionExpression.Neutral)
+    /** True while she is speaking, which animates the mouth. */
+    var talking by mutableStateOf(false)
+    /** She is drawn free-standing rather than inside a coloured bubble. */
+    var bareCharacter by mutableStateOf(false)
+    /** Height of the free-standing character in dp. */
+    var characterSizeDp by mutableStateOf(170)
+    /**
+     * Posture of the free-standing character: true stands her up, false lies her
+     * down. She rests by default and gets up when the user moves her.
+     */
+    var upright by mutableStateOf(false)
+    /** Bundled Live2D sample model in use; empty when Live2D is not selected. */
+    var live2dModel by mutableStateOf("")
+    /** Bundled VRM avatar currently shown; empty when not in use. */
+    var vrmModel by mutableStateOf("")
+    /** The user's own character art, when they have chosen some. */
+    var imageUri by mutableStateOf("")
+    var imageColumns by mutableStateOf(1)
+    var imageRows by mutableStateOf(1)
+    var imageFps by mutableStateOf(9)
     /** True briefly after a touch, so the bubble shows at full strength. */
     var bubbleAwake by mutableStateOf(true)
     /** What the bubble gestures do; see [BubbleGesture]. */
@@ -142,6 +171,12 @@ class CompanionUiState {
     var onBreathDone: (() -> Unit)? = null
     var onDrag: ((Float, Float) -> Unit)? = null
     var onDragEnd: (() -> Unit)? = null
+    /** Panel header dragged; moves the whole popup window. */
+    var onPanelDrag: ((Float, Float) -> Unit)? = null
+    var onPanelDragEnd: (() -> Unit)? = null
+    /** Corner grip dragged; resizes the popup window. */
+    var onPanelResize: ((Float, Float) -> Unit)? = null
+    var onPanelResizeEnd: (() -> Unit)? = null
 }
 
 /** Fallback bubble face when the user clears the glyph field. */
@@ -182,6 +217,9 @@ private fun CompanionBubble(state: CompanionUiState) {
     // fight to interact through.
     val opacity = state.bubbleAlpha * if (state.bubbleAwake) 1f else state.bubbleIdleFactor
 
+    // Decoded once per URI, not per frame; this composable redraws continuously.
+    val characterImage = rememberCharacterImage(state.imageUri)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -211,6 +249,17 @@ private fun CompanionBubble(state: CompanionUiState) {
             // The only outward sign that she is working; without it a long local
             // generation looks like nothing happened.
             busy = state.busy,
+            character = state.character,
+            expression = state.expression,
+            talking = state.talking,
+            bare = state.bareCharacter,
+            upright = state.upright,
+            image = characterImage,
+            imageColumns = state.imageColumns,
+            imageRows = state.imageRows,
+            imageFps = state.imageFps,
+            live2dModel = state.live2dModel,
+            vrmModel = state.vrmModel,
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(state.doubleTapAction, state.longPressAction) {
@@ -250,6 +299,18 @@ fun BubbleVisual(
     opacity: Float,
     busy: Boolean,
     modifier: Modifier = Modifier,
+    character: CompanionSpecies? = null,
+    expression: CompanionExpression = CompanionExpression.Neutral,
+    talking: Boolean = false,
+    animateCharacter: Boolean = true,
+    bare: Boolean = false,
+    upright: Boolean = true,
+    image: ImageBitmap? = null,
+    imageColumns: Int = 1,
+    imageRows: Int = 1,
+    imageFps: Int = 9,
+    live2dModel: String = "",
+    vrmModel: String = "",
 ) {
     val shapeSpec = shape.shapeFor(sizeDp)
 
@@ -265,26 +326,104 @@ fun BubbleVisual(
         ),
         label = "busyAlpha",
     )
+    val shownAlpha = if (busy) opacity * pulseAlpha else opacity
 
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .alpha(if (busy) opacity * pulseAlpha else opacity)
-                .background(fill, shapeSpec)
-                .then(
-                    if (borderWidthDp > 0) {
-                        Modifier.border(borderWidthDp.dp, borderColor, shapeSpec)
-                    } else Modifier
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
+    // The user's own art wins over the drawn character; it is the only way to get
+    // a real illustrated character without shipping a licensed model.
+    val content: @Composable () -> Unit = {
+        when {
+            vrmModel.isNotEmpty() -> Box(Modifier.fillMaxSize()) {
+                VrmCharacter(
+                    modelAsset = vrmModel,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // Drawn by Compose, not Filament, so it appears even when the 3D
+                // surface renders nothing.
+                val diagnostic = vrmDiagnostic.value
+                if (diagnostic.isNotEmpty()) {
+                    Text(
+                        text = diagnostic,
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .background(Color(0xCC000000))
+                            .padding(2.dp),
+                    )
+                }
+            }
+            live2dModel.isNotEmpty() -> Live2DCharacter(
+                modelName = live2dModel,
+                modifier = Modifier.fillMaxSize(),
+                // If the Cubism framework cannot start, draw the vector character
+                // rather than leaving an empty hole where she should be.
+                fallback = {
+                    AnimatedCompanion(
+                        species = CompanionSpecies.Cat,
+                        expression = expression,
+                        talking = talking,
+                        animate = animateCharacter,
+                        upright = upright,
+                        fit = if (bare) CharacterFit.Full else CharacterFit.Bust,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                },
+            )
+            image != null -> AnimatedImageCompanion(
+                image = image,
+                columns = imageColumns,
+                rows = imageRows,
+                fps = imageFps,
+                animate = animateCharacter,
+                modifier = Modifier.fillMaxSize(),
+            )
+            character != null -> AnimatedCompanion(
+                species = character,
+                expression = expression,
+                talking = talking,
+                animate = animateCharacter,
+                upright = upright,
+                fit = if (bare) CharacterFit.Full else CharacterFit.Bust,
+                modifier = Modifier.fillMaxSize(),
+            )
+            else -> Text(
                 text = glyph,
                 // Scaled by the user's preference so a large bubble is not a big
                 // circle with a tiny dot in the middle, and vice versa.
                 fontSize = (sizeDp * (glyphScale / 100f)).sp,
             )
+        }
+    }
+
+    // Bare: no fill, no outline, no clipping — just her, standing on the screen.
+    // Only meaningful with something drawn; an emoji would float with nothing
+    // behind it, so that case keeps the wrapped bubble.
+    if (bare && (live2dModel.isNotEmpty() || vrmModel.isNotEmpty() || image != null || character != null)) {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize().alpha(shownAlpha)) { content() }
+        }
+        return
+    }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(shownAlpha)
+                .background(fill, shapeSpec)
+                .then(
+                    if (borderWidthDp > 0) {
+                        Modifier.border(borderWidthDp.dp, borderColor, shapeSpec)
+                    } else Modifier
+                )
+                // The character is drawn as a bust that intentionally runs past
+                // the bubble's edge, so it has to be clipped to the shape or it
+                // would paint into the square corners of the layout box.
+                .clip(shapeSpec),
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
         }
     }
 }
@@ -308,8 +447,46 @@ private fun CompanionPanel(state: CompanionUiState) {
         shadowElevation = 10.dp,
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(state.glyph.ifBlank { BUBBLE_GLYPH }, fontSize = 16.sp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    // Dragging the header moves the whole window. The body cannot
+                    // be used for this: it is a scrolling message list, so a drag
+                    // there has to remain a scroll.
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDrag = { change, drag ->
+                                change.consume()
+                                state.onPanelDrag?.invoke(drag.x, drag.y)
+                            },
+                            onDragEnd = { state.onPanelDragEnd?.invoke() },
+                            onDragCancel = { state.onPanelDragEnd?.invoke() },
+                        )
+                    },
+            ) {
+                val headerCharacter = state.character
+                val headerImage = rememberCharacterImage(state.imageUri)
+                if (headerImage != null) {
+                    AnimatedImageCompanion(
+                        image = headerImage,
+                        columns = state.imageColumns,
+                        rows = state.imageRows,
+                        fps = state.imageFps,
+                        modifier = Modifier.size(30.dp),
+                    )
+                } else if (headerCharacter != null) {
+                    // The panel is much bigger than the bubble, so the header is
+                    // where the animation is actually legible.
+                    AnimatedCompanion(
+                        species = headerCharacter,
+                        expression = state.expression,
+                        talking = state.talking,
+                        modifier = Modifier.size(30.dp),
+                    )
+                } else {
+                    Text(state.glyph.ifBlank { BUBBLE_GLYPH }, fontSize = 16.sp)
+                }
                 Spacer(Modifier.width(6.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -504,6 +681,33 @@ private fun CompanionPanel(state: CompanionUiState) {
             ) {
                 BreathingGuide(state)
             }
+        }
+
+        // Resize grip. A visible affordance rather than an invisible edge, because
+        // an invisible one has to be discovered and this is the only way to change
+        // the panel's size.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .size(30.dp)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDrag = { change, drag ->
+                            change.consume()
+                            state.onPanelResize?.invoke(drag.x, drag.y)
+                        },
+                        onDragEnd = { state.onPanelResizeEnd?.invoke() },
+                        onDragCancel = { state.onPanelResizeEnd?.invoke() },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            // Two chevrons, the conventional "drag to resize" mark.
+            Text(
+                text = "\u25E2",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

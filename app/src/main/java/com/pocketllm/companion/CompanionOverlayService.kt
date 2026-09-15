@@ -21,6 +21,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.ui.graphics.Color
@@ -74,6 +75,8 @@ class CompanionOverlayService : Service() {
     private var bubbleY = 0
     /** When the bubble was last dragged, so a settings refresh cannot fight it. */
     private var lastDragAt = 0L
+    /** Pending "settle back down" timer for the free-standing character. */
+    private var lieDownJob: Job? = null
     /** Epoch millis of the last user interaction, for the proactive check-in. */
     private var lastInteractionAt = 0L
     /** Turns since the last memory-extraction pass. */
@@ -151,6 +154,23 @@ class CompanionOverlayService : Service() {
         ui.onBreathDone = { ui.breathing = false }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
+        ui.onPanelDrag = { dx, dy -> movePanelBy(dx, dy) }
+        ui.onPanelDragEnd = { persistPanelPosition() }
+        ui.onPanelResize = { dx, dy -> resizePanelBy(dx, dy) }
+        ui.onPanelResizeEnd = { persistPanelSize() }
+        // The moc is parsed on the GL thread, so the canvas size is only known a
+        // moment after the surface appears. When it arrives the collapsed window
+        // is re-fitted to it, which is what removes the letterboxing.
+        onLive2DModelLoaded = {
+            scope.launch {
+                if (!ui.expanded) {
+                    val view = rootView ?: return@launch
+                    runCatching {
+                        windowManager.updateViewLayout(view, layoutParams(expanded = false))
+                    }
+                }
+            }
+        }
 
         val s = settings()
         applyAppearance(s)
@@ -160,7 +180,30 @@ class CompanionOverlayService : Service() {
         tts = TextToSpeech(applicationContext) { status ->
             // The voice is only usable once initialised, so the saved rate and
             // pitch are applied from the callback rather than here.
-            if (status == TextToSpeech.SUCCESS) applySpeechSettings(settings())
+            if (status == TextToSpeech.SUCCESS) {
+                applySpeechSettings(settings())
+                // Drives the character's mouth, so it opens and closes with the
+                // voice instead of guessing from timing. The callbacks arrive on
+                // a binder thread, so the state write is hopped to the main one.
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        scope.launch { ui.talking = true }
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        scope.launch { ui.talking = false }
+                    }
+
+                    @Deprecated("Superseded by the two-argument overload")
+                    override fun onError(utteranceId: String?) {
+                        scope.launch { ui.talking = false }
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        scope.launch { ui.talking = false }
+                    }
+                })
+            }
         }
 
         startInForeground()
@@ -376,13 +419,25 @@ class CompanionOverlayService : Service() {
         recognizer.setRecognitionListener(recognitionListener)
         this.recognizer = recognizer
 
+        val s = settings()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
             )
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(
+                RecognizerIntent.EXTRA_PARTIAL_RESULTS,
+                s.companionSpeechPartialResults,
+            )
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            // Blank means "let the device decide" — a recogniser may only have one
+            // language installed, and forcing a tag can make it fail outright.
+            if (s.companionSpeechLanguage.isNotBlank()) {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, s.companionSpeechLanguage)
+            }
+            if (s.companionSpeechPreferOffline) {
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
         }
         ui.listening = true
         ui.status = "listening…"
@@ -616,6 +671,9 @@ class CompanionOverlayService : Service() {
         idleJob = null
         // Never leave the microphone open behind us.
         stopListening()
+        // Stops the Live2D GL thread and tears down the Cubism framework. Leaving
+        // it rendering after the overlay is gone would burn battery for nothing.
+        releaseLive2D()
         tts?.shutdown()
         tts = null
         scope.cancel()
@@ -695,9 +753,32 @@ class CompanionOverlayService : Service() {
         ui.longPressAction = BubbleGesture.byId(s.companionBubbleLongPress)
         ui.panelFontScale = (s.companionPanelFontScale.coerceIn(80, 140)) / 100f
         ui.voiceInputEnabled = s.companionVoiceInput
+        ui.character = CompanionSpecies.byId(s.companionCharacter)
+        // Only fed to the renderer when the user actually selected their own art,
+        // so a stale URI cannot quietly hijack a species they have chosen.
+        ui.imageUri = if (s.companionCharacter == "image") s.companionImageUri else ""
+        ui.imageColumns = s.companionImageColumns.coerceIn(1, 24)
+        ui.imageRows = s.companionImageRows.coerceIn(1, 24)
+        ui.imageFps = s.companionImageFps.coerceIn(1, 30)
+        ui.live2dModel = if (s.companionCharacter == "live2d") s.companionLive2DModel else ""
+        ui.vrmModel = if (s.companionCharacter == "vrm") s.companionVrmModel else ""
+        ui.bareCharacter = s.companionBareCharacter
+        ui.characterSizeDp = s.companionCharacterSize.coerceIn(80, 420)
+        // "auto" is left to mood updates; an explicit choice is pinned here so it
+        // survives the next check-in overwriting it.
+        if (s.companionExpression != CompanionExpression.AUTO) {
+            ui.expression = CompanionExpression.byId(s.companionExpression)
+        }
 
+        // The window has to be re-laid-out when the collapsed size changes, which
+        // is what makes the character-size and bare-mode settings take effect live
+        // rather than after a restart.
         if (!ui.expanded) {
             syncBubblePosition(s)
+            // A switch to or from the free-standing mode moves her to the other
+            // end of the width, so the position is re-derived when it has never
+            // been set by hand.
+            if (s.companionBubbleX < 0) bubbleX = defaultBubbleX()
             val view = rootView ?: return
             runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = false)) }
         }
@@ -745,13 +826,15 @@ class CompanionOverlayService : Service() {
         val width: Int
         val height: Int
         if (expanded) {
-            width = minOf(metrics.widthPixels - dp(24), dp(360))
-            height = minOf(dp(470), metrics.heightPixels - dp(160))
+            // The panel's size is the user's to set with the corner grip, so it is
+            // read back rather than recomputed; only clamped so it cannot end up
+            // larger than the screen or too small to use.
+            width = dp(settings().companionPanelWidth).coerceIn(dp(220), metrics.widthPixels)
+            height = dp(settings().companionPanelHeight)
+                .coerceIn(dp(240), (metrics.heightPixels - dp(60)).coerceAtLeast(dp(240)))
         } else {
-            // Sized from the user's bubble-size setting, not a fixed 64dp.
-            val side = dp(ui.bubbleSizeDp)
-            width = side
-            height = side
+            width = collapsedWindowWidth()
+            height = collapsedWindowHeight()
         }
         return WindowManager.LayoutParams(
             width,
@@ -761,13 +844,65 @@ class CompanionOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = clampX(bubbleX, width)
-            y = clampY(bubbleY, height)
+            // The panel must stay fully on screen; the free-standing character may
+            // overhang, so the transparent padding around her can run off the edge.
+            x = if (expanded) clampX(bubbleX, width) else clampBubbleX(bubbleX, width)
+            y = if (expanded) clampY(bubbleY, height) else clampBubbleY(bubbleY, height)
             if (expanded) {
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
         }
     }
+
+    /**
+     * Size of the collapsed window.
+     *
+     * A free-standing character needs a tall, figure-shaped window rather than the
+     * square bubble one, so the two modes size differently. The width is derived
+     * from the height by the drawn figure's aspect rather than set independently,
+     * which keeps her from being stretched.
+     */
+    private fun collapsedWindowHeight(): Int =
+        if (ui.bareCharacter) dp(ui.characterSizeDp) else dp(ui.bubbleSizeDp)
+
+    /**
+     * Width of the collapsed window, from the content's own aspect ratio.
+     *
+     * A Live2D model is drawn fitted to its canvas, so matching the window to the
+     * canvas aspect is what stops the character sitting letterboxed inside a wider
+     * transparent rectangle. The drawn figure and the user's own image each have
+     * their own aspect for the same reason.
+     */
+    private fun collapsedWindowWidth(): Int {
+        if (!ui.bareCharacter) return dp(ui.bubbleSizeDp)
+        val aspect = when {
+            ui.live2dModel.isNotEmpty() -> live2DCanvasAspect ?: LIVE2D_FALLBACK_ASPECT
+            else -> FIGURE_ASPECT
+        }
+        return (collapsedWindowHeight() * aspect).toInt()
+    }
+
+    /**
+     * Clamp for the collapsed window.
+     *
+     * A free-standing character is drawn centred inside a transparent window, and
+     * the art itself never fills that window edge to edge — a Live2D canvas carries
+     * margin, and a fitted figure leaves a little on the long axis. Clamping the
+     * *window* to the screen therefore stopped the visible character short of the
+     * edge. Allowing the window to overhang by that margin instead lets her reach
+     * it, and the off-screen part is transparent so nothing is lost.
+     */
+    private fun clampBubble(value: Int, extent: Int, limit: Int): Int {
+        if (!ui.bareCharacter) return value.coerceIn(0, maxOf(0, limit - extent))
+        val overhang = (extent * EDGE_OVERHANG).toInt()
+        return value.coerceIn(-overhang, maxOf(-overhang, limit - extent + overhang))
+    }
+
+    private fun clampBubbleX(x: Int, width: Int): Int =
+        clampBubble(x, width, resources.displayMetrics.widthPixels)
+
+    private fun clampBubbleY(y: Int, height: Int): Int =
+        clampBubble(y, height, resources.displayMetrics.heightPixels)
 
     private fun expand(greet: Boolean = true) {
         if (ui.expanded) return
@@ -775,13 +910,22 @@ class CompanionOverlayService : Service() {
         ui.status = brain.backendLabel()
         val view = rootView ?: return
         val metrics = resources.displayMetrics
+        val s = settings()
         val params = layoutParams(expanded = true).apply {
-            // Center the panel, but never write this back to bubbleX/bubbleY:
-            // the panel is wider than the bubble, so its clamped x is a
-            // different coordinate. Overwriting the bubble's position here is
-            // what used to drag the collapsed bubble to the middle of the screen.
-            x = ((metrics.widthPixels - width) / 2).coerceAtLeast(0)
-            y = dp(48)
+            // Never written back to bubbleX/bubbleY: the panel is a different size
+            // from the bubble, so its clamped x is a different coordinate.
+            // Overwriting the bubble's position here is what used to drag the
+            // collapsed bubble to the middle of the screen.
+            x = if (s.companionPanelX >= 0) {
+                clampX(s.companionPanelX, width)
+            } else {
+                ((metrics.widthPixels - width) / 2).coerceAtLeast(0)
+            }
+            y = if (s.companionPanelY >= 0) {
+                clampY(s.companionPanelY, height)
+            } else {
+                dp(48)
+            }
         }
         if (greet) maybeGreet()
         runCatching { windowManager.updateViewLayout(view, params) }
@@ -799,8 +943,10 @@ class CompanionOverlayService : Service() {
         // keep speaking with nothing on screen to follow.
         ui.breathing = false
         // The panel was being looked at, so the bubble starts awake and its
-        // idle countdown begins from the moment it is revealed again.
+        // idle countdown begins from the moment it is revealed again. That also
+        // stands her up briefly, then lets her settle back down.
         wakeBubble()
+        alertCharacter()
         ui.expanded = false
         val view = rootView ?: return
         // bubbleX/bubbleY were left untouched while expanded, so this restores
@@ -815,12 +961,32 @@ class CompanionOverlayService : Service() {
         if (ui.expanded) return
         val view = rootView ?: return
         val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
-        params.x = clampX(params.x + dx.toInt(), params.width)
-        params.y = clampY(params.y + dy.toInt(), params.height)
+        params.x = clampBubbleX(params.x + dx.toInt(), params.width)
+        params.y = clampBubbleY(params.y + dy.toInt(), params.height)
         bubbleX = params.x
         bubbleY = params.y
         lastDragAt = System.currentTimeMillis()
+        // Set directly rather than through alertCharacter(): this runs on every
+        // drag frame, and launching a coroutine per frame to cancel the previous
+        // one would be wasteful for a flag that is already true.
+        if (!ui.upright) ui.upright = true
         runCatching { windowManager.updateViewLayout(view, params) }
+    }
+
+    /**
+     * Stand her up, then settle her back down once the user stops.
+     *
+     * Being moved should look like her getting up to be carried somewhere and
+     * lying back down, so the timer restarts on every interaction rather than
+     * running down during one.
+     */
+    private fun alertCharacter() {
+        if (!ui.upright) ui.upright = true
+        lieDownJob?.cancel()
+        lieDownJob = scope.launch {
+            delay(LIE_DOWN_MS)
+            ui.upright = false
+        }
     }
 
     private fun clampX(x: Int, width: Int): Int =
@@ -829,13 +995,100 @@ class CompanionOverlayService : Service() {
     private fun clampY(y: Int, height: Int): Int =
         y.coerceIn(0, maxOf(0, resources.displayMetrics.heightPixels - height))
 
+    /**
+     * Move the expanded panel.
+     *
+     * Applied to the live window on every drag frame so it tracks the finger, but
+     * only persisted on drag end — a settings write per frame would be dozens of
+     * disk hits for one gesture.
+     */
+    private fun movePanelBy(dx: Float, dy: Float) {
+        if (!ui.expanded) return
+        val view = rootView ?: return
+        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
+        params.x = clampX(params.x + dx.toInt(), params.width)
+        params.y = clampY(params.y + dy.toInt(), params.height)
+        runCatching { windowManager.updateViewLayout(view, params) }
+    }
+
+    private fun persistPanelPosition() {
+        if (!ui.expanded) return
+        val view = rootView ?: return
+        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
+        val x = params.x
+        val y = params.y
+        scope.launch {
+            runCatching {
+                settingsRepo().update { it.copy(companionPanelX = x, companionPanelY = y) }
+            }
+        }
+    }
+
+    /**
+     * Resize the expanded panel from its corner grip.
+     *
+     * Width and height move together with the drag, so the corner follows the
+     * finger. The minimum is what keeps the input field and send button usable;
+     * the maximum is the screen, less a margin so the grip stays reachable.
+     */
+    private fun resizePanelBy(dx: Float, dy: Float) {
+        if (!ui.expanded) return
+        val view = rootView ?: return
+        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
+        val metrics = resources.displayMetrics
+        val maxW = metrics.widthPixels
+        val maxH = (metrics.heightPixels - dp(60)).coerceAtLeast(dp(240))
+        val newW = (params.width + dx.toInt()).coerceIn(dp(220), maxW)
+        val newH = (params.height + dy.toInt()).coerceIn(dp(240), maxH)
+        params.width = newW
+        params.height = newH
+        // Keep the top-left anchored: without re-clamping, growing the panel from a
+        // right-edge position would push it off screen.
+        params.x = clampX(params.x, newW)
+        params.y = clampY(params.y, newH)
+        runCatching { windowManager.updateViewLayout(view, params) }
+    }
+
+    private fun persistPanelSize() {
+        if (!ui.expanded) return
+        val view = rootView ?: return
+        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
+        val wDp = params.width / resources.displayMetrics.density
+        val hDp = params.height / resources.displayMetrics.density
+        val x = params.x
+        val y = params.y
+        scope.launch {
+            runCatching {
+                settingsRepo().update {
+                    it.copy(
+                        companionPanelWidth = wDp.toInt(),
+                        companionPanelHeight = hDp.toInt(),
+                        // Persisted here too, because resizing can re-clamp the
+                        // position and the two would otherwise drift apart.
+                        companionPanelX = x,
+                        companionPanelY = y,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Where she sits before the user has ever moved her.
+     *
+     * Derived from the current window width rather than the bubble-size setting,
+     * because in free-standing mode the window is wider than it is tall and the
+     * old formula would park her partly off the right edge.
+     */
     private fun defaultBubbleX(): Int =
-        (resources.displayMetrics.widthPixels - dp(ui.bubbleSizeDp) - dp(12)).coerceAtLeast(0)
+        (resources.displayMetrics.widthPixels - collapsedWindowWidth() - dp(12)).coerceAtLeast(0)
 
     private fun persistPosition() {
         // Only the collapsed bubble position is meaningful.
         if (ui.expanded) return
         if (settings().companionSnapToEdge) snapToNearestEdge()
+        // Dropped somewhere new: start the countdown to lying back down.
+        alertCharacter()
         scope.launch {
             runCatching { settingsRepo().update { it.copy(companionBubbleX = bubbleX, companionBubbleY = bubbleY) } }
         }
@@ -1005,6 +1258,11 @@ class CompanionOverlayService : Service() {
     private fun recordMood(score: Int) {
         if (!ui.awaitingMood) return
         ui.awaitingMood = false
+        // Her face reacts to what they just told her, unless the user pinned an
+        // expression — otherwise the whole point of "auto" is lost.
+        if (settings().companionExpression == CompanionExpression.AUTO) {
+            ui.expression = CompanionExpression.fromMood(score)
+        }
         val reply = buildString {
             append("Thanks for telling me. ")
             append(moodAcknowledgement(score))
@@ -1415,6 +1673,24 @@ class CompanionOverlayService : Service() {
         private const val IDLE_DIM_MS = 4_000L
         /** Grace period after a drag before settings may reposition the bubble. */
         private const val DRAG_SETTLE_MS = 2_000L
+        /**
+         * Width-to-height ratio of the drawn figure, so the free-standing window
+         * matches her proportions instead of cropping or padding her.
+         */
+        private const val FIGURE_ASPECT = 1.05f
+        /**
+         * Window shape used until a Live2D model's canvas size is known. Most
+         * Live2D canvases are a little taller than wide.
+         */
+        private const val LIVE2D_FALLBACK_ASPECT = 0.85f
+        /**
+         * How far the free-standing character's window may run off screen, as a
+         * fraction of its own size, so the transparent margin around her does not
+         * stop the visible art short of the edge.
+         */
+        private const val EDGE_OVERHANG = 0.18f
+        /** How long she stays up after being moved before lying back down. */
+        private const val LIE_DOWN_MS = 4_000L
 
         fun start(context: Context) {
             val intent = Intent(context, CompanionOverlayService::class.java)

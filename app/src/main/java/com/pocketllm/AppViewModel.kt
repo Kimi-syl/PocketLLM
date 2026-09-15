@@ -590,6 +590,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateCompanionSetting { it.copy(companionVoiceInput = enabled) }
     }
 
+    /** BCP-47 tag for recognition; blank means the device default. */
+    fun updateCompanionSpeechLanguage(tag: String) {
+        updateCompanionSetting { it.copy(companionSpeechLanguage = tag) }
+    }
+
+    fun updateCompanionSpeechPartialResults(enabled: Boolean) {
+        updateCompanionSetting { it.copy(companionSpeechPartialResults = enabled) }
+    }
+
+    fun updateCompanionSpeechPreferOffline(enabled: Boolean) {
+        updateCompanionSetting { it.copy(companionSpeechPreferOffline = enabled) }
+    }
+
     // --- Companion identity & personality -----------------------------------
 
     fun updateCompanionName(name: String) {
@@ -680,6 +693,82 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateCompanionGlyphScale(percent: Int) {
         updateCompanionSetting { it.copy(companionGlyphScale = percent.coerceIn(20, 80)) }
+    }
+
+    /** "off" draws the emoji glyph; a species draws the animated character. */
+    fun updateCompanionCharacter(speciesId: String) {
+        updateCompanionSetting {
+            it.copy(
+                companionCharacter = speciesId,
+                // Live2D is a full-body illustration, so choosing it also leaves
+                // the bubble: clipping a model into a 60dp circle wastes it.
+                companionBareCharacter = if (speciesId == "live2d" || speciesId == "vrm") true else it.companionBareCharacter,
+            )
+        }
+    }
+
+    /** Which bundled Live2D sample model to show. */
+    fun updateCompanionLive2DModel(modelName: String) {
+        updateCompanionSetting { it.copy(companionLive2DModel = modelName) }
+    }
+
+    /** Which bundled VRM avatar to show. */
+    fun updateCompanionVrmModel(modelName: String) {
+        updateCompanionSetting { it.copy(companionVrmModel = modelName) }
+    }
+
+    /** Content URI of the user's own character art. Empty clears it. */
+    fun updateCompanionImage(uri: String) {
+        updateCompanionSetting {
+            it.copy(companionImageUri = uri, companionCharacter = if (uri.isBlank()) it.companionCharacter else "image")
+        }
+    }
+
+    /** Frame grid of the chosen image; 1x1 is a single still picture. */
+    fun updateCompanionImageGrid(columns: Int, rows: Int) {
+        updateCompanionSetting {
+            it.copy(
+                companionImageColumns = columns.coerceIn(1, 24),
+                companionImageRows = rows.coerceIn(1, 24),
+            )
+        }
+    }
+
+    /** Sprite sheet playback rate. */
+    fun updateCompanionImageFps(fps: Int) {
+        updateCompanionSetting { it.copy(companionImageFps = fps.coerceIn(1, 30)) }
+    }
+
+    /** "auto" lets her face mirror the user's mood; anything else pins it. */
+    fun updateCompanionExpression(expressionId: String) {
+        updateCompanionSetting { it.copy(companionExpression = expressionId) }
+    }
+
+    /** Free-standing character instead of a bubble-wrapped one. */
+    fun updateCompanionBareCharacter(bare: Boolean) {
+        updateCompanionSetting { it.copy(companionBareCharacter = bare) }
+    }
+
+    /** Height of the free-standing character in dp. */
+    fun updateCompanionCharacterSize(sizeDp: Int) {
+        updateCompanionSetting { it.copy(companionCharacterSize = sizeDp.coerceIn(80, 420)) }
+    }
+
+    /**
+     * Put the panel back where it first appears.
+     *
+     * -1 is the "never placed" sentinel the service already understands for both
+     * axes, so this reuses that path rather than inventing a second one.
+     */
+    fun resetCompanionPanelPosition() {
+        updateCompanionSetting {
+            it.copy(companionPanelX = -1, companionPanelY = -1)
+        }
+    }
+
+    /** Restore the panel's default size. */
+    fun resetCompanionPanelSize() {
+        updateCompanionSetting { it.copy(companionPanelWidth = 360, companionPanelHeight = 470) }
     }
 
     fun updateCompanionBubbleIdleAlpha(percent: Int) {

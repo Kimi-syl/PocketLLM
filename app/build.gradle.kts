@@ -13,8 +13,8 @@ android {
         applicationId = "com.pocketllm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.3.9"
+        versionCode = 20
+        versionName = "0.4.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -38,6 +38,15 @@ android {
         compose = true
     }
     packaging {
+        // Legacy packaging: the native libraries are compressed in the APK and
+        // extracted at install time, instead of being loaded directly from the
+        // APK. That is the traditional path and the most broadly compatible, so
+        // it sidesteps installers that mishandle uncompressed, page-aligned
+        // libs (this started as a diagnostic while an install failure was being
+        // tracked down, and is harmless to keep).
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/INDEX.LIST"
@@ -51,6 +60,15 @@ android {
 dependencies {
     implementation(project(":core"))
     implementation(files("libs/sherpa-onnx-1.13.6.aar"))
+    // Live2D Cubism Core: the native JNI library plus its Java wrapper. Listed in
+    // the SDK's RedistributableFiles.txt, so it may be shipped inside the APK.
+    implementation(files("libs/Live2DCubismCore.aar"))
+    // Filament: Google's real-time 3D renderer, for VRM avatars. VRM is glTF 2.0
+    // plus extensions, so gltfio loads the mesh and filament-utils supplies the
+    // viewer scaffolding.
+    implementation("com.google.android.filament:filament-android:1.75.1")
+    implementation("com.google.android.filament:gltfio-android:1.75.1")
+    implementation("com.google.android.filament:filament-utils-android:1.75.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
