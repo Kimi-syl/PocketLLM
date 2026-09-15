@@ -337,21 +337,6 @@ fun BubbleVisual(
                     modelAsset = vrmModel,
                     modifier = Modifier.fillMaxSize(),
                 )
-                // Drawn by Compose, not Filament, so it appears even when the 3D
-                // surface renders nothing.
-                val diagnostic = vrmDiagnostic.value
-                if (diagnostic.isNotEmpty()) {
-                    Text(
-                        text = diagnostic,
-                        color = Color.White,
-                        fontSize = 8.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .background(Color(0xCC000000))
-                            .padding(2.dp),
-                    )
-                }
             }
             live2dModel.isNotEmpty() -> Live2DCharacter(
                 modelName = live2dModel,

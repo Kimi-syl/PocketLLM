@@ -66,21 +66,6 @@ private const val kSunZ = -0.55f
 private const val kAmbientIntensity = 30_000f
 
 /**
- * Last VRM diagnostic line, shown on screen as well as written to the log.
- *
- * The Compose overlay renders reliably even when the Filament surface does not,
- * so when the 3D layer is the thing misbehaving this is the only channel that
- * can actually tell us anything.
- */
-internal val vrmDiagnostic = mutableStateOf("")
-
-/** Handle on the UiHelper handed to ModelViewer, so isOpaque is inspectable. */
-internal var vrmUiHelper: UiHelper? = null
-
-/** Context for the frame dump; set from the Compose factory. */
-internal var vrmContext: Context? = null
-
-/**
  * VRM avatar rendered with Filament. VRM is glTF 2.0 plus extensions and the
  * bundled files are single binary glTF containers, so gltfio reads them directly.
  *
@@ -119,8 +104,6 @@ fun VrmCharacter(
                 // set the holder to TRANSLUCENT on our behalf.
                 val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK)
                 uiHelper.isOpaque = false
-                vrmUiHelper = uiHelper
-                vrmContext = ctx
 
                 // manipulator = null: see the camera comment in frameModel().
                 val created = ModelViewer(this, uiHelper = uiHelper, manipulator = null)
@@ -195,7 +178,6 @@ fun VrmCharacter(
             throw superseded
         } catch (failure: Throwable) {
             ServerLog.log("$VRM_TAG: '$modelAsset' failed to load: ${failure.message}")
-            vrmDiagnostic.value = "load failed:\n${failure.message}"
         }
     }
 
@@ -270,9 +252,6 @@ private object VrmIdle {
 
     private var renderedFrames = 0
 
-    /** Last pixel readback of a rendered frame, shown in the on-screen readout. */
-    private var lastFrameReport: String? = null
-
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
@@ -287,8 +266,6 @@ private object VrmIdle {
                 val rendered = runCatching { active.render(frameTimeNanos) }.getOrDefault(false)
                 if (rendered) {
                     renderedFrames++
-                    if (renderedFrames % 300 == 30) captureFrame(active)
-                    if (renderedFrames % 60 == 0) publishDiagnostic(active)
                 }
                 // Guards: destroyModel() clears the asset, and the bounding box only
                 // exists once gltfio has populated the renderables.
@@ -302,139 +279,6 @@ private object VrmIdle {
             }
             Choreographer.getInstance().postFrameCallback(this)
         }
-    }
-
-    /**
-     * Republish the on-screen readout from the live camera. Called every ~60
-     * rendered frames, so it reflects a camera that has actually been positioned
-     * rather than the untouched identity transform.
-     */
-    /**
-     * Read a rendered frame back and report what is really in it.
-     *
-     * ModelViewer exposes debugGetNextFrameCallback(), which does a
-     * renderer.readPixels() on the next rendered frame. Everything else tried here
-     * has been inference from the outside; this is the framebuffer itself. The
-     * background colour it reports settles whether the clear colour reaches the
-     * renderer at all, and the count of differing pixels settles whether the model
-     * draws.
-     */
-    private fun captureFrame(active: ModelViewer) {
-        active.debugGetNextFrameCallback { bitmap ->
-            val report = runCatching {
-                val w = bitmap.width
-                val h = bitmap.height
-                val bg = bitmap.getPixel(0, 0)
-                var nonBg = 0
-                var total = 0
-                // Splitting the frame by luminance separates "the model is not being
-                // drawn" from "the model is drawn but unlit, so it is black on a
-                // transparent background".
-                var clear = 0
-                var dark = 0
-                var lit = 0
-                var minX = w
-                var minY = h
-                var maxX = -1
-                var maxY = -1
-                var y = 0
-                while (y < h) {
-                    var x = 0
-                    while (x < w) {
-                        total++
-                        val p = bitmap.getPixel(x, y)
-                        if (android.graphics.Color.alpha(p) < 8) {
-                            clear++
-                        } else if (android.graphics.Color.red(p) < 24 &&
-                            android.graphics.Color.green(p) < 24 &&
-                            android.graphics.Color.blue(p) < 24
-                        ) {
-                            dark++
-                        } else {
-                            lit++
-                        }
-                        if (p != bg) {
-                            nonBg++
-                            if (x < minX) minX = x
-                            if (x > maxX) maxX = x
-                            if (y < minY) minY = y
-                            if (y > maxY) maxY = y
-                        }
-                        x += 2
-                    }
-                    y += 2
-                }
-                val pct = { n: Int -> if (total == 0) 0 else 100 * n / total }
-                val box =
-                    if (maxX >= 0) "box=($minX,$minY)-($maxX,$maxY)" else "box=empty"
-                "bg=#%08X nonBg=%d%% %s\npx clear=%d%% dark=%d%% lit=%d%%".format(
-                    bg, pct(nonBg), box, pct(clear), pct(dark), pct(lit),
-                )
-            }.getOrElse { "readback failed: $it" }
-            ServerLog.log("$VRM_TAG: frame $report")
-            lastFrameReport = report
-            saveFrame(bitmap)
-        }
-    }
-
-    /**
-     * Write the readback somewhere it can actually be looked at. The shared
-     * Download folder is tried first because that is what can be pulled off the
-     * device; the app's own external dir needs no permission and is the fallback.
-     */
-    private fun saveFrame(bitmap: Bitmap) {
-        // Mirrors ServerLog.exportToDownloads, which is the route the log is known
-        // to arrive through. The earlier version added IS_PENDING and RELATIVE_PATH
-        // on top of the same insert and always reported false; this is the bare,
-        // proven form. The failure reason is logged rather than swallowed, and
-        // there is deliberately no private-app-directory fallback.
-        val ctx = vrmContext ?: return
-        val result = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    // Unique per capture: a fixed name makes MediaStore throw
-                    // "Failed to build unique file".
-                    put(
-                        MediaStore.Downloads.DISPLAY_NAME,
-                        "vrm_frame_${System.currentTimeMillis()}.png",
-                    )
-                    put(MediaStore.Downloads.MIME_TYPE, "image/png")
-                }
-                val uri = ctx.contentResolver.insert(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values,
-                ) ?: return@runCatching "insert returned null"
-                val stream = ctx.contentResolver.openOutputStream(uri)
-                    ?: return@runCatching "openOutputStream returned null"
-                stream.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                "Download/vrm_frame.png"
-            } else {
-                val dir = Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS,
-                )
-                val file = File(dir, "vrm_frame.png")
-                file.parentFile?.mkdirs()
-                FileOutputStream(file).use {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
-                }
-                file.absolutePath
-            }
-        }
-        ServerLog.log("$VRM_TAG: frame png -> ${result.getOrElse { "FAILED: $it" }}")
-    }
-
-    private fun publishDiagnostic(active: ModelViewer) {
-        val viewport = active.view.viewport
-        // Camera.getModelMatrix(float[]) fills the array; there is no getter property.
-        val eye = FloatArray(16)
-        active.camera.getModelMatrix(eye)
-        val renderables = runCatching { active.asset?.renderableEntities?.size ?: -1 }
-            .getOrDefault(-1)
-        val sceneCount = runCatching { active.scene.renderableCount }.getOrDefault(-1)
-        val message = "rendered=$renderedFrames scene=$sceneCount progress=${active.progress}\n" +
-            "renderables=$renderables vp=${viewport.width}x${viewport.height}\n" +
-            "eye=(${eye[12]},${eye[13]},${eye[14]}) opaque=${vrmUiHelper?.isOpaque}" +
-            (lastFrameReport?.let { "\n$it" } ?: "")
-        vrmDiagnostic.value = message
     }
 
     /**
@@ -483,7 +327,6 @@ private object VrmIdle {
         //  * viewport=0x0      -> the surface has no size, so nothing can be drawn
         //  * eye == the target -> the camera is sitting inside the model
         ServerLog.log("$VRM_TAG: framed onBody=$framedOnBody extent=$maxExtent")
-        vrmDiagnostic.value = "framed onBody=$framedOnBody\nstarting render loop…"
     }
 
     /**
@@ -562,9 +405,6 @@ private object VrmIdle {
         if (!IDLE_POSE_ENABLED) {
             ServerLog.log("$VRM_TAG: idle pose disabled; rendering bind pose only")
         }
-        vrmDiagnostic.value =
-            "model loaded\nbones ${resolved.size}/${names.size}\nwaiting for first frames…"
-
         // The loop runs even with the idle pose off: framing only happens once gltfio
         // has populated the model's renderables, and this is where we poll for that.
         running = true
