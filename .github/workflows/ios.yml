@@ -10,7 +10,9 @@ on:
 jobs:
   ios:
     runs-on: macos-14
-    timeout-minutes: 40
+    # MLX and its Metal shaders add enough compile time to both app builds that
+    # 40 minutes stopped being comfortable headroom.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
 

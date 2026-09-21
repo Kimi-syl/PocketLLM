@@ -30,7 +30,7 @@ final class LocalEngine: ObservableObject {
                                        threads: Int32(threads))
             context = ctx
             let backend = ctx.usingGpu ? "Metal" : "CPU"
-            state = "ready (ctx=\(ctx.contextLength), \(backend))"
+            state = "\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength)"
         } catch {
             releaseSecurityScope()
             // Surface the real reason — "load failed" gave users nothing.

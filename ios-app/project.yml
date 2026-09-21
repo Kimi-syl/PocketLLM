@@ -13,6 +13,22 @@ packages:
   swift-markdown-ui:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     exactVersion: 2.4.1
+  # MLX: Apple's array framework plus the LLM libraries layered on it. These are
+  # the newest releases that still declare iOS 16 (0.31.x needs iOS 17 and
+  # swift-tools 6.3); the examples package resolves mlx-swift 0.25.x itself.
+  mlx-swift:
+    url: https://github.com/ml-explore/mlx-swift
+    exactVersion: 0.25.6
+  mlx-swift-examples:
+    url: https://github.com/ml-explore/mlx-swift-examples
+    exactVersion: 2.25.9
+  # Declared directly even though it arrives transitively: MLXLMCommon's public
+  # signatures name HubApi and Tokenizer, and calling them without the modules
+  # imported fails with "missing required module". The range intersects the
+  # 1.0.x the examples package pins.
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 1.0.0
 targets:
   PocketLLM:
     type: application
@@ -24,6 +40,16 @@ targets:
         embed: true
       - package: swift-markdown-ui
         product: MarkdownUI
+      - package: mlx-swift
+        product: MLX
+      - package: mlx-swift-examples
+        product: MLXLMCommon
+      - package: mlx-swift-examples
+        product: MLXLLM
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-transformers
+        product: Hub
     info:
       path: PocketLLM/Info.plist
       # xcodegen REGENERATES this plist on every run, so keys belong here;
@@ -40,6 +66,10 @@ targets:
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
+        # MLX has no x86_64 slice. Apple Silicon runners build the simulator for
+        # arm64 anyway (Debug sets ONLY_ACTIVE_ARCH), and this keeps an Intel
+        # runner from trying.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
         SWIFT_OBJC_BRIDGING_HEADER: PocketLLM/bridging.h
         HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/llama-libs"
