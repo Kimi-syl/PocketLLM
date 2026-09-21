@@ -75,7 +75,12 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         return nil;
     }
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0; // CPU-only on iOS for now
+    // Offload every layer when a GPU backend actually registered during
+    // llama_backend_init() (the device build compiles Metal in; the simulator
+    // slice does not). If Metal is compiled in but cannot create a device,
+    // llama.cpp logs and falls back to CPU on its own - the model still loads.
+    _usingGpu = llama_supports_gpu_offload() ? YES : NO;
+    mparams.n_gpu_layers = _usingGpu ? 999 : 0;
     _model = llama_model_load_from_file(cpath, mparams);
     if (_model == nullptr) {
         if (error) *error = [NSError errorWithDomain:@"PocketLLM" code:1

@@ -37,6 +37,9 @@ void LlamaGlobalInit(void);
 - (void)stop;
 - (int32_t)contextLength;
 
+/// YES when the model was loaded with its layers offloaded to the GPU.
+@property (nonatomic, readonly) BOOL usingGpu;
+
 @end
 
 NS_ASSUME_NONNULL_END

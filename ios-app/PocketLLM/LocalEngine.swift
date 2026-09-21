@@ -29,7 +29,8 @@ final class LocalEngine: ObservableObject {
                                        batchSize: 2048,
                                        threads: Int32(threads))
             context = ctx
-            state = "ready (ctx=\(ctx.contextLength))"
+            let backend = ctx.usingGpu ? "Metal" : "CPU"
+            state = "ready (ctx=\(ctx.contextLength), \(backend))"
         } catch {
             releaseSecurityScope()
             // Surface the real reason — "load failed" gave users nothing.

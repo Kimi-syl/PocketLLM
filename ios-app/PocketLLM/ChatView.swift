@@ -1,3 +1,4 @@
+import MarkdownUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -35,15 +36,7 @@ struct ChatView: View {
             }
             ScrollView {
                 ForEach(messages) { m in
-                    HStack {
-                        if m.role == "user" { Spacer() }
-                        Text(m.content)
-                            .padding(10)
-                            .background(m.role == "user" ? Color.accentColor.opacity(0.25) : Color(.systemGray5))
-                            .cornerRadius(12)
-                        if m.role != "user" { Spacer() }
-                    }
-                    .padding(.horizontal)
+                    messageRow(m)
                 }
             }
             if let error { Text(error).foregroundStyle(.red).font(.footnote) }
@@ -64,6 +57,35 @@ struct ChatView: View {
                 engine.load(url: url, contextSize: 4096, threads: 4)
             }
         }
+    }
+
+    @ViewBuilder
+    private func messageRow(_ message: OpenAIClient.Message) -> some View {
+        let isUser = message.role == "user"
+        HStack(alignment: .top) {
+            if isUser { Spacer(minLength: 40) }
+            Group {
+                if isUser || isStreaming(message) {
+                    Text(message.content)
+                } else {
+                    Markdown(message.content)
+                        .markdownTheme(.chat)
+                }
+            }
+            .textSelection(.enabled)
+            .padding(10)
+            .background(isUser ? Color.accentColor.opacity(0.25) : Color(.systemGray5))
+            .cornerRadius(12)
+            if !isUser { Spacer(minLength: 40) }
+        }
+        .padding(.horizontal)
+    }
+
+    /// MarkdownUI re-parses the entire document on every update, so rendering
+    /// markdown while tokens stream in would re-parse the whole reply dozens of
+    /// times a second. The in-flight message stays plain text until it settles.
+    private func isStreaming(_ message: OpenAIClient.Message) -> Bool {
+        busy && message.id == messages.last?.id
     }
 
     private func send() {
