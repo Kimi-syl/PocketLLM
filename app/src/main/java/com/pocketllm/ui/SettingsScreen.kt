@@ -1077,6 +1077,39 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
         }
         if (settings.companionCharacter == "vrm") {
             Text("VRM avatar", style = MaterialTheme.typography.bodySmall)
+            var imported by remember {
+                mutableStateOf(com.pocketllm.companion.VrmLibrary.list(context))
+            }
+            var importError by remember { mutableStateOf<String?>(null) }
+            var pendingPick by remember { mutableStateOf<String?>(null) }
+            var pendingBytes by remember { mutableStateOf<ByteArray?>(null) }
+            val pickVrm = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri != null) {
+                    val raw = context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    }
+                    if (raw != null) {
+                        // An oversized skeleton is refused at load by the renderer,
+                        // so offer compression straight away rather than let the
+                        // user pick a model that can only come out black.
+                        val needs = com.pocketllm.companion.VrmCompressor.needsCompression(raw)
+                        if (needs && pendingPick == null) {
+                            pendingPick = uri.toString()
+                            pendingBytes = raw
+                        } else {
+                            val result = com.pocketllm.companion.VrmLibrary.import(context, uri)
+                            importError = result.error
+                            val file = result.file
+                            if (file != null) {
+                                imported = com.pocketllm.companion.VrmLibrary.list(context)
+                                vm.updateCompanionVrmModel(file.name)
+                            }
+                        }
+                    }
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1090,9 +1123,100 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
                         label = { Text(label) },
                     )
                 }
+                imported.forEach { file ->
+                    FilterChip(
+                        selected = settings.companionVrmModel == file.name,
+                        onClick = { vm.updateCompanionVrmModel(file.name) },
+                        label = { Text(file.nameWithoutExtension.take(16)) },
+                    )
+                }
+            }
+            val compressPick = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri != null) {
+                    val raw = context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    }
+                    if (raw != null) {
+                        pendingPick = uri.toString()
+                        pendingBytes = raw
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(
+                    onClick = {
+                        pickVrm.launch(
+                            arrayOf(
+                                "application/octet-stream",
+                                "model/gltf-binary",
+                                "*/*",
+                            ),
+                        )
+                    },
+                ) { Text("Import .vrm") }
+                TextButton(
+                    onClick = {
+                        // Re-uses the same picker; choosing a file here always
+                        // opens the compression dialog.
+                        compressPick.launch(
+                            arrayOf(
+                                "application/octet-stream",
+                                "model/gltf-binary",
+                                "*/*",
+                            ),
+                        )
+                    },
+                ) { Text("Compress this .vrm") }
+                val current = imported.firstOrNull { it.name == settings.companionVrmModel }
+                if (current != null) {
+                    TextButton(
+                        onClick = {
+                            com.pocketllm.companion.VrmLibrary.delete(current)
+                            imported = com.pocketllm.companion.VrmLibrary.list(context)
+                            vm.updateCompanionVrmModel(
+                                com.pocketllm.companion.VRM_MODELS.first().first,
+                            )
+                        },
+                    ) { Text("Delete imported") }
+                }
+            }
+            importError?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            if (pendingPick != null && pendingBytes != null) {
+                com.pocketllm.companion.VrmCompressDialog(
+                    context = context,
+                    bytes = pendingBytes!!,
+                    onDismiss = {
+                        pendingPick = null
+                        pendingBytes = null
+                    },
+                    onCompressed = { name ->
+                        pendingPick = null
+                        pendingBytes = null
+                        importError = null
+                        imported = com.pocketllm.companion.VrmLibrary.list(context)
+                        vm.updateCompanionVrmModel(name)
+                    },
+                    onError = { message ->
+                        pendingPick = null
+                        pendingBytes = null
+                        importError = message
+                    },
+                )
             }
             Text(
-                "3D avatar rendered with Filament. Shading and idle animation are still basic.",
+                "Bundled: Seed-san, by VirtualCast (VRM Public License 1.0). You can " +
+                    "also import your own .vrm or .glb — the file is copied into the " +
+                    "app's storage, so it keeps working across restarts. VRM 0.x and " +
+                    "VRM 1.0 are both read.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
