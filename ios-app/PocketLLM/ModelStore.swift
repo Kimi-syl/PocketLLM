@@ -154,7 +154,7 @@ final class ModelStore: ObservableObject {
         }
         let name = (file.path as NSString).lastPathComponent
         begin(
-            id: downloadId(repoId: repoId, path: file.path),
+            id: Self.downloadId(repoId: repoId, path: file.path),
             label: name,
             request: client.request(for: url),
             destination: uniqueDestination(named: name))
@@ -172,7 +172,7 @@ final class ModelStore: ObservableObject {
             }
             let name = (file.path as NSString).lastPathComponent
             begin(
-                id: downloadId(repoId: repoId, path: file.path),
+                id: Self.downloadId(repoId: repoId, path: file.path),
                 label: "\(directoryName)/\(name)",
                 request: client.request(for: url),
                 destination: directory.appendingPathComponent(name))
