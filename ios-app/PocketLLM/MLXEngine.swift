@@ -84,7 +84,9 @@ final class MLXEngine: ObservableObject {
                     // segment and hands back only what is newly decodable.
                     var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
 
-                    _ = try generate(
+                    // Qualified: this class has its own `generate`, which would
+                    // otherwise win the unqualified name lookup.
+                    _ = try MLXLMCommon.generate(
                         input: input, parameters: parameters, context: context
                     ) { token in
                         guard !flag.isStopped else { return .stop }

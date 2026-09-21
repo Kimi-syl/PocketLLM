@@ -30,7 +30,9 @@ final class LocalEngine: ObservableObject {
                                        threads: Int32(threads))
             context = ctx
             let backend = ctx.usingGpu ? "Metal" : "CPU"
-            state = "\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength)"
+            // contextLength is an ObjC method, not a property: without the call
+            // Swift interpolates the function value itself.
+            state = "\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength())"
         } catch {
             releaseSecurityScope()
             // Surface the real reason — "load failed" gave users nothing.
