@@ -28,7 +28,9 @@ struct HuggingFaceClient {
     }
 
     struct FileEntry: Decodable, Identifiable, Hashable {
-        struct LFS: Decodable {
+        /// Hashable too: `FileEntry`'s conformance is synthesized, and a nested
+        /// value that does not conform breaks the whole struct.
+        struct LFS: Decodable, Hashable {
             let size: Int?
         }
 
