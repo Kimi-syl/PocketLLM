@@ -58,6 +58,23 @@ jobs:
       # pinned commit, so a restored tree can only hold objects built from the
       # commit whose headers they were compiled against.
 
+      # The Gradle restore is listed before the llama.cpp one, and that ordering
+      # matters: `hashFiles` sees the workspace as it is at that moment, and the
+      # llama.cpp restore brings a vendored examples/llama.android tree carrying
+      # its own .gradle files. Hashing before that lands keeps the key identical
+      # on a cold run and on every warm one. The globs are rooted at this
+      # project's own module depth for the same reason — see the comment below.
+      - name: Restore Gradle and Kotlin/Native
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('*.gradle*', '*/build.gradle*', 'gradle/**', 'gradle.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       # llama.cpp source plus both CMake trees.
       - name: Restore llama.cpp source and cmake builds
         uses: actions/cache/restore@v4
@@ -74,16 +91,14 @@ jobs:
       # konan downloads. The restore-key fallback (no trailing hash) keeps the
       # expensive ~/.konan toolchain reusable when only the project changes —
       # that download alone is several minutes.
-      - name: Restore Gradle and Kotlin/Native
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ~/.konan
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      #
+      # The glob must not be `**/*.gradle*`. The llama.cpp checkout contains
+      # examples/llama.android/build.gradle.kts and its own
+      # gradle-wrapper.properties; hashing those would make the key depend on
+      # whether the llama.cpp cache had been restored, so the first run would
+      # compute one key and every later run another, and the Gradle cache could
+      # never hit. Rooting the patterns at this repo's own module depth avoids
+      # the vendored tree entirely.
 
       # Xcode DerivedData for both configurations. This also carries
       # ios-app/build/SourcePackages, so Swift package resolution (MLX,
@@ -256,7 +271,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.konan
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('*.gradle*', '*/build.gradle*', 'gradle/**', 'gradle.properties') }}
 
       - name: Save Xcode DerivedData
         if: always()
