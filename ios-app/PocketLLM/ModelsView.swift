@@ -40,12 +40,16 @@ struct ModelsView: View {
             // .folder alongside .data: an MLX model is a directory of weights,
             // config and tokenizer files, and a picker limited to .data cannot
             // return one.
+            //
+            // The single-selection overload yields one URL, not an array — with
+            // allowsMultipleSelection: false the completion type is
+            // Result<URL, Error>.
             .fileImporter(
                 isPresented: $showImporter,
                 allowedContentTypes: [.folder, .data],
                 allowsMultipleSelection: false
             ) { result in
-                guard case .success(let urls), let url = urls.first else { return }
+                guard case .success(let url) = result else { return }
                 Task {
                     if let reason = await store.importModel(from: url) {
                         store.notice = "import refused: \(reason)"
