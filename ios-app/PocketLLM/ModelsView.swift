@@ -41,13 +41,14 @@ struct ModelsView: View {
             // config and tokenizer files, and a picker limited to .data cannot
             // return one.
             //
-            // The single-selection overload yields one URL, not an array — with
-            // allowsMultipleSelection: false the completion type is
-            // Result<URL, Error>.
+            // This is the single-selection overload, which delivers
+            // Result<URL, Error>. It must not be replaced by the
+            // allowsMultipleSelection: false form of the other overload: that
+            // one delivers Result<[URL], Error> regardless of the flag's value,
+            // so binding a bare URL from it does not compile.
             .fileImporter(
                 isPresented: $showImporter,
-                allowedContentTypes: [.folder, .data],
-                allowsMultipleSelection: false
+                allowedContentTypes: [.folder, .data]
             ) { result in
                 guard case .success(let url) = result else { return }
                 Task {
