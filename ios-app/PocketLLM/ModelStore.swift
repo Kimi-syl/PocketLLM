@@ -68,6 +68,108 @@ final class ModelStore: ObservableObject {
         refresh()
     }
 
+    // MARK: - Importing from the device
+
+    /// Copies a picked item into the library and reports what happened.
+    ///
+    /// A copy rather than a reference: the security-scoped grant a file importer
+    /// hands over does not survive a relaunch, and the overlay reads models
+    /// across launches, so anything that only works while the picker grant is
+    /// alive is not worth offering.
+    ///
+    /// Returns nil on success, or the reason it refused. Main thread only.
+    func importModel(from url: URL) async -> String? {
+        let fileManager = FileManager.default
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return "that item no longer exists"
+        }
+
+        // Something already inside the library needs no copy, and copying a
+        // folder into itself would recurse until the disk ran out.
+        if url.path.hasPrefix(root.path + "/") {
+            refresh()
+            return nil
+        }
+
+        if isDirectory.boolValue {
+            return await importMLXFolder(url)
+        }
+        guard url.pathExtension.lowercased() == "gguf" else {
+            return "not a .gguf file or an MLX model folder"
+        }
+        return await importGGUFFile(url)
+    }
+
+    private func importMLXFolder(_ url: URL) async -> String? {
+        let fileManager = FileManager.default
+        let config = url.appendingPathComponent("config.json")
+        guard fileManager.fileExists(atPath: config.path) else {
+            return "\(url.lastPathComponent) has no config.json, so it is not an MLX model"
+        }
+        guard hasWeights(in: url) else {
+            return "\(url.lastPathComponent) contains no .safetensors weights"
+        }
+
+        let destination = uniqueDirectory(named: url.lastPathComponent)
+        return await performCopy(source: url, destination: destination,
+                                 label: url.lastPathComponent)
+    }
+
+    private func importGGUFFile(_ url: URL) async -> String? {
+        let destination = uniqueDestination(named: url.lastPathComponent)
+        return await performCopy(source: url, destination: destination,
+                                 label: url.lastPathComponent)
+    }
+
+    /// Runs the copy off the main thread and reports the outcome. Multi-gigabyte
+    /// weights take long enough that doing this on the main actor freezes the tab
+    /// with no explanation, which reads as a crash.
+    private func performCopy(source: URL, destination: URL, label: String) async -> String? {
+        notice = "copying \(label)…"
+        let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+            let fileManager = FileManager.default
+            do {
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.copyItem(at: source, to: destination)
+                return nil
+            } catch {
+                // Leave half a model behind and it shows up in the list as a
+                // loadable entry that fails to load, so clean up on failure.
+                try? fileManager.removeItem(at: destination)
+                return error.localizedDescription
+            }
+        }.value
+
+        if let failure {
+            notice = "could not import \(label): \(failure)"
+            return failure
+        }
+        notice = "imported \(label)"
+        refresh()
+        return nil
+    }
+
+    /// A name free of collisions inside the library, so importing a model that is
+    /// already there keeps both copies rather than replacing one silently.
+    private func uniqueDirectory(named name: String) -> URL {
+        var candidate = root.appendingPathComponent(name, isDirectory: true)
+        let fileManager = FileManager.default
+        var index = 2
+        while fileManager.fileExists(atPath: candidate.path) {
+            candidate = root.appendingPathComponent("\(name) \(index)", isDirectory: true)
+            index += 1
+        }
+        return candidate
+    }
+
     // MARK: - Installed models
 
     /// Rescans the model directory. Main thread only.

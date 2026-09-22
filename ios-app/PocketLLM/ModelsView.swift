@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A repository chosen in the browser, carrying the format alongside it so the
 /// file list knows what to request — and whether one file or the whole folder is
@@ -15,6 +16,7 @@ struct ModelsView: View {
     @EnvironmentObject var settings: AppSettings
     @State private var query = ""
     @State private var kind: ModelStore.Kind = .gguf
+    @State private var showImporter = false
 
     var body: some View {
         NavigationStack {
@@ -30,6 +32,26 @@ struct ModelsView: View {
                 RepoFilesView(selection: selection)
             }
             .refreshable { store.refresh() }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Import") { showImporter = true }
+                }
+            }
+            // .folder alongside .data: an MLX model is a directory of weights,
+            // config and tokenizer files, and a picker limited to .data cannot
+            // return one.
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.folder, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls), let url = urls.first else { return }
+                Task {
+                    if let reason = await store.importModel(from: url) {
+                        store.notice = "import refused: \(reason)"
+                    }
+                }
+            }
         }
     }
 
@@ -57,6 +79,9 @@ struct ModelsView: View {
             }
         } header: {
             Text("Installed")
+        } footer: {
+            Text("Import takes a .gguf file or an MLX model folder already on this device; both are copied into the app's own library so they load after a relaunch.")
+                .font(.footnote)
         }
     }
 
