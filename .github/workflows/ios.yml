@@ -40,16 +40,27 @@ jobs:
           xcode-version: latest-stable
 
       # ---------------------------------------------------------------- caches
-      # Declared before anything consumes them; actions/cache saves at job end, so
-      # a partially populated directory here is filled in by the build and
-      # persisted for the next run.
+      #
+      # Restore and save are separate steps, rather than one actions/cache step.
+      # The combined action declares `post-if: success()`, so it saves nothing
+      # when a job fails — and while a workflow is being developed most runs
+      # fail. A failed run therefore paid the full cold cost and persisted none
+      # of it, leaving every cache empty and the next run just as slow. That was
+      # measured: the first run of this workflow had all four caches miss, and
+      # failed at the Swift compile, so all four were discarded.
+      #
+      # Splitting them lets each save run under `if: always()`, banking finished
+      # work whether or not the app compiled. `continue-on-error` covers a re-run
+      # of the same commit, where the key already exists and the save action
+      # reports that as an error.
+      #
+      # Keys are unique to the runner OS, and the llama.cpp entries carry the
+      # pinned commit, so a restored tree can only hold objects built from the
+      # commit whose headers they were compiled against.
 
-      # llama.cpp source and both CMake trees. Keyed on the pinned commit and the
-      # OS exactly as required, so a restored tree can only ever hold objects
-      # built from that commit — restoring a stale build directory would link
-      # objects that no longer match the headers.
-      - name: Cache llama.cpp source and cmake builds
-        uses: actions/cache@v4
+      # llama.cpp source plus both CMake trees.
+      - name: Restore llama.cpp source and cmake builds
+        uses: actions/cache/restore@v4
         with:
           path: |
             ci-llama
@@ -61,9 +72,10 @@ jobs:
 
       # Gradle: dependency cache, wrapper, and the Kotlin/Native toolchain that
       # konan downloads. The restore-key fallback (no trailing hash) keeps the
-      # expensive ~/.konan toolchain reusable when only the project changes.
-      - name: Cache Gradle and Kotlin/Native
-        uses: actions/cache@v4
+      # expensive ~/.konan toolchain reusable when only the project changes —
+      # that download alone is several minutes.
+      - name: Restore Gradle and Kotlin/Native
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.gradle/caches
@@ -80,10 +92,12 @@ jobs:
       #
       # Keyed on the Swift sources and the project manifest, so an exact-key hit
       # cannot serve a stale incremental build; the restore-key fallback allows a
-      # previous-commit tree so the Swift compiler still rebuilds only what
-      # changed.
-      - name: Cache Xcode DerivedData
-        uses: actions/cache@v4
+      # previous-commit tree so the Swift compiler rebuilds only what changed.
+      # Xcode's build database records what succeeded, so a tree left by a failed
+      # compile is safe to reuse: unaffected objects are kept and the broken ones
+      # are redone, exactly as a local incremental build behaves.
+      - name: Restore Xcode DerivedData
+        uses: actions/cache/restore@v4
         with:
           path: |
             ios-app/build
@@ -93,8 +107,8 @@ jobs:
             ${{ runner.os }}-deriveddata-
 
       # Homebrew bottles/downloads for the only formula this job installs.
-      - name: Cache Homebrew downloads
-        uses: actions/cache@v4
+      - name: Restore Homebrew downloads
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -216,3 +230,50 @@ jobs:
           name: PocketLLM-device-unsigned
           path: ios-app/build-device/Build/Products/Release-iphoneos/PocketLLM-unsigned.ipa
           if-no-files-found: error
+
+      # ------------------------------------------------------------------ save
+      # Always: that is the whole point of splitting restore from save above.
+      # Everything here is finished work the next run should not repeat, whether
+      # or not the app compiled.
+
+      - name: Save llama.cpp source and cmake builds
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ci-llama
+            build-ios-sim
+            build-ios-dev
+          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}
+
+      - name: Save Gradle and Kotlin/Native
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+
+      - name: Save Xcode DerivedData
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ios-app/build
+            ios-app/build-device
+          key: ${{ runner.os }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
+
+      - name: Save Homebrew downloads
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            ~/Library/Caches/Homebrew/downloads
+          key: ${{ runner.os }}-brew-xcodegen-v1
