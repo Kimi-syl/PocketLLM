@@ -30,6 +30,9 @@ final class AppSettings: ObservableObject {
     /// file does not depend on a type declared inside a view.
     @Published var lastMode: String
 
+    /// Raw value of `HuggingFaceClient.Sort`, for the same reason.
+    @Published var searchSort: String
+
     /// Sampling parameters, frozen into a value type.
     ///
     /// Generation runs inside `@Sendable` closures on MLX's and llama.cpp's own
@@ -72,6 +75,7 @@ final class AppSettings: ObservableObject {
         static let hfToken = "settings.hfToken"
         static let serverURL = "settings.serverURL"
         static let lastMode = "settings.lastMode"
+        static let searchSort = "settings.searchSort"
     }
 
     private init(defaults: UserDefaults = .standard) {
@@ -90,6 +94,7 @@ final class AppSettings: ObservableObject {
         hfToken = defaults.string(forKey: Key.hfToken) ?? ""
         serverURL = defaults.string(forKey: Key.serverURL) ?? "http://192.168.1.100:8080/"
         lastMode = defaults.string(forKey: Key.lastMode) ?? "remote"
+        searchSort = defaults.string(forKey: Key.searchSort) ?? HuggingFaceClient.Sort.relevance.rawValue
 
         // Persistence through subscriptions rather than `didSet`: observers on
         // property-wrapped properties are easy to get subtly wrong, and a
@@ -105,6 +110,7 @@ final class AppSettings: ObservableObject {
         persist($hfToken, to: Key.hfToken)
         persist($serverURL, to: Key.serverURL)
         persist($lastMode, to: Key.lastMode)
+        persist($searchSort, to: Key.searchSort)
     }
 
     private func persist<V>(_ publisher: Published<V>.Publisher, to key: String) {

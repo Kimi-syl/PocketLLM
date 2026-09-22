@@ -72,19 +72,63 @@ struct HuggingFaceClient {
 
     // MARK: - Search
 
-    /// Searches the Hub. `filter` narrows to a file format (e.g. `gguf`) and
-    /// `author` to a single organisation — MLX conversions live under
-    /// `mlx-community`, and searching "safetensors" instead would return every
-    /// unconverted checkpoint on the Hub.
+    /// Result ordering, offered in the browser as a dropdown.
+    ///
+    /// The Hub has no `relevance` sort key — passing one is rejected outright
+    /// ("Invalid sort parameter: relevance"). Omitting `sort` entirely returns
+    /// the hub's own default ranking, which measured against the same query is
+    /// byte-for-byte the list `sort=trendingScore` produces. So `.relevance`
+    /// means "send no sort", and that is the honest implementation of the
+    /// default ordering rather than a invented parameter.
+    enum Sort: String, CaseIterable, Identifiable {
+        case relevance
+        case downloads
+        case likes
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .relevance: return "Relevance"
+            case .downloads: return "Most downloaded"
+            case .likes: return "Most stars"
+            }
+        }
+
+        /// The value for the `sort` query item, or nil to omit it.
+        var queryValue: String? {
+            switch self {
+            case .relevance: return nil
+            case .downloads: return "downloads"
+            case .likes: return "likes"
+            }
+        }
+    }
+
+    /// Searches the Hub.
+    ///
+    /// `filter` is a library tag — `gguf` or `mlx` — which narrows to repos
+    /// actually carrying that format anywhere on the Hub. Scoping MLX to the
+    /// `mlx-community` organisation instead would hide the other converters
+    /// (lmstudio-community, prism-ml and others publish MLX builds too).
+    ///
+    /// `pipelineTag` is ANDed with the format filter. Without it a whole-hub MLX
+    /// search returns speech and vision repos that MLXLLM cannot load, so the
+    /// browser asks for text-generation specifically.
     func search(
-        _ query: String, filter: String? = "gguf", author: String? = nil, limit: Int = 25
+        _ query: String,
+        filter: String? = nil,
+        sort: Sort = .relevance,
+        pipelineTag: String? = "text-generation",
+        limit: Int = 25
     ) async throws -> [SearchResult] {
         var components = URLComponents(string: Self.api)!
-        var items: [URLQueryItem] = [
-            URLQueryItem(name: "sort", value: "downloads"),
-            URLQueryItem(name: "direction", value: "-1"),
-            URLQueryItem(name: "limit", value: String(limit)),
-        ]
+        var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+        // direction only applies alongside a sort; sending it alone is noise.
+        if let sortValue = sort.queryValue {
+            items.append(URLQueryItem(name: "sort", value: sortValue))
+            items.append(URLQueryItem(name: "direction", value: "-1"))
+        }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             items.append(URLQueryItem(name: "search", value: trimmed))
@@ -92,8 +136,8 @@ struct HuggingFaceClient {
         if let filter, !filter.isEmpty {
             items.append(URLQueryItem(name: "filter", value: filter))
         }
-        if let author, !author.isEmpty {
-            items.append(URLQueryItem(name: "author", value: author))
+        if let pipelineTag, !pipelineTag.isEmpty {
+            items.append(URLQueryItem(name: "pipeline_tag", value: pipelineTag))
         }
         components.queryItems = items
         guard let url = components.url else { throw ClientError.badURL(Self.api) }

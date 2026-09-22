@@ -18,12 +18,9 @@ final class ModelStore: ObservableObject {
         case gguf
         case mlx
 
-        /// The Hub filter that narrows a search to repositories carrying this
-        /// format. MLX models are searched inside the `mlx-community`
-        /// organisation instead, since "safetensors" alone matches every
-        /// unconverted checkpoint on the Hub.
-        var searchFilter: String? { self == .gguf ? "gguf" : nil }
-        var searchAuthor: String? { self == .mlx ? "mlx-community" : nil }
+        /// The Hub library tag that narrows a search to repositories carrying
+        /// this format, across the whole Hub rather than one organisation.
+        var searchFilter: String { self == .gguf ? "gguf" : "mlx" }
         var label: String { self == .gguf ? "GGUF (llama.cpp)" : "MLX (Apple)" }
     }
 
@@ -119,14 +116,14 @@ final class ModelStore: ObservableObject {
 
     // MARK: - Hub search
 
-    func search(_ query: String, kind: Kind) {
+    func search(_ query: String, kind: Kind, sort: HuggingFaceClient.Sort) {
         isSearching = true
         notice = nil
         let client = self.client
         Task {
             do {
                 let found = try await client.search(
-                    query, filter: kind.searchFilter, author: kind.searchAuthor)
+                    query, filter: kind.searchFilter, sort: sort)
                 DispatchQueue.main.async {
                     self.results = found
                     self.isSearching = false

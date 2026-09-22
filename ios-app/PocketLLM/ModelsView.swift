@@ -12,6 +12,7 @@ struct RepoSelection: Hashable {
 /// browser that fills it.
 struct ModelsView: View {
     @EnvironmentObject var store: ModelStore
+    @EnvironmentObject var settings: AppSettings
     @State private var query = ""
     @State private var kind: ModelStore.Kind = .gguf
 
@@ -93,6 +94,13 @@ struct ModelsView: View {
             }
             .pickerStyle(.segmented)
 
+            Picker("Sort by", selection: sortBinding) {
+                ForEach(HuggingFaceClient.Sort.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+
             HStack {
                 TextField(placeholder, text: $query)
                     .textInputAutocapitalization(.never)
@@ -124,12 +132,22 @@ struct ModelsView: View {
         }
     }
 
+    /// The ordering persists in AppSettings as a raw string, so the settings file
+    /// never has to know a view-owned type; the bridge lives here instead.
+    private var sortBinding: Binding<HuggingFaceClient.Sort> {
+        Binding(
+            get: { HuggingFaceClient.Sort(rawValue: settings.searchSort) ?? .relevance },
+            set: { settings.searchSort = $0.rawValue }
+        )
+    }
+
     private var placeholder: String {
-        kind == .gguf ? "Search GGUF models" : "Search mlx-community"
+        kind == .gguf ? "Search GGUF models" : "Search MLX models"
     }
 
     private func runSearch() {
-        store.search(query, kind: kind)
+        store.search(query, kind: kind,
+                     sort: HuggingFaceClient.Sort(rawValue: settings.searchSort) ?? .relevance)
     }
 }
 
