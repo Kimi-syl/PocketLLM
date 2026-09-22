@@ -49,6 +49,7 @@ final class MLXEngine: ObservableObject {
 
     func generate(
         messages: [OpenAIClient.Message],
+        sampling: AppSettings.Sampling,
         onToken: @escaping (String) -> Void,
         done: @escaping () -> Void
     ) {
@@ -76,8 +77,14 @@ final class MLXEngine: ObservableObject {
                 let action: @Sendable (ModelContext) async throws -> Void = { context in
                     let input = try await context.processor.prepare(
                         input: UserInput(chat: chat))
+                    // sampling.topK goes unused: MLXLMCommon's
+                    // GenerateParameters has no top-k, only temperature and
+                    // top-p, so that setting is llama.cpp-only by necessity.
                     let parameters = GenerateParameters(
-                        maxTokens: 1024, maxKVSize: 4096, temperature: 0.8, topP: 0.95)
+                        maxTokens: sampling.maxTokens,
+                        maxKVSize: sampling.maxKVSize,
+                        temperature: sampling.temperature,
+                        topP: sampling.topP)
 
                     // Token-by-token decoding of a BPE vocabulary produces
                     // spurious word breaks, so the detokenizer accumulates a

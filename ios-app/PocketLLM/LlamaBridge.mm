@@ -64,6 +64,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
                                contextSize:(int32_t)contextSize
                                  batchSize:(int32_t)batchSize
                                    threads:(int)threads
+                                nGpuLayers:(int32_t)nGpuLayers
                                      error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
@@ -75,12 +76,14 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         return nil;
     }
     llama_model_params mparams = llama_model_default_params();
-    // Offload every layer when a GPU backend actually registered during
-    // llama_backend_init() (the device build compiles Metal in; the simulator
-    // slice does not). If Metal is compiled in but cannot create a device,
-    // llama.cpp logs and falls back to CPU on its own - the model still loads.
-    _usingGpu = llama_supports_gpu_offload() ? YES : NO;
-    mparams.n_gpu_layers = _usingGpu ? 999 : 0;
+    // The caller decides how many layers to offload. A build with no GPU backend
+    // (the simulator slice) cannot honour any of them, so the request is clamped
+    // here rather than at every call site. If Metal is compiled in but cannot
+    // create a device, llama.cpp logs and falls back to CPU on its own - the
+    // model still loads either way.
+    const BOOL gpuAvailable = llama_supports_gpu_offload() ? YES : NO;
+    mparams.n_gpu_layers = gpuAvailable ? nGpuLayers : 0;
+    _usingGpu = (gpuAvailable && nGpuLayers > 0) ? YES : NO;
     _model = llama_model_load_from_file(cpath, mparams);
     if (_model == nullptr) {
         if (error) *error = [NSError errorWithDomain:@"PocketLLM" code:1

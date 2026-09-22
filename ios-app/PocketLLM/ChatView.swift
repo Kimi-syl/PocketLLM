@@ -8,8 +8,9 @@ struct ChatView: View {
         case mlx = "MLX"
         case remote = "Server"
     }
-    @State private var mode: Mode = .remote
-    @State private var serverURL = "http://192.168.1.100:8080/"
+
+    @EnvironmentObject var store: ModelStore
+    @EnvironmentObject var settings: AppSettings
     @State private var input = ""
     @State private var messages: [OpenAIClient.Message] = []
     @State private var busy = false
@@ -19,21 +20,33 @@ struct ChatView: View {
     @StateObject private var engine = LocalEngine()
     @StateObject private var mlx = MLXEngine()
     @State private var showModelPicker = false
-    @EnvironmentObject var store: ModelStore
+
+    /// The backend choice persists across launches, but as a raw string in
+    /// AppSettings so that file never has to know about a view's enum.
+    private var currentMode: Mode {
+        Mode(rawValue: settings.lastMode) ?? .remote
+    }
+
+    private var modeBinding: Binding<Mode> {
+        Binding(
+            get: { Mode(rawValue: settings.lastMode) ?? .remote },
+            set: { settings.lastMode = $0.rawValue }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Mode", selection: $mode) {
+            Picker("Mode", selection: modeBinding) {
                 ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
-            if mode == .remote {
-            TextField("Server URL", text: $serverURL)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+            if currentMode == .remote {
+                TextField("Server URL", text: $settings.serverURL)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
             } else {
                 engineBar
             }
@@ -46,9 +59,9 @@ struct ChatView: View {
             HStack {
                 TextField("Message", text: $input)
                     .textFieldStyle(.roundedBorder)
-                if busy && mode != .remote {
+                if busy && currentMode != .remote {
                     Button("Stop") {
-                        if mode == .mlx { mlx.stop() } else { engine.stop() }
+                        if currentMode == .mlx { mlx.stop() } else { engine.stop() }
                     }
                 }
                 Button(busy ? "..." : "Send") { send() }
@@ -59,7 +72,7 @@ struct ChatView: View {
         .navigationTitle("PocketLLM")
         .fileImporter(isPresented: $showModelPicker, allowedContentTypes: [.data]) { result in
             if case .success(let url) = result {
-                engine.load(url: url, contextSize: 4096, threads: 4)
+                loadGGUF(url)
             }
         }
     }
@@ -68,7 +81,7 @@ struct ChatView: View {
     /// Both read the same library, filtered to the format that backend loads.
     private var engineBar: some View {
         HStack {
-            Text(mode == .mlx ? mlx.state : engine.state)
+            Text(currentMode == .mlx ? mlx.state : engine.state)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -87,7 +100,7 @@ struct ChatView: View {
     }
 
     private var installedModels: [ModelStore.InstalledModel] {
-        store.installed.filter { mode == .mlx ? $0.kind == .mlx : $0.kind == .gguf }
+        store.installed.filter { currentMode == .mlx ? $0.kind == .mlx : $0.kind == .gguf }
     }
 
     private var modelMenu: some View {
@@ -95,7 +108,7 @@ struct ChatView: View {
             ForEach(installedModels) { model in
                 Button(model.name) { load(model) }
             }
-            if mode == .local {
+            if currentMode == .local {
                 if !ggufModels.isEmpty {
                     Divider()
                 }
@@ -111,12 +124,20 @@ struct ChatView: View {
     }
 
     private func load(_ model: ModelStore.InstalledModel) {
-        if mode == .mlx {
+        if currentMode == .mlx {
             // An MLX model is a directory of weights, config and tokenizer.
             Task { await mlx.load(directory: model.url) }
         } else {
-            engine.load(url: model.url, contextSize: 4096, threads: 4)
+            loadGGUF(model.url)
         }
+    }
+
+    private func loadGGUF(_ url: URL) {
+        engine.load(
+            url: url,
+            contextSize: Int32(settings.contextSize),
+            threads: settings.threads,
+            gpuLayers: settings.gpuOffload ? LocalEngine.allLayers : 0)
     }
 
     @ViewBuilder
@@ -148,6 +169,17 @@ struct ChatView: View {
         busy && message.id == messages.last?.id
     }
 
+    /// The transcript plus the configured system prompt, in the form all three
+    /// backends take. The prompt is prepended per request rather than stored in
+    /// `messages`, so it never appears in the scroll view and editing it in
+    /// Settings takes effect on the next reply without a new chat.
+    private func requestHistory() -> [OpenAIClient.Message] {
+        let history = Array(messages.dropLast())
+        let prompt = settings.trimmedSystemPrompt
+        guard !prompt.isEmpty else { return history }
+        return [OpenAIClient.Message(role: "system", content: prompt)] + history
+    }
+
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }
@@ -158,10 +190,10 @@ struct ChatView: View {
         messages.append(assistantMsg)
         busy = true
         error = nil
-        let history = messages.dropLast()
+        let history = requestHistory()
 
-        if mode == .local || mode == .mlx {
-            if mode == .mlx {
+        if currentMode == .local || currentMode == .mlx {
+            if currentMode == .mlx {
                 guard mlx.isReady else {
                     error = "load an MLX model first"
                     busy = false
@@ -185,13 +217,15 @@ struct ChatView: View {
             let onDone: () -> Void = {
                 DispatchQueue.main.async { busy = false }
             }
-            if mode == .mlx {
-                mlx.generate(messages: Array(history), onToken: onToken, done: onDone)
+            if currentMode == .mlx {
+                mlx.generate(messages: history, sampling: settings.sampling,
+                             onToken: onToken, done: onDone)
             } else {
-                engine.generate(messages: Array(history), onToken: onToken, done: onDone)
+                engine.generate(messages: history, sampling: settings.sampling,
+                                onToken: onToken, done: onDone)
             }
         } else {
-            guard let url = URL(string: serverURL) else {
+            guard let url = URL(string: settings.serverURL) else {
                 error = "invalid server URL"
                 busy = false
                 return
@@ -199,7 +233,7 @@ struct ChatView: View {
             let client = OpenAIClient(baseURL: url)
             Task {
                 do {
-                    let reply = try await client.complete(messages: Array(history))
+                    let reply = try await client.complete(messages: history)
                     let idx = messages.count - 1
                     messages[idx].content = reply
                 } catch {

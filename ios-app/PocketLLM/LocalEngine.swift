@@ -3,6 +3,12 @@ import Foundation
 /// On-device inference using the llama.cpp ObjC++ bridge.
 final class LocalEngine: ObservableObject {
     @Published var state: String = "no model loaded"
+
+    /// Offload every layer. llama.cpp treats a negative count as "all", but 999
+    /// exceeds any model in this family and is what the Android bridge uses, so
+    /// the two stay in step.
+    static let allLayers = 999
+
     private var context: LlamaContext?
     // Security scope is held for the context's whole lifetime: llama.cpp mmaps
     // the model file, so pages can fault in long after load() returns; stopping
@@ -16,7 +22,11 @@ final class LocalEngine: ObservableObject {
         securedURL = nil
     }
 
-    func load(url: URL, contextSize: Int32, threads: Int) {
+    /// `gpuLayers` is 0 for CPU-only, `allLayers` for Metal. The bridge clamps it
+    /// to what the build actually supports, so asking for Metal on the simulator
+    /// (which has no Metal backend) silently yields a CPU load rather than a
+    /// failure — the reported backend below is the truth.
+    func load(url: URL, contextSize: Int32, threads: Int, gpuLayers: Int) {
         state = "loading…"
         LlamaGlobalInit()
         releaseSecurityScope() // drop the previous model's scope, if any
@@ -27,7 +37,8 @@ final class LocalEngine: ObservableObject {
             let ctx = try LlamaContext(modelPath: url.path,
                                        contextSize: contextSize,
                                        batchSize: 2048,
-                                       threads: Int32(threads))
+                                       threads: Int32(threads),
+                                       nGpuLayers: Int32(gpuLayers))
             context = ctx
             let backend = ctx.usingGpu ? "Metal" : "CPU"
             // contextLength is an ObjC method, not a property: without the call
@@ -43,6 +54,7 @@ final class LocalEngine: ObservableObject {
     var isReady: Bool { context != nil }
 
     func generate(messages: [OpenAIClient.Message],
+                  sampling: AppSettings.Sampling,
                   onToken: @escaping (String) -> Void,
                   done: @escaping () -> Void) {
         guard let ctx = context else { return }
@@ -51,12 +63,13 @@ final class LocalEngine: ObservableObject {
             done()
             return
         }
-        var collected = ""
-        ctx.generate(prompt, maxTokens: 1024, temperature: 0.8, topP: 0.95, topK: 40) { piece in
-            collected += piece
+        ctx.generate(prompt,
+                     maxTokens: Int32(sampling.maxTokens),
+                     temperature: sampling.temperature,
+                     topP: sampling.topP,
+                     topK: Int32(sampling.topK)) { piece in
             onToken(piece)
         } completion: { _, _, _ in
-            _ = collected
             done()
         }
     }

@@ -9,6 +9,8 @@ struct ContentView: View {
                 .tabItem { Label("Models", systemImage: "square.stack.3d.down.right") }
             AgentKitView()
                 .tabItem { Label("AgentKit", systemImage: "brain") }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
     }
 }

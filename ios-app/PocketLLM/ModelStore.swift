@@ -51,7 +51,11 @@ final class ModelStore: ObservableObject {
     @Published var notice: String?
 
     let root: URL
-    var client = HuggingFaceClient()
+    /// Built per access so a token saved in Settings applies to the next
+    /// request without relaunching the app.
+    var client: HuggingFaceClient {
+        HuggingFaceClient(token: AppSettings.shared.hfToken)
+    }
 
     /// What an MLX model directory needs to load: weights plus the config and
     /// tokenizer files that go with them.
