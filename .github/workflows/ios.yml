@@ -58,12 +58,30 @@ jobs:
       # pinned commit, so a restored tree can only hold objects built from the
       # commit whose headers they were compiled against.
 
-      # The Gradle restore is listed before the llama.cpp one, and that ordering
-      # matters: `hashFiles` sees the workspace as it is at that moment, and the
-      # llama.cpp restore brings a vendored examples/llama.android tree carrying
-      # its own .gradle files. Hashing before that lands keeps the key identical
-      # on a cold run and on every warm one. The globs are rooted at this
-      # project's own module depth for the same reason — see the comment below.
+      # The key is computed once, here, and both the restore and the save refer
+      # to this step's output.
+      #
+      # It must not be an inline hashFiles() expression in both places: each is
+      # evaluated where it stands, so the restore hashes the workspace before the
+      # build and the save hashes it after. Any file the build creates or edits
+      # that matches the globs changes the second hash, the save lands under a key
+      # the next run never asks for, and the entry is pure waste. That happened,
+      # visibly: a run restored `macOS-gradle-be865182...` and then saved
+      # `macOS-gradle-f14ceeca...`, so the cache grew by 1.4 GB per run and was
+      # only ever hit through the restore-key prefix fallback.
+      #
+      # The explicit file list also matters. Globs like `**/*.gradle*` reach into
+      # the vendored llama.cpp checkout, whose examples/llama.android tree ships
+      # its own build.gradle.kts and gradle-wrapper.properties — files that exist
+      # only after the llama.cpp cache is restored, so the key would depend on
+      # cache state. Naming this project's own manifest files avoids both
+      # problems, and the ordering below the llama.cpp restore therefore no longer
+      # matters.
+      - name: Compute Gradle cache key
+        id: gradle-key
+        run: |
+          echo "key=${{ runner.os }}-gradle-${{ hashFiles('build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'app/build.gradle.kts', 'cli/build.gradle.kts', 'core/build.gradle.kts') }}" >> "$GITHUB_OUTPUT"
+
       - name: Restore Gradle and Kotlin/Native
         uses: actions/cache/restore@v4
         with:
@@ -71,7 +89,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.konan
-          key: ${{ runner.os }}-gradle-${{ hashFiles('*.gradle*', '*/build.gradle*', 'gradle/**', 'gradle.properties') }}
+          key: ${{ steps.gradle-key.outputs.key }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
@@ -271,7 +289,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.konan
-          key: ${{ runner.os }}-gradle-${{ hashFiles('*.gradle*', '*/build.gradle*', 'gradle/**', 'gradle.properties') }}
+          key: ${{ steps.gradle-key.outputs.key }}
 
       - name: Save Xcode DerivedData
         if: always()
