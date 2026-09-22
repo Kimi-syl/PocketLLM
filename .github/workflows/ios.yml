@@ -7,6 +7,20 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A superseded run on the same ref is wasted compute; cancel it rather than let
+# two full builds race for the same caches.
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned once here so the cache keys, the clone and both cmake builds cannot
+  # drift apart. Bumping this invalidates every llama.cpp cache entry at once,
+  # which is the intent: a new commit means new objects.
+  LLAMA_COMMIT: f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
 jobs:
   ios:
     runs-on: macos-14
@@ -25,6 +39,72 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      # ---------------------------------------------------------------- caches
+      # Declared before anything consumes them; actions/cache saves at job end, so
+      # a partially populated directory here is filled in by the build and
+      # persisted for the next run.
+
+      # llama.cpp source and both CMake trees. Keyed on the pinned commit and the
+      # OS exactly as required, so a restored tree can only ever hold objects
+      # built from that commit — restoring a stale build directory would link
+      # objects that no longer match the headers.
+      - name: Cache llama.cpp source and cmake builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ci-llama
+            build-ios-sim
+            build-ios-dev
+          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}
+          restore-keys: |
+            ${{ runner.os }}-llama-
+
+      # Gradle: dependency cache, wrapper, and the Kotlin/Native toolchain that
+      # konan downloads. The restore-key fallback (no trailing hash) keeps the
+      # expensive ~/.konan toolchain reusable when only the project changes.
+      - name: Cache Gradle and Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Xcode DerivedData for both configurations. This also carries
+      # ios-app/build/SourcePackages, so Swift package resolution (MLX,
+      # swift-transformers, MarkdownUI) is reused instead of being re-checked-out
+      # and re-compiled every push.
+      #
+      # Keyed on the Swift sources and the project manifest, so an exact-key hit
+      # cannot serve a stale incremental build; the restore-key fallback allows a
+      # previous-commit tree so the Swift compiler still rebuilds only what
+      # changed.
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios-app/build
+            ios-app/build-device
+          key: ${{ runner.os }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-deriveddata-
+
+      # Homebrew bottles/downloads for the only formula this job installs.
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            ~/Library/Caches/Homebrew/downloads
+          key: ${{ runner.os }}-brew-xcodegen-v1
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      # ----------------------------------------------------------------- build
+
       - name: Build PocketLLMKit XCFramework
         run: ./gradlew :core:assemblePocketLLMKitXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
 
@@ -35,10 +115,15 @@ jobs:
 
       - name: Build llama.cpp for iOS (simulator)
         run: |
-          # Pin to the exact commit the Android build vendors, so iOS and
-          # Android cannot drift apart when upstream moves.
-          git clone https://github.com/ggml-org/llama.cpp ci-llama
-          git -C ci-llama checkout f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+          # Clone only when the cache missed; a restored checkout is already at
+          # the pinned commit.
+          if [ ! -d ci-llama/.git ]; then
+            git clone https://github.com/ggml-org/llama.cpp ci-llama
+            git -C ci-llama checkout "$LLAMA_COMMIT"
+          fi
+
+          # CMake is incremental: on a cache hit the configure step reuses the
+          # existing tree and `--build` compiles nothing.
           cmake -S ci-llama -B build-ios-sim \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
@@ -47,6 +132,7 @@ jobs:
             -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
             -DGGML_METAL=OFF -DLLAMA_CURL=OFF
           cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu -j3
+
           mkdir -p ios-app/llama-libs ios-app/llama-headers
           libtool -static -o ios-app/llama-libs/libpocketllm_ios.a $(find build-ios-sim -name "*.a" | sort)
           cp ci-llama/include/llama.h ios-app/llama-headers/
@@ -55,6 +141,7 @@ jobs:
 
       - name: Generate Xcode project
         run: |
+          # brew is a no-op when the formula is already present (cached bottles).
           brew install xcodegen
           cd ios-app && xcodegen generate
 
@@ -99,6 +186,7 @@ jobs:
             -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
             -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DLLAMA_CURL=OFF
           cmake --build build-ios-dev --target llama ggml ggml-base ggml-cpu ggml-metal -j3
+
           mkdir -p ios-app/llama-libs-device
           libtool -static -o ios-app/llama-libs-device/libpocketllm_ios.a $(find build-ios-dev -name "*.a" | sort)
 
