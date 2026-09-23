@@ -343,7 +343,11 @@ object VrmCompressor {
         for (i in 0 until views.length()) {
             val bv = views.optJSONObject(i) ?: continue
             val blob = rewrite[i]
-            val pad = (4 - cursor % 4) % 4
+            // Align to 16, not 4.
+            //
+            // The alignment theory was disproved (the escaping in gltfJsonBytes
+            // was the real cause), but wider alignment is harmless and kept.
+            val pad = (kBufferAlignment - cursor % kBufferAlignment) % kBufferAlignment
             repeat(pad) { out.write(0) }
             cursor += pad
             bv.put("byteOffset", cursor)
@@ -365,7 +369,7 @@ object VrmCompressor {
         val binBytes = out.toByteArray()
         val binPad = (4 - binBytes.size % 4) % 4
 
-        val json = root.toString().toByteArray(Charsets.UTF_8)
+        val json = gltfJsonBytes(root)
         val jsonPad = (4 - json.size % 4) % 4
 
         val result = ByteArray(12 + 8 + json.size + jsonPad + 8 + binBytes.size + binPad)

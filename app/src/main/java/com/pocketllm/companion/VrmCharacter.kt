@@ -69,11 +69,40 @@ internal const val kMaxSkinJoints = 256
  */
 internal const val kMaxTextureSize = 1024
 
+/**
+ * Serialises a glTF root for a GLB chunk, with org.json's forward-slash escaping
+ * undone.
+ *
+ * org.json writes every `/` as `\/`. That is valid JSON, and JSONObject reads it
+ * back correctly, so the value never looks wrong in Kotlin. But gltfio does not
+ * decode escapes at all: cgltf's cgltf_parse_json_string copies the token's raw
+ * bytes with strncpy and never touches `\/`, so `"image\/png"` reaches
+ * ResourceLoader as the literal eleven characters `image\/png`. It then looks
+ * that up in a map keyed by `image/png`, misses, logs "Missing texture provider"
+ * and returns no texture - the model loads, animates, and draws solid black.
+ *
+ * The original VRoid files never carry an escaped slash, which is why only
+ * files this app rewrote showed the fault.
+ */
+internal fun gltfJsonBytes(root: JSONObject): ByteArray =
+    root.toString().replace("\\/", "/").toByteArray(Charsets.UTF_8)
+
 /** "glTF" as a little-endian int, the magic at the head of every GLB. */
 private const val kGlbMagic = 0x46546C67
 
 /** "JSON" chunk type in a GLB. */
 private const val kGlbJsonChunk = 0x4E4F534A
+
+/**
+ * Byte alignment for every bufferView in a BIN this app rewrites.
+ *
+ * Held over from a disproved theory: 4-byte offsets were suspected of blackening
+ * Android-re-encoded textures, but a controlled file at 4-byte alignment with the
+ * slash escaping fixed rendered in colour, so alignment was never the cause (the
+ * escaping in gltfJsonBytes was). Kept because wider alignment is harmless and
+ * costs only a few bytes of padding.
+ */
+internal const val kBufferAlignment = 16
 
 /** Where the framed figure ends up; matches ModelViewer's own default target. */
 private const val kBodyCentreZ = -4.0
@@ -383,21 +412,19 @@ private object VrmIdle {
     }
 
     /**
-     * Fits the model into the camera's view — once, and only when it has real bounds.
-     *
-     * transformToUnitCube() scales by 2/extent, so calling it while the bounding box
-     * is still empty — exactly the case immediately after loadModelGlb(), before the
-     * render loop has populated any renderables — scales the model by 2/0. That is
-     * infinity, and the model can then never be seen. This is why nothing rendered:
-     * the surface cleared fine, there was simply nothing inside it.
-     */
-    /**
      * Log-backed probe while gltfio's asynchronous load is still in flight.
      *
      * The on-screen readout was removed once the render path worked, but a model
      * whose textures never finish arriving draws with placeholder maps - which is
      * what a solid black figure looks like. This says so in the log without putting
      * anything back on screen.
+     *
+     * Note there is deliberately no re-framing on completion. An earlier attempt
+     * called frameModel() again here to undo gltfio's own node transforms, but
+     * applyBodyFraming reads the hips and head *world* transforms - which already
+     * include the scale it wrote on the first pass. Measuring the torso a second
+     * time therefore returned an already-shrunk length and derived a smaller scale
+     * from it, compounding the shrink and leaving the figure far too small.
      */
     private fun reportResourceLoading(active: ModelViewer) {
         val progress = runCatching { active.progress }.getOrDefault(1f)
@@ -408,30 +435,12 @@ private object VrmIdle {
                     active.asset?.renderableEntities?.size ?: -1
                 }.getOrDefault(-1)
                 ServerLog.log("$VRM_TAG: resources loaded, renderables=$renderables")
-                // gltfio's completion pass applies its own node transforms, which
-                // undoes any framing written before it finished. Working models are
-                // the small ones that frame first and win the race; large avatars
-                // finish loading after their framing and lose it. Re-apply ours on
-                // top of the completion pass - once, so the idle pose is not
-                // fighting a rewrite every frame.
-                reapplyFraming(active)
             }
             return
         }
         if (renderedFrames % 150 == 0) {
             ServerLog.log("$VRM_TAG: resources still loading, progress=$progress")
         }
-    }
-
-    /** So the post-load framing re-application happens exactly once. */
-    private var reappliedAfterLoad = false
-
-    private fun reapplyFraming(active: ModelViewer) {
-        if (reappliedAfterLoad) return
-        reappliedAfterLoad = true
-        framed = false
-        if (active.asset != null) frameModel(active)
-        ServerLog.log("$VRM_TAG: framing reapplied after resource completion")
     }
 
     private fun frameModel(active: ModelViewer) {
@@ -575,7 +584,6 @@ private object VrmIdle {
         // has populated the model's renderables, and this is where we poll for that.
         running = true
         framed = false
-        reappliedAfterLoad = false
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
@@ -588,7 +596,6 @@ private object VrmIdle {
         reportedLoaded = false
         renderedFrames = 0
         faceFlip = false
-        reappliedAfterLoad = false
         rest = emptyMap()
         stance = emptyList()
     }
@@ -943,7 +950,7 @@ internal fun normalizeGltf(bytes: ByteArray): ByteArray = runCatching {
         root.put("extensionsUsed", rebuilt)
     }
 
-    val json = root.toString().toByteArray(Charsets.UTF_8)
+    val json = gltfJsonBytes(root)
     val pad = (4 - json.size % 4) % 4
     val padded = json.size + pad
 
@@ -1060,6 +1067,11 @@ internal fun downscaleTextures(bytes: ByteArray): ByteArray = runCatching {
             ServerLog.log("$VRM_TAG: image $i left at original size")
             continue
         }
+        // Pad to kBufferAlignment before writing. Appending straight after the
+        // previous image leaves it at an arbitrary offset; wider alignment is
+        // harmless and kept from an earlier, disproved theory.
+        val alignPad = (kBufferAlignment - rebuilt.size() % kBufferAlignment) % kBufferAlignment
+        repeat(alignPad) { rebuilt.write(0) }
         bv.put("byteOffset", rebuilt.size())
         bv.put("byteLength", scaled.size)
         rebuilt.write(scaled)
@@ -1074,8 +1086,6 @@ internal fun downscaleTextures(bytes: ByteArray): ByteArray = runCatching {
     )
     if (shrunk == 0) return@runCatching bytes
 
-    val json = root.toString().toByteArray(Charsets.UTF_8)
-    val jsonPad = (4 - json.size % 4) % 4
     val binBytes = rebuilt.toByteArray()
     val binPad = (4 - binBytes.size % 4) % 4
 
@@ -1083,8 +1093,17 @@ internal fun downscaleTextures(bytes: ByteArray): ByteArray = runCatching {
     // size. Leaving the original value makes every bufferView look like it
     // overruns the buffer, which gltfio answers by leaving textures unbound -
     // the model loads, animates, and draws solid black.
+    //
+    // This must happen BEFORE the JSON is serialised. It used to sit after, so
+    // the stale length was what actually got written and only the in-memory
+    // object was corrected - which is why shrinking textures blackened even a
+    // model that rendered perfectly, and why the fix looked present in the
+    // source while never reaching a file.
     root.optJSONArray("buffers")?.optJSONObject(0)
         ?.put("byteLength", binBytes.size)
+
+    val json = gltfJsonBytes(root)
+    val jsonPad = (4 - json.size % 4) % 4
 
     val out = ByteArray(12 + 8 + json.size + jsonPad + 8 + binBytes.size + binPad)
     val w = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
