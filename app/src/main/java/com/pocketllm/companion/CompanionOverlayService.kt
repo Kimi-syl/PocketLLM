@@ -36,8 +36,12 @@ import com.pocketllm.agent.CalculateTool
 import com.pocketllm.agent.SearchConfig
 import com.pocketllm.agent.ToolResult
 import com.pocketllm.agent.WebSearchTool
+import com.pocketllm.llm.CpuInfo
+import com.pocketllm.llm.EngineState
 import com.pocketllm.llm.LlamaEngine
+import com.pocketllm.models.ModelRepository
 import com.pocketllm.server.ServerLog
+import com.pocketllm.sessions.ChatSessionRepository
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -154,10 +158,26 @@ class CompanionOverlayService : Service() {
         ui.onBreathDone = { ui.breathing = false }
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
-        ui.onPanelDrag = { dx, dy -> movePanelBy(dx, dy) }
-        ui.onPanelDragEnd = { persistPanelPosition() }
-        ui.onPanelResize = { dx, dy -> resizePanelBy(dx, dy) }
-        ui.onPanelResizeEnd = { persistPanelSize() }
+        // --- Collapsible shell ----------------------------------------------
+        ui.onLongPressCharacter = { openShell() }
+        ui.onSelectTool = { tool -> selectTool(tool) }
+        ui.onDismissShell = { closeShell() }
+        ui.onOpenSettings = {
+            closeShell()
+            runCatching {
+                startActivity(
+                    Intent(this, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+        ui.onPickModel = { name -> pickModel(name) }
+        ui.onUnloadModel = { unloadModel() }
+        ui.onPickVrm = { name -> pickAvatar(character = "vrm", value = name) }
+        ui.onPickLive2d = { name -> pickAvatar(character = "live2d", value = name) }
+        ui.onPickSpecies = { id -> pickAvatar(character = id, value = "") }
+        ui.onSetToggle = { key, value -> setToggle(key, value) }
+        refreshShellData()
         // The moc is parsed on the GL thread, so the canvas size is only known a
         // moment after the surface appears. When it arrives the collapsed window
         // is re-fitted to it, which is what removes the letterboxing.
@@ -773,6 +793,10 @@ class CompanionOverlayService : Service() {
         // The window has to be re-laid-out when the collapsed size changes, which
         // is what makes the character-size and bare-mode settings take effect live
         // rather than after a restart.
+        // The shell draws the character inside a full-screen window when it is
+        // open, so it needs the collapsed size to reproduce her at the same size.
+        ui.collapsedWidthDp = (collapsedWindowWidth() / density).toInt()
+        ui.collapsedHeightDp = (collapsedWindowHeight() / density).toInt()
         if (!ui.expanded) {
             syncBubblePosition(s)
             // A switch to or from the free-standing mode moves her to the other
@@ -826,12 +850,15 @@ class CompanionOverlayService : Service() {
         val width: Int
         val height: Int
         if (expanded) {
-            // The panel's size is the user's to set with the corner grip, so it is
-            // read back rather than recomputed; only clamped so it cannot end up
-            // larger than the screen or too small to use.
-            width = dp(settings().companionPanelWidth).coerceIn(dp(220), metrics.widthPixels)
-            height = dp(settings().companionPanelHeight)
-                .coerceIn(dp(240), (metrics.heightPixels - dp(60)).coerceAtLeast(dp(240)))
+            // The shell owns the whole screen while it is open. It has to be
+            // full-screen because the rail and the left panel sit at opposite
+            // edges with the character between them, and the dimmed backdrop
+            // that dismisses them has to cover everything the eye reads as
+            // "outside the panel". The cost is that the app underneath cannot
+            // be touched while the shell is open, which is why the collapsed
+            // window stays figure-sized - see openShell().
+            width = metrics.widthPixels
+            height = metrics.heightPixels
         } else {
             width = collapsedWindowWidth()
             height = collapsedWindowHeight()
@@ -844,10 +871,11 @@ class CompanionOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // The panel must stay fully on screen; the free-standing character may
-            // overhang, so the transparent padding around her can run off the edge.
-            x = if (expanded) clampX(bubbleX, width) else clampBubbleX(bubbleX, width)
-            y = if (expanded) clampY(bubbleY, height) else clampBubbleY(bubbleY, height)
+            // The shell fills the screen, so the origin is the screen corner and
+            // the character is placed inside it; the collapsed bubble is clamped
+            // to its own box instead.
+            x = if (expanded) 0 else clampBubbleX(bubbleX, width)
+            y = if (expanded) 0 else clampBubbleY(bubbleY, height)
             if (expanded) {
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
@@ -905,35 +933,12 @@ class CompanionOverlayService : Service() {
         clampBubble(y, height, resources.displayMetrics.heightPixels)
 
     private fun expand(greet: Boolean = true) {
-        if (ui.expanded) return
-        ui.expanded = true
-        ui.status = brain.backendLabel()
-        val view = rootView ?: return
-        val metrics = resources.displayMetrics
-        val s = settings()
-        val params = layoutParams(expanded = true).apply {
-            // Never written back to bubbleX/bubbleY: the panel is a different size
-            // from the bubble, so its clamped x is a different coordinate.
-            // Overwriting the bubble's position here is what used to drag the
-            // collapsed bubble to the middle of the screen.
-            x = if (s.companionPanelX >= 0) {
-                clampX(s.companionPanelX, width)
-            } else {
-                ((metrics.widthPixels - width) / 2).coerceAtLeast(0)
-            }
-            y = if (s.companionPanelY >= 0) {
-                clampY(s.companionPanelY, height)
-            } else {
-                dp(48)
-            }
-        }
         if (greet) maybeGreet()
-        runCatching { windowManager.updateViewLayout(view, params) }
+        openShell()
     }
 
     private fun collapse() {
-        if (!ui.expanded) return
-        // Hiding the panel should also close the microphone; leaving it
+        // Hiding the shell should also close the microphone; leaving it
         // recording behind a hidden panel would be indefensible.
         if (ui.listening) {
             stopListening()
@@ -942,17 +947,11 @@ class CompanionOverlayService : Service() {
         // Same reasoning for the breathing exercise: its cues would otherwise
         // keep speaking with nothing on screen to follow.
         ui.breathing = false
-        // The panel was being looked at, so the bubble starts awake and its
-        // idle countdown begins from the moment it is revealed again. That also
-        // stands her up briefly, then lets her settle back down.
+        // The shell was being looked at, so she starts awake and her idle
+        // countdown begins from the moment she is revealed again.
         wakeBubble()
         alertCharacter()
-        ui.expanded = false
-        val view = rootView ?: return
-        // bubbleX/bubbleY were left untouched while expanded, so this restores
-        // the bubble exactly where the user parked it.
-        val params = layoutParams(expanded = false)
-        runCatching { windowManager.updateViewLayout(view, params) }
+        closeShell()
     }
 
     private fun moveBy(dx: Float, dy: Float) {
@@ -989,12 +988,6 @@ class CompanionOverlayService : Service() {
         }
     }
 
-    private fun clampX(x: Int, width: Int): Int =
-        x.coerceIn(0, maxOf(0, resources.displayMetrics.widthPixels - width))
-
-    private fun clampY(y: Int, height: Int): Int =
-        y.coerceIn(0, maxOf(0, resources.displayMetrics.heightPixels - height))
-
     /**
      * Move the expanded panel.
      *
@@ -1002,28 +995,6 @@ class CompanionOverlayService : Service() {
      * only persisted on drag end — a settings write per frame would be dozens of
      * disk hits for one gesture.
      */
-    private fun movePanelBy(dx: Float, dy: Float) {
-        if (!ui.expanded) return
-        val view = rootView ?: return
-        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
-        params.x = clampX(params.x + dx.toInt(), params.width)
-        params.y = clampY(params.y + dy.toInt(), params.height)
-        runCatching { windowManager.updateViewLayout(view, params) }
-    }
-
-    private fun persistPanelPosition() {
-        if (!ui.expanded) return
-        val view = rootView ?: return
-        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
-        val x = params.x
-        val y = params.y
-        scope.launch {
-            runCatching {
-                settingsRepo().update { it.copy(companionPanelX = x, companionPanelY = y) }
-            }
-        }
-    }
-
     /**
      * Resize the expanded panel from its corner grip.
      *
@@ -1031,48 +1002,6 @@ class CompanionOverlayService : Service() {
      * finger. The minimum is what keeps the input field and send button usable;
      * the maximum is the screen, less a margin so the grip stays reachable.
      */
-    private fun resizePanelBy(dx: Float, dy: Float) {
-        if (!ui.expanded) return
-        val view = rootView ?: return
-        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
-        val metrics = resources.displayMetrics
-        val maxW = metrics.widthPixels
-        val maxH = (metrics.heightPixels - dp(60)).coerceAtLeast(dp(240))
-        val newW = (params.width + dx.toInt()).coerceIn(dp(220), maxW)
-        val newH = (params.height + dy.toInt()).coerceIn(dp(240), maxH)
-        params.width = newW
-        params.height = newH
-        // Keep the top-left anchored: without re-clamping, growing the panel from a
-        // right-edge position would push it off screen.
-        params.x = clampX(params.x, newW)
-        params.y = clampY(params.y, newH)
-        runCatching { windowManager.updateViewLayout(view, params) }
-    }
-
-    private fun persistPanelSize() {
-        if (!ui.expanded) return
-        val view = rootView ?: return
-        val params = (view.layoutParams as? WindowManager.LayoutParams) ?: return
-        val wDp = params.width / resources.displayMetrics.density
-        val hDp = params.height / resources.displayMetrics.density
-        val x = params.x
-        val y = params.y
-        scope.launch {
-            runCatching {
-                settingsRepo().update {
-                    it.copy(
-                        companionPanelWidth = wDp.toInt(),
-                        companionPanelHeight = hDp.toInt(),
-                        // Persisted here too, because resizing can re-clamp the
-                        // position and the two would otherwise drift apart.
-                        companionPanelX = x,
-                        companionPanelY = y,
-                    )
-                }
-            }
-        }
-    }
-
     /**
      * Where she sits before the user has ever moved her.
      *
@@ -1082,6 +1011,170 @@ class CompanionOverlayService : Service() {
      */
     private fun defaultBubbleX(): Int =
         (resources.displayMetrics.widthPixels - collapsedWindowWidth() - dp(12)).coerceAtLeast(0)
+
+    // --- Collapsible shell --------------------------------------------------
+
+    /**
+     * Open the right rail.
+     *
+     * The window grows to the whole screen for the duration. It has to: Android
+     * gives an overlay window no way to pass a touch through a transparent
+     * pixel, so a permanently full-screen window would swallow every tap meant
+     * for the app behind it. Growing only while the shell is open keeps the
+     * collapsed window figure-sized and the page underneath usable.
+     */
+    private fun openShell() {
+        if (ui.shellOpen) return
+        ui.shellOpen = true
+        // Mirrors the shell flag for the guards that predate it: the panel and
+        // the bubble are the same surface now, so anything that asked "is the
+        // expanded view up?" means "is the shell open?".
+        ui.expanded = true
+        ui.inputOpen = true
+        ui.status = brain.backendLabel()
+        refreshShellData()
+        val view = rootView ?: return
+        // Remember where she was, so the same spot can be re-expressed relative
+        // to the new window origin (the screen corner) instead of jumping.
+        ui.characterOffsetX = bubbleX
+        ui.characterOffsetY = bubbleY
+        ui.collapsedWidthDp = (collapsedWindowWidth() / density).toInt()
+        ui.collapsedHeightDp = (collapsedWindowHeight() / density).toInt()
+        runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = true)) }
+    }
+
+    /** Put the rail away, leaving only the character. */
+    private fun closeShell() {
+        if (!ui.shellOpen) return
+        ui.shellOpen = false
+        ui.expanded = false
+        ui.activeTool = null
+        ui.inputOpen = false
+        ui.characterOffsetX = 0
+        ui.characterOffsetY = 0
+        val view = rootView ?: return
+        runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = false)) }
+    }
+
+    /**
+     * Open a tool's body, or close it when the same icon is tapped again.
+     *
+     * The previous tool is kept in [CompanionUiState.lastTool] so the body still
+     * has something to draw while it slides out; clearing the contents first
+     * would flash an empty card on the way off screen.
+     */
+    private fun selectTool(tool: CompanionTool) {
+        if (ui.activeTool == tool) {
+            ui.activeTool = null
+            return
+        }
+        val previous = ui.activeTool
+        ui.activeTool = tool
+        ui.lastTool = tool
+        // The transcript is only refreshed when its tool is opened, so a long
+        // conversation does not cost a list copy every time the rail is drawn.
+        if (tool == CompanionTool.SESSIONS || previous == CompanionTool.SESSIONS) {
+            refreshSessionSummaries()
+        }
+    }
+
+    /** Re-read the data every tool body draws from. */
+    private fun refreshShellData() {
+        refreshSessionSummaries()
+        ui.ggufChoices = runCatching { ModelRepository(applicationContext).list().map { it.name } }
+            .getOrDefault(emptyList())
+        ui.loadedModel = loadedModelName()
+        ui.vrmChoices = runCatching { VrmLibrary.list(applicationContext).map { it.name } }
+            .getOrDefault(emptyList())
+        ui.live2dChoices = LIVE2D_MODELS.map { it.first }
+        ui.toggles = toggleState(settings())
+    }
+
+    /** The model the engine currently holds, or "" when none is loaded. */
+    private fun loadedModelName(): String =
+        (LlamaEngine.state.value as? EngineState.Ready)?.modelName.orEmpty()
+
+    private fun refreshSessionSummaries() {
+        scope.launch {
+            ui.sessionSummaries = runCatching {
+                ChatSessionRepository(applicationContext).list().map { session ->
+                    val age = android.text.format.DateUtils.getRelativeTimeSpanString(
+                        session.updatedAt,
+                    ).toString()
+                    "${session.preview} · $age"
+                }
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    private fun toggleState(s: AppSettings): List<CompanionToggle> = listOf(
+        CompanionToggle(CompanionToggleKey.TTS, "Speak replies", s.companionTts),
+        CompanionToggle(CompanionToggleKey.VOICE_INPUT, "Voice input", s.companionVoiceInput),
+        CompanionToggle(CompanionToggleKey.MEMORY, "Remember things", s.companionMemoryEnabled),
+        CompanionToggle(CompanionToggleKey.NUDGES, "Check in on me", s.companionProactiveNudges),
+    )
+
+    private fun setToggle(key: String, value: Boolean) {
+        scope.launch {
+            runCatching {
+                settingsRepo().update { s ->
+                    when (key) {
+                        CompanionToggleKey.TTS -> s.copy(companionTts = value)
+                        CompanionToggleKey.VOICE_INPUT -> s.copy(companionVoiceInput = value)
+                        CompanionToggleKey.MEMORY -> s.copy(companionMemoryEnabled = value)
+                        CompanionToggleKey.NUDGES -> s.copy(companionProactiveNudges = value)
+                        else -> s
+                    }
+                }
+            }
+            refreshFromSettings()
+            ui.toggles = toggleState(settings())
+        }
+    }
+
+    /** Load a model from the rail, reusing the app's own load path via the engine. */
+    private fun pickModel(name: String) {
+        val file = ModelRepository(applicationContext).file(name) ?: return
+        ui.status = "loading model…"
+        scope.launch {
+            runCatching {
+                val resolved = settings().resolve()
+                LlamaEngine.load(
+                    file = file,
+                    contextSize = resolved.contextSize,
+                    threads = CpuInfo.recommendedThreads(),
+                    gpuOffload = resolved.gpuOffload,
+                    batchSize = resolved.batchSize,
+                )
+            }
+            ui.loadedModel = loadedModelName()
+            ui.status = brain.backendLabel()
+        }
+    }
+
+    private fun unloadModel() {
+        scope.launch {
+            runCatching { LlamaEngine.unload() }
+            ui.loadedModel = ""
+            ui.status = brain.backendLabel()
+        }
+    }
+
+    /** Switch the character. The empty value means "leave that field alone". */
+    private fun pickAvatar(character: String, value: String) {
+        scope.launch {
+            runCatching {
+                settingsRepo().update { s ->
+                    s.copy(
+                        companionCharacter = character,
+                        companionVrmModel = value.ifBlank { s.companionVrmModel },
+                        companionLive2DModel = value.ifBlank { s.companionLive2DModel },
+                    )
+                }
+            }
+            refreshFromSettings()
+        }
+    }
 
     private fun persistPosition() {
         // Only the collapsed bubble position is meaningful.

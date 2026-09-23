@@ -172,11 +172,66 @@ class CompanionUiState {
     var onDrag: ((Float, Float) -> Unit)? = null
     var onDragEnd: (() -> Unit)? = null
     /** Panel header dragged; moves the whole popup window. */
-    var onPanelDrag: ((Float, Float) -> Unit)? = null
-    var onPanelDragEnd: (() -> Unit)? = null
     /** Corner grip dragged; resizes the popup window. */
-    var onPanelResize: ((Float, Float) -> Unit)? = null
-    var onPanelResizeEnd: (() -> Unit)? = null
+
+    // --- Collapsible shell --------------------------------------------------
+    /**
+     * The right-hand rail is showing. Opened by a long press on the character,
+     * closed by tapping the empty space or the same icon again.
+     */
+    var shellOpen by mutableStateOf(false)
+    /** Which tool's body is open on the left, or null for none. */
+    var activeTool by mutableStateOf<CompanionTool?>(null)
+    /** Last tool shown, kept so the body has something to draw mid-slide-out. */
+    var lastTool by mutableStateOf<CompanionTool?>(null)
+    /** The message box is showing. Toggled from the rail, not by a tap. */
+    var inputOpen by mutableStateOf(false)
+    /**
+     * Where the character sits inside the overlay window. Only non-zero while
+     * the shell is open, when the window grows to the whole screen and her own
+     * position has to be re-expressed relative to the new origin.
+     */
+    var characterOffsetX by mutableStateOf(0)
+    var characterOffsetY by mutableStateOf(0)
+    /** Size of the collapsed window, so the shell can draw her at the same size. */
+    var collapsedWidthDp by mutableStateOf(60)
+    var collapsedHeightDp by mutableStateOf(108)
+
+    /** A long press on the character opens the rail. */
+    var onLongPressCharacter: (() -> Unit)? = null
+    /** A rail icon was tapped. Selecting the open one closes it again. */
+    var onSelectTool: ((CompanionTool) -> Unit)? = null
+    /** Tapping the empty space, or "Close", puts the shell away. */
+    var onDismissShell: (() -> Unit)? = null
+    /** Open the full app-level settings screen. */
+    var onOpenSettings: (() -> Unit)? = null
+
+    // Data the tool bodies read. Supplied by the service, which is the only
+    // place that can reach the repositories without the UI owning them.
+    var sessionSummaries by mutableStateOf<List<String>>(emptyList())
+    var ggufChoices by mutableStateOf<List<String>>(emptyList())
+    var loadedModel by mutableStateOf("")
+    var vrmChoices by mutableStateOf<List<String>>(emptyList())
+    var live2dChoices by mutableStateOf<List<String>>(emptyList())
+    var toggles by mutableStateOf<List<CompanionToggle>>(emptyList())
+
+    var onPickModel: ((String) -> Unit)? = null
+    var onUnloadModel: (() -> Unit)? = null
+    var onPickVrm: ((String) -> Unit)? = null
+    var onPickLive2d: ((String) -> Unit)? = null
+    var onPickSpecies: ((String) -> Unit)? = null
+    var onSetToggle: ((String, Boolean) -> Unit)? = null
+}
+
+/** One switch in the shell's settings body. */
+data class CompanionToggle(val key: String, val label: String, val value: Boolean)
+
+/** Keys for [CompanionUiState.onSetToggle], mapping a switch onto a setting. */
+object CompanionToggleKey {
+    const val TTS = "tts"
+    const val VOICE_INPUT = "voiceInput"
+    const val MEMORY = "memory"
+    const val NUDGES = "nudges"
 }
 
 /** Fallback bubble face when the user clears the glyph field. */
@@ -188,95 +243,32 @@ fun CompanionRoot(
     themeMode: String,
 ) {
     PocketLLMTheme(themeMode = themeMode, dynamicColor = false) {
-        if (state.expanded) {
-            // Scale text only, by overriding the font scale rather than the
-            // density: that leaves paddings and the panel's own dp sizes alone,
-            // so a large text setting doesn't also inflate the whole layout.
+        // The shell replaces the old bubble/panel split. The panel is kept for
+        // the breathing exercise, which is a focused overlay rather than a
+        // surface competing with the character.
+        if (state.breathing) {
             val base = LocalDensity.current
             CompositionLocalProvider(
                 LocalDensity provides Density(base.density, base.fontScale * state.panelFontScale),
             ) {
-                CompanionPanel(state)
+                BreathingOverlay(state)
             }
         } else {
-            CompanionBubble(state)
+            CompanionShell(state)
         }
     }
 }
 
+/** The breathing exercise, drawn over everything. */
 @Composable
-private fun CompanionBubble(state: CompanionUiState) {
-    val fill = state.bubbleColor ?: MaterialTheme.colorScheme.primary
-    // An outlined bubble needs an edge that reads against the fill; when the
-    // user has not chosen one, the surface colour is picked, which contrasts
-    // with a tinted bubble and disappears harmlessly on an untinted one.
-    val border = state.bubbleBorderColor ?: MaterialTheme.colorScheme.surface
-
-    // She recedes when nothing is happening but comes fully back the moment the
-    // finger lands — the dimming is a resting state, never a state you have to
-    // fight to interact through.
-    val opacity = state.bubbleAlpha * if (state.bubbleAwake) 1f else state.bubbleIdleFactor
-
-    // Decoded once per URI, not per frame; this composable redraws continuously.
-    val characterImage = rememberCharacterImage(state.imageUri)
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = { state.onWake?.invoke() },
-                    onDrag = { change, drag ->
-                        change.consume()
-                        state.onDrag?.invoke(drag.x, drag.y)
-                    },
-                    onDragEnd = { state.onDragEnd?.invoke() },
-                    onDragCancel = { state.onDragEnd?.invoke() },
-                )
-            }
-            .padding(4.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        BubbleVisual(
-            sizeDp = state.bubbleSizeDp,
-            shape = state.bubbleShape,
-            fill = fill,
-            borderWidthDp = state.bubbleBorderWidthDp,
-            borderColor = border,
-            glyph = state.glyph.ifBlank { BUBBLE_GLYPH },
-            glyphScale = state.glyphScale,
-            opacity = opacity,
-            // The only outward sign that she is working; without it a long local
-            // generation looks like nothing happened.
-            busy = state.busy,
-            character = state.character,
-            expression = state.expression,
-            talking = state.talking,
-            bare = state.bareCharacter,
-            upright = state.upright,
-            image = characterImage,
-            imageColumns = state.imageColumns,
-            imageRows = state.imageRows,
-            imageFps = state.imageFps,
-            live2dModel = state.live2dModel,
-            vrmModel = state.vrmModel,
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(state.doubleTapAction, state.longPressAction) {
-                    detectTapGestures(
-                        onTap = {
-                            state.onWake?.invoke()
-                            state.onExpand?.invoke()
-                        },
-                        onDoubleTap = state.doubleTapAction
-                            .takeIf { it != BubbleGesture.Off }
-                            ?.let { gesture -> { _: Offset -> state.onBubbleGesture?.invoke(gesture) } },
-                        onLongPress = state.longPressAction
-                            .takeIf { it != BubbleGesture.Off }
-                            ?.let { gesture -> { _: Offset -> state.onBubbleGesture?.invoke(gesture) } },
-                    )
-                },
-        )
+private fun BreathingOverlay(state: CompanionUiState) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        ) {
+            BreathingGuide(state)
+        }
     }
 }
 
@@ -413,290 +405,6 @@ fun BubbleVisual(
     }
 }
 
-@Composable
-private fun CompanionPanel(state: CompanionUiState) {
-    val listState = rememberLazyListState()
-
-    // Keep the newest message visible while tokens stream in.
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
-        if (state.messages.isNotEmpty()) {
-            listState.scrollToItem(state.messages.lastIndex)
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-    ) {
-        Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    // Dragging the header moves the whole window. The body cannot
-                    // be used for this: it is a scrolling message list, so a drag
-                    // there has to remain a scroll.
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDrag = { change, drag ->
-                                change.consume()
-                                state.onPanelDrag?.invoke(drag.x, drag.y)
-                            },
-                            onDragEnd = { state.onPanelDragEnd?.invoke() },
-                            onDragCancel = { state.onPanelDragEnd?.invoke() },
-                        )
-                    },
-            ) {
-                val headerCharacter = state.character
-                val headerImage = rememberCharacterImage(state.imageUri)
-                if (headerImage != null) {
-                    AnimatedImageCompanion(
-                        image = headerImage,
-                        columns = state.imageColumns,
-                        rows = state.imageRows,
-                        fps = state.imageFps,
-                        modifier = Modifier.size(30.dp),
-                    )
-                } else if (headerCharacter != null) {
-                    // The panel is much bigger than the bubble, so the header is
-                    // where the animation is actually legible.
-                    AnimatedCompanion(
-                        species = headerCharacter,
-                        expression = state.expression,
-                        talking = state.talking,
-                        modifier = Modifier.size(30.dp),
-                    )
-                } else {
-                    Text(state.glyph.ifBlank { BUBBLE_GLYPH }, fontSize = 16.sp)
-                }
-                Spacer(Modifier.width(6.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = state.name.ifBlank { "Companion" },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (state.status.isNotBlank()) {
-                        Text(
-                            text = state.status,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                }
-                PanelAction("New", enabled = !state.busy) { state.onNewChat?.invoke() }
-                PanelAction("Hide") { state.onCollapse?.invoke() }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            // While she is waiting on a mood answer, the mood faces replace the
-            // action chips entirely — the question should have one obvious
-            // answer, not compete with four other buttons.
-            if (state.awaitingMood) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    MoodScale.choices.forEach { choice ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { state.onMoodPicked?.invoke(choice.score) },
-                        ) {
-                            Box(
-                                modifier = Modifier.padding(vertical = 6.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(choice.face, fontSize = 18.sp)
-                            }
-                        }
-                    }
-                }
-            } else {
-                // One-tap actions: the common asks shouldn't require typing, and
-                // "Cheer me up" is the emotional-support entry point. Two rows,
-                // so adding actions can't overflow a narrow panel.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    QuickChip("Cheer me up", !state.busy, Modifier.weight(1f)) { state.onCheer?.invoke() }
-                    QuickChip("Breathe", !state.busy, Modifier.weight(1f)) { state.breathing = true }
-                    QuickChip("How am I?", !state.busy, Modifier.weight(1f)) { state.onMoodCheckIn?.invoke() }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    QuickChip("Summary", !state.busy, Modifier.weight(1f)) { state.onSummarize?.invoke() }
-                    QuickChip("Explain", !state.busy, Modifier.weight(1f)) { state.onExplain?.invoke() }
-                    QuickChip("Translate", !state.busy, Modifier.weight(1f)) { state.onTranslate?.invoke() }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    QuickChip("Look up", !state.busy, Modifier.weight(1f)) { state.onLookUp?.invoke() }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(state.messages) { message ->
-                    MessageBubble(message)
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.voiceInputEnabled) {
-                    val micColor = if (state.listening) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.surfaceVariant
-                    val micTint = if (state.listening) MaterialTheme.colorScheme.onError
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                    Surface(
-                        shape = CircleShape,
-                        color = micColor,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clickable(enabled = !state.busy) { state.onMicToggle?.invoke() },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(text = "\uD83C\uDFA4", fontSize = 16.sp, color = micTint)
-                        }
-                    }
-                    Spacer(Modifier.width(6.dp))
-                }
-                Surface(
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                ) {
-                    BasicTextField(
-                        value = state.input,
-                        onValueChange = { state.input = it },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        decorationBox = { inner ->
-                            if (state.input.isEmpty()) {
-                                Text(
-                                    text = if (state.listening) "listening…" else "talk to me…",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            inner()
-                        },
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-                // While she is replying the same slot becomes a stop button:
-                // mid-generation "send" is meaningless and "stop" is the thing
-                // people reach for.
-                if (state.busy) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clickable { state.onStop?.invoke() },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "\u25A0", // ■
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                fontSize = 13.sp,
-                            )
-                        }
-                    }
-                } else {
-                    val canSend = state.input.isNotBlank()
-                    Surface(
-                        shape = CircleShape,
-                        color = if (canSend) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clickable(enabled = canSend) {
-                                val text = state.input.trim()
-                                state.input = ""
-                                state.onSend?.invoke(text)
-                            },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "\u2191", // ↑
-                                color = if (canSend) MaterialTheme.colorScheme.onPrimary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 16.sp,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-        // Drawn over the whole panel rather than swapped in for the content, so
-        // the conversation is still there when the exercise ends.
-        if (state.breathing) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surface,
-            ) {
-                BreathingGuide(state)
-            }
-        }
-
-        // Resize grip. A visible affordance rather than an invisible edge, because
-        // an invisible one has to be discovered and this is the only way to change
-        // the panel's size.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .size(30.dp)
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDrag = { change, drag ->
-                            change.consume()
-                            state.onPanelResize?.invoke(drag.x, drag.y)
-                        },
-                        onDragEnd = { state.onPanelResizeEnd?.invoke() },
-                        onDragCancel = { state.onPanelResizeEnd?.invoke() },
-                    )
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            // Two chevrons, the conventional "drag to resize" mark.
-            Text(
-                text = "\u25E2",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
 /**
  * A paced breathing exercise: four counts in, hold, four out, hold.
  *
@@ -770,7 +478,7 @@ private const val SMALL = 0.55f
 private const val LARGE = 1f
 
 @Composable
-private fun MessageBubble(message: CompanionMsg) {
+internal fun MessageBubble(message: CompanionMsg) {
     val alignment = if (message.fromUser) Alignment.CenterEnd else Alignment.CenterStart
     val bg = if (message.fromUser) MaterialTheme.colorScheme.primaryContainer
     else MaterialTheme.colorScheme.surfaceVariant
