@@ -1,0 +1,97 @@
+{
+  "$schema_note": "Declarative spec of the companion overlay UI as built (APK sha256 938d3232...). Values are the real ones from CompanionShell.kt / CompanionOverlayService.kt. Update together with code.",
+  "screen": "CompanionOverlay",
+  "layer": "TYPE_APPLICATION_OVERLAY",
+  "format": "TRANSLUCENT",
+
+  "window": {
+    "collapsed": {
+      "width": "characterHeight * figureAspect",
+      "height": "characterSizeDp | bubbleSizeDp",
+      "position": "free-draggable, clamped to screen",
+      "flags": ["FLAG_NOT_FOCUSABLE"]
+    },
+    "expanded_band": {
+      "width": "screenWidth",
+      "height": "= collapsed height (exactly the character's height)",
+      "position": { "x": 0, "y": "character's current Y (pinned to her top edge)" },
+      "flags": ["FLAG_NOT_TOUCH_MODAL"],
+      "touch_passthrough": "above and below the band; unconsumed touches in-band also fall through",
+      "note": "deliberately never full-screen - overlay pixels cannot pass touches, so a full-screen window would block the whole device"
+    }
+  },
+
+  "character": {
+    "z": "bottom layer of the band",
+    "offset_when_expanded": { "x": "pre-open X preserved", "y": 0 },
+    "input_modes": ["Filament VRM", "Live2D", "bubble"],
+    "gestures": {
+      "drag": "move character (collapsed)",
+      "tap": "wake",
+      "long_press": "openShell"
+    }
+  },
+
+  "right_rail": {
+    "composable": "ToolRail",
+    "anchor": "band right edge",
+    "size": { "width": 56, "height": "fillMaxHeight (= character height)" },
+    "shape": "roundedCornerShape(topStart=18, bottomStart=18)",
+    "tools": ["SESSIONS", "MODEL", "CHARACTER", "SETTINGS"],
+    "tool_labels": {
+      "SESSIONS": "Chat Sessions",
+      "MODEL": "Brain (model selection)",
+      "CHARACTER": "Character selection",
+      "SETTINGS": "Settings"
+    }
+  },
+
+  "left_panel": {
+    "composable": "CompanionToolPanel",
+    "anchor": "band left edge",
+    "size": { "width": "fillMaxWidth(0.72)", "height": "fillMaxHeight (= character height)" },
+    "shape": "roundedCornerShape(topEnd=18, bottomEnd=18)",
+    "content_source": "activeTool, falls back to lastTool while sliding out",
+    "switching": "tapping a different icon swaps content in place; tapping the active icon closes it"
+  },
+
+  "input_bar": {
+    "composable": "CompanionInputBar",
+    "anchor": "band bottom-center",
+    "collapsible": true
+  },
+
+  "scrim": {
+    "color": "#000000 @ 0.28 alpha",
+    "covers": "band only (never the screen)",
+    "tap_action": "onDismissShell"
+  },
+
+  "state": {
+    "shellOpen": "bool - band + rail visible",
+    "activeTool": "CompanionTool? - left panel visible when non-null",
+    "lastTool": "CompanionTool? - keeps panel content during exit animation",
+    "inputOpen": "bool",
+    "expanded": "mirror of shellOpen for legacy guards"
+  },
+
+  "interactions": [
+    { "gesture": "long_press character", "effect": "shellOpen=true, window relayouts to band" },
+    { "gesture": "tap rail icon", "effect": "activeTool=tool (or null if same)" },
+    { "gesture": "tap scrim / empty band", "effect": "closeShell: activeTool=null, inputOpen=false, window relayouts to collapsed" },
+    { "gesture": "tap outside band", "effect": "passes through to the app behind (FLAG_NOT_TOUCH_MODAL)" }
+  ],
+
+  "motion": {
+    "rail":  { "enter": "slideInHorizontally(180ms)+fadeIn(180ms)", "exit": "slideOutHorizontally(160ms)+fadeOut(160ms)" },
+    "panel": { "enter": "slideInHorizontally(200ms)+fadeIn(200ms)", "exit": "slideOutHorizontally(180ms)+fadeOut(180ms)" },
+    "input": { "enter": "slideInVertically(180ms)+fadeIn(180ms)",   "exit": "slideOutVertically(160ms)+fadeOut(160ms)" },
+    "scrim": { "enter": "fadeIn(140ms)", "exit": "fadeOut(140ms)" }
+  },
+
+  "theme": {
+    "surface": "FrostedCard",
+    "effect": "translucent card + blur (API 31+); translucent tint carries the look below API 31",
+    "design_intent": "character always visible behind panels; nothing fully occludes her"
+  }
+}

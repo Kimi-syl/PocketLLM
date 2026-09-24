@@ -793,7 +793,7 @@ class CompanionOverlayService : Service() {
         // The window has to be re-laid-out when the collapsed size changes, which
         // is what makes the character-size and bare-mode settings take effect live
         // rather than after a restart.
-        // The shell draws the character inside a full-screen window when it is
+        // The shell draws the character inside a screen-wide band when it is
         // open, so it needs the collapsed size to reproduce her at the same size.
         ui.collapsedWidthDp = (collapsedWindowWidth() / density).toInt()
         ui.collapsedHeightDp = (collapsedWindowHeight() / density).toInt()
@@ -850,15 +850,14 @@ class CompanionOverlayService : Service() {
         val width: Int
         val height: Int
         if (expanded) {
-            // The shell owns the whole screen while it is open. It has to be
-            // full-screen because the rail and the left panel sit at opposite
-            // edges with the character between them, and the dimmed backdrop
-            // that dismisses them has to cover everything the eye reads as
-            // "outside the panel". The cost is that the app underneath cannot
-            // be touched while the shell is open, which is why the collapsed
-            // window stays figure-sized - see openShell().
+            // A band exactly as tall as she is, spanning the screen so the rail
+            // can sit at one edge and the panel at the other with her between
+            // them. Height is the point: a full-screen window would leave the
+            // page underneath untouchable, because an overlay cannot pass a
+            // touch through a transparent pixel. Only the band is ours, so
+            // everything above and below it stays live.
             width = metrics.widthPixels
-            height = metrics.heightPixels
+            height = collapsedWindowHeight()
         } else {
             width = collapsedWindowWidth()
             height = collapsedWindowHeight()
@@ -867,15 +866,24 @@ class CompanionOverlayService : Service() {
             width,
             height,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            if (expanded) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            // FLAG_NOT_TOUCH_MODAL lets a touch that nothing in the shell consumed
+            // fall through to whatever is underneath. Without it the band would be
+            // a wall across the middle of the screen; with it, the page above and
+            // below stays live and only what is actually drawn is intercepted.
+            if (expanded) {
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            },
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // The shell fills the screen, so the origin is the screen corner and
-            // the character is placed inside it; the collapsed bubble is clamped
-            // to its own box instead.
+            // The expanded band starts at the left edge and is pinned to her own
+            // vertical position, so opening the shell does not make her jump; she
+            // is drawn in place inside it. The collapsed window uses the same
+            // clamps, so the two modes agree on where she sits.
             x = if (expanded) 0 else clampBubbleX(bubbleX, width)
-            y = if (expanded) 0 else clampBubbleY(bubbleY, height)
+            y = clampBubbleY(bubbleY, height)
             if (expanded) {
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
@@ -1017,11 +1025,12 @@ class CompanionOverlayService : Service() {
     /**
      * Open the right rail.
      *
-     * The window grows to the whole screen for the duration. It has to: Android
-     * gives an overlay window no way to pass a touch through a transparent
-     * pixel, so a permanently full-screen window would swallow every tap meant
-     * for the app behind it. Growing only while the shell is open keeps the
-     * collapsed window figure-sized and the page underneath usable.
+     * The window becomes a band exactly as tall as she is, spanning the screen
+     * from the left edge so the rail can sit at one end and the panel at the
+     * other with her between them. It is deliberately not full-screen: an
+     * overlay cannot pass a touch through a transparent pixel, so a full-screen
+     * window would leave everything behind it untouchable. Above and below the
+     * band the device stays live.
      */
     private fun openShell() {
         if (ui.shellOpen) return
@@ -1034,10 +1043,11 @@ class CompanionOverlayService : Service() {
         ui.status = brain.backendLabel()
         refreshShellData()
         val view = rootView ?: return
-        // Remember where she was, so the same spot can be re-expressed relative
-        // to the new window origin (the screen corner) instead of jumping.
+        // The band's top edge is pinned to her vertical position, so inside it
+        // she only needs her horizontal placement; y stays 0 rather than the
+        // screen-relative value she had a moment ago.
         ui.characterOffsetX = bubbleX
-        ui.characterOffsetY = bubbleY
+        ui.characterOffsetY = 0
         ui.collapsedWidthDp = (collapsedWindowWidth() / density).toInt()
         ui.collapsedHeightDp = (collapsedWindowHeight() / density).toInt()
         runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = true)) }

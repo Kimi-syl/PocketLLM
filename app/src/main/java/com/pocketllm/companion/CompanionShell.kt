@@ -107,8 +107,9 @@ fun CompanionShell(state: CompanionUiState) {
             )
         }
 
-        // The character. Offset only while the shell is open, where the window
-        // origin is the screen corner rather than her own top-left.
+        // The character. Offset horizontally by where she was before the shell
+        // opened; vertically she is already in place, because the window band is
+        // pinned to her own top edge.
         CharacterLayer(state)
 
         AnimatedVisibility(
@@ -235,8 +236,9 @@ private fun ToolRail(state: CompanionUiState) {
     FrostedCard(
         shape = RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp),
         modifier = Modifier
-            .padding(vertical = 24.dp)
-            .fillMaxHeight(0.82f)
+            // The window band is exactly her height, so filling it makes the rail
+            // exactly as tall as she is - the intended proportion.
+            .fillMaxHeight()
             .width(56.dp),
     ) {
         Column(
@@ -277,8 +279,8 @@ private fun CompanionToolPanel(state: CompanionUiState, tool: CompanionTool) {
     FrostedCard(
         shape = RoundedCornerShape(topEnd = 18.dp, bottomEnd = 18.dp),
         modifier = Modifier
-            .padding(vertical = 24.dp)
-            .fillMaxHeight(0.82f)
+            // Matches the rail: the band is her height, so this panel is too.
+            .fillMaxHeight()
             .fillMaxWidth(0.72f),
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
