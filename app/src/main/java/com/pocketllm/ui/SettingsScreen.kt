@@ -1,6 +1,7 @@
 package com.pocketllm.ui
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -10,18 +11,39 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.SentimentSatisfied
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.TravelExplore
+import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -34,12 +56,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -86,11 +112,85 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
     val uriHandler = LocalUriHandler.current
 
     var category by remember { mutableStateOf(SettingsCategory.Model) }
+    var subPage by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
+    val backStack: MutableList<SettingsCategory?> = remember { mutableStateListOf<SettingsCategory?>() }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
+
+    BackHandler(enabled = subPage != null || showAbout) {
+        when {
+            showAbout -> showAbout = false
+            subPage != null -> subPage = null
+        }
+    }
 
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull() ?: "?"
+    }
+
+    // A sub-page fills the screen with its original sections; the root page is
+    // the large-title + grouped-rows layout from the reference design.
+    if (subPage != null || showAbout) {
+        Column(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
+                    ScreenHeader(
+                        when {
+                            showAbout -> "About"
+                            subPage == SettingsCategory.Companion -> "Companion"
+                            subPage == SettingsCategory.Voice -> "Voice"
+                            subPage == SettingsCategory.Chat -> "Chat"
+                            else -> "Server"
+                        },
+                        onMenuClick = onMenu,
+                        onBack = { subPage = null; showAbout = false },
+                    )
+                }
+                when {
+                    showAbout -> {
+                        item {
+                            SettingsGroup("通用") {
+                                SettingsRow(
+                                    title = "PocketLLM v$versionName",
+                                    subtitle = "Local GGUF inference via llama.cpp, served through an OpenAI-compatible API.",
+                                    icon = Icons.Outlined.Info,
+                                )
+                                SettingsRow(
+                                    title = "GitHub repository",
+                                    subtitle = "Source, issues, and releases",
+                                    icon = Icons.Outlined.Public,
+                                    onClick = { uriHandler.openUri("https://github.com/Kimi-syl/PocketLLM") },
+                                )
+                            }
+                        }
+                    }
+                    subPage == SettingsCategory.Model -> {
+                        item { ModelSettingsSection(vm) }
+                    }
+                    subPage == SettingsCategory.Companion -> {
+                        item { CompanionSettingsSection(vm) }
+                        item { CompanionPersonalitySection(vm) }
+                        item { CompanionMemorySection(vm) }
+                    }
+                    subPage == SettingsCategory.Voice -> {
+                        item { CompanionVoiceSection(vm) }
+                        item { VoiceSection(vm, ttsReady, piperReady, piperStatus, piperProgress, piperState, ttsEngine) }
+                    }
+                    subPage == SettingsCategory.Chat -> {
+                        item { ChatSettingsSection(vm) }
+                    }
+                    subPage == SettingsCategory.Server -> {
+                        item { ServerSettingsSections(vm, keys) }
+                    }
+                }
+            }
+        }
+        return
     }
 
     LazyColumn(
@@ -100,586 +200,460 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
     ) {
         item { ScreenHeader("Settings", onMenuClick = onMenu) }
         item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SettingsCategory.entries.forEach { entry ->
-                    FilterChip(
-                        selected = category == entry,
-                        onClick = { category = entry },
-                        label = { Text(entry.label) },
-                    )
-                }
+            Text(
+                "设置",
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        item {
+            SettingsGroup("通用设置") {
+                SettingsRow(
+                    title = "颜色模式",
+                    subtitle = when (settings.themeMode) {
+                        "light" -> "浅色"
+                        "dark" -> "深色"
+                        else -> "跟随系统"
+                    },
+                    icon = Icons.Outlined.WbSunny,
+                    trailing = {
+                        ThemeModeMenu(
+                            current = settings.themeMode,
+                            onSelect = { vm.updateThemeMode(it) },
+                        )
+                    },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "偏好设置",
+                    subtitle = "主题、通知、界面和常规设置",
+                    icon = Icons.Outlined.Settings,
+                    onClick = { category = SettingsCategory.Companion; subPage = SettingsCategory.Companion; backStack.clear() },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "助手",
+                    subtitle = "设置个性化助手 (智能体)",
+                    icon = Icons.Outlined.SentimentSatisfied,
+                    onClick = { category = SettingsCategory.Companion; subPage = SettingsCategory.Companion },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "扩展管理",
+                    subtitle = "管理提示词注入、技能等扩展",
+                    icon = Icons.Outlined.Extension,
+                    onClick = { },
+                )
             }
         }
-
-        if (category == SettingsCategory.Model) {
-            item {
-                SectionCard("Web search") {
-                    Text("Engine used when the globe toggle is on in chat", style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        WebSearch.engines.forEach { (id, label) ->
-                            FilterChip(
-                                selected = settings.searchEngine == id,
-                                onClick = { vm.updateSearchEngine(id) },
-                                label = { Text(label) },
-                            )
-                        }
-                    }
-                    if (WebSearch.requiresKey(settings.searchEngine)) {
-                        var keyText by remember(settings.searchEngine, settings.hfToken) {
-                            mutableStateOf(currentKeyFor(settings.searchEngine, settings))
-                        }
-                        OutlinedTextField(
-                            value = keyText,
-                            onValueChange = { keyText = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("${labelFor(settings.searchEngine)} API key") },
-                            singleLine = true,
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(
-                                onClick = { vm.updateEngineKey(settings.searchEngine, keyText) },
-                                enabled = keyText != currentKeyFor(settings.searchEngine, settings),
-                            ) { Text("Save key") }
-                        }
-                    }
-                }
-            }
-            item {
-                SectionCard("Inference") {
-                    val loaded by vm.engine.state.collectAsState()
-                    val gpuSupported = remember { com.pocketllm.llm.LlamaBridge.supportsGpuOffload() }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("GPU offload")
-                            Text(
-                                when {
-                                    !gpuSupported -> "No usable GPU device — CPU only"
-                                    settings.gpuOffload -> "Layers run on the GPU for faster inference"
-                                    else -> "CPU only — lower power use, slower generation"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = settings.gpuOffload && gpuSupported,
-                            onCheckedChange = { vm.updateGpuOffload(it) },
-                            enabled = gpuSupported,
-                        )
-                    }
-                    Text(
-                        "Takes effect the next time a model is loaded. Unload and reload the model to apply.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    var turnipOn by remember { mutableStateOf(vm.isTurnipEnabled()) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Turnip GPU driver (experimental)")
-                            Text(
-                                "Open-source Adreno Vulkan driver. May crash on some GPUs; takes effect after app restart.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = turnipOn,
-                            onCheckedChange = {
-                                turnipOn = it
-                                vm.updateTurnipEnabled(it)
-                            },
-                        )
-                    }
-                    if (!gpuSupported && loaded is com.pocketllm.llm.EngineState.Ready) {
-                        Text(
-                            "Loaded model runs on CPU.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (loaded is com.pocketllm.llm.EngineState.Ready) {
-                        Text(
-                            "A model is currently loaded with ${if (settings.gpuOffload) "GPU offload" else "CPU only"}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    // Speed preset
-                    Column {
-                        Text(
-                            "Speed preset",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            "Together sets context size, batch size, and GPU offload. See the labels below. Takes effect on next model load.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        val presets = listOf(
-                            com.pocketllm.settings.SpeedPreset.BatterySaver to "Battery",
-                            com.pocketllm.settings.SpeedPreset.Balanced to "Balanced",
-                            com.pocketllm.settings.SpeedPreset.MaxSpeed to "Max",
-                            com.pocketllm.settings.SpeedPreset.Custom to "Custom",
-                        )
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            for ((value, label) in presets) {
-                                FilterChip(
-                                    selected = settings.speedPreset == value,
-                                    onClick = { vm.updateSpeedPreset(value) },
-                                    label = { Text(label) },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                        }
-                        val resolved = settings.resolve()
-                        val presetHint = when (settings.speedPreset) {
-                            com.pocketllm.settings.SpeedPreset.BatterySaver ->
-                                "ctx=512 · batch=512 · CPU only (lowest RAM)"
-                            com.pocketllm.settings.SpeedPreset.Balanced ->
-                                "ctx=2048 · batch=1024 · GPU if available"
-                            com.pocketllm.settings.SpeedPreset.MaxSpeed ->
-                                "ctx=1024 · batch=2048 · GPU if available"
-                            com.pocketllm.settings.SpeedPreset.Custom ->
-                                "using your ctx=${resolved.contextSize} · batch=${resolved.batchSize} settings below"
-                        }
-                        Text(
-                            presetHint,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    if (settings.speedPreset == com.pocketllm.settings.SpeedPreset.Custom) {
-                        // Context window slider (Custom preset only)
-                        var contextSize by remember(settings.contextSize) {
-                            mutableStateOf(settings.contextSize.toFloat())
-                        }
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("Context window")
-                                    Text(
-                                        "Max tokens the model sees. Larger = more chat history + tool results, but uses more RAM. Takes effect on next model load.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    "${contextSize.toInt()}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
-                            Slider(
-                                value = contextSize,
-                                onValueChange = { contextSize = it },
-                                valueRange = 512f..32768f,
-                                steps = 15,  // 512, 2560, 4608, ..., 32768
-                                onValueChangeFinished = {
-                                    vm.updateContextSize(contextSize.toInt().toString())
-                                },
-                            )
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text("512", style = MaterialTheme.typography.labelSmall)
-                                Text("8K", style = MaterialTheme.typography.labelSmall)
-                                Text("32K", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                        // Batch size slider (Custom preset only)
-                        var batchSize by remember(settings.batchSize) {
-                            mutableStateOf(settings.batchSize.toFloat())
-                        }
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("Batch size")
-                                    Text(
-                                        "Tokens decoded per pass. Larger amortizes GPU launch cost; too large wastes memory on CPU-only.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    "${batchSize.toInt()}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
-                            Slider(
-                                value = batchSize,
-                                onValueChange = { batchSize = it },
-                                valueRange = 128f..4096f,
-                                steps = 15,
-                                onValueChangeFinished = {
-                                    vm.updateBatchSize(batchSize.toInt().toString())
-                                },
-                            )
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text("128", style = MaterialTheme.typography.labelSmall)
-                                Text("2K", style = MaterialTheme.typography.labelSmall)
-                                Text("4096", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                    }
-                    // Max generation tokens slider
-                    var maxGenTokens by remember(settings.maxGenerationTokens) {
-                        mutableStateOf(settings.maxGenerationTokens.toFloat())
-                    }
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Max generation tokens")
-                                Text(
-                                    "Tokens the model can produce per reply. Higher = longer replies but more memory and time.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Text(
-                                "${maxGenTokens.toInt()}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                        Slider(
-                            value = maxGenTokens,
-                            onValueChange = { maxGenTokens = it },
-                            valueRange = 64f..4096f,
-                            steps = 31,  // 64, 192, 320, ... up to 4096
-                            onValueChangeFinished = {
-                                vm.updateMaxGenerationTokens(maxGenTokens.toInt())
-                            },
-                        )
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text("64", style = MaterialTheme.typography.labelSmall)
-                            Text("2048", style = MaterialTheme.typography.labelSmall)
-                            Text("4096", style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-                }
-            }
-            item {
-                CloudEntrySettingsSection(vm)
+        item {
+            SettingsGroup("模型与服务") {
+                SettingsRow(
+                    title = "默认模型和提示词",
+                    subtitle = "设置各个功能的默认模型",
+                    icon = Icons.Outlined.AutoAwesome,
+                    onClick = { category = SettingsCategory.Model; subPage = SettingsCategory.Model; },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "提供商",
+                    subtitle = "配置 AI 提供商",
+                    icon = Icons.Outlined.Psychology,
+                    onClick = { },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "搜索服务",
+                    subtitle = "设置搜索服务",
+                    icon = Icons.Outlined.TravelExplore,
+                    onClick = { subPage = SettingsCategory.Model },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "语音服务",
+                    subtitle = "设置语音服务",
+                    icon = Icons.Outlined.Mic,
+                    onClick = { subPage = SettingsCategory.Voice },
+                )
             }
         }
-
-        if (category == SettingsCategory.Companion) {
-            item {
-                SectionCard("Appearance") {
-                    Text("Theme mode", style = MaterialTheme.typography.bodyMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("system" to "System", "light" to "Light", "dark" to "Dark").forEach { (mode, label) ->
-                            FilterChip(
-                                selected = settings.themeMode == mode,
-                                onClick = { vm.updateThemeMode(mode) },
-                                label = { Text(label) },
-                            )
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Material You colors")
-                            Text(
-                                if (android.os.Build.VERSION.SDK_INT >= 31) "Tint the app from your wallpaper"
-                                else "Requires Android 12+",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = settings.dynamicColor,
-                            onCheckedChange = { vm.updateDynamicColor(it) },
-                            enabled = android.os.Build.VERSION.SDK_INT >= 31,
-                        )
-                    }
-                }
-            }
-            item {
-                CompanionSettingsSection(vm)
-            }
-            item {
-                CompanionPersonalitySection(vm)
-            }
-            item {
-                CompanionMemorySection(vm)
+        item {
+            SettingsGroup("应用") {
+                SettingsRow(
+                    title = "聊天",
+                    subtitle = "聊天行为与输入",
+                    icon = Icons.Outlined.Chat,
+                    onClick = { subPage = SettingsCategory.Chat },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "服务器",
+                    subtitle = "API 服务与密钥",
+                    icon = Icons.Outlined.Public,
+                    onClick = { subPage = SettingsCategory.Server },
+                )
+                SettingsDivider()
+                SettingsRow(
+                    title = "关于",
+                    subtitle = "PocketLLM v$versionName",
+                    icon = Icons.Outlined.Info,
+                    onClick = { showAbout = true },
+                )
             }
         }
-
-        if (category == SettingsCategory.Voice) {
-            item { CompanionVoiceSection(vm) }
-            item {
-                    SectionCard("Voice") {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Read replies aloud")
-                                Text(
-                                    when {
-                                        !ttsReady && !piperReady -> "No text-to-speech engine available"
-                                        ttsEngine == "piper" && piperReady -> "Piper TTS (high quality, offline)"
-                                        ttsEngine == "piper" && vm.piperInstalled && !piperReady -> "Piper TTS (offline, loading model...)"
-                                        ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Downloading -> "Piper TTS (downloading model...)"
-                                        ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Extracting -> "Piper TTS (extracting model...)"
-                                        ttsEngine == "piper" && !piperReady -> "Piper TTS (model not downloaded)"
-                                        else -> "System TTS engine"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = settings.ttsAutoSpeak,
-                                onCheckedChange = { vm.updateTtsAutoSpeak(it) },
-                                enabled = ttsReady || piperReady,
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Companion speaks replies")
-                        Text(
-                            "Lets the floating companion talk back through the engine above.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = settings.companionTts,
-                        enabled = settings.companionEnabled,
-                        onCheckedChange = { vm.updateCompanionTts(it) },
-                    )
-                }
-                Text("TTS engine", style = MaterialTheme.typography.bodyMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = ttsEngine == "system",
-                                onClick = { vm.updateTtsEngine("system") },
-                                label = { Text("System") },
-                            )
-                            FilterChip(
-                                selected = ttsEngine == "piper",
-                                onClick = { vm.updateTtsEngine("piper") },
-                                label = { Text("Piper") },
-                            )
-                        }
-                        if (ttsEngine == "piper" && !piperReady) {
-                            val isError = piperState is com.pocketllm.util.SherpaTtsEngine.State.Error
-                            if (isError) {
-                                Text(
-                                    "Piper download failed. Check your network connection and tap retry.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                                Text(
-                                    piperStatus,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                                TextButton(onClick = { vm.retryPiperDownload() }) { Text("Retry download") }
-                            } else if (piperProgress > 0f && piperProgress < 1f) {
-                                Text(
-                                    "Downloading… ${(piperProgress * 100).toInt()}%",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else if (vm.piperInstalled) {
-                                Text(
-                                    "Piper model is downloaded and loading...",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else {
-                                Text(
-                                    "Piper model not downloaded yet. It downloads automatically (~65MB) the first time Piper is used for speech.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-            }
-        }
-
-        if (category == SettingsCategory.Chat) {
-            item {
-                    SectionCard("Chat") {
-                        var promptText by remember(settings.startupPrompt) { mutableStateOf(settings.startupPrompt) }
-                        OutlinedTextField(
-                            value = promptText,
-                            onValueChange = { promptText = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Startup system prompt") },
-                            placeholder = { Text("e.g. You are a concise assistant.") },
-                            minLines = 2,
-                            maxLines = 5,
-                        )
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                        ) {
-                            TextButton(
-                                onClick = { vm.updateStartupPrompt(promptText) },
-                                enabled = promptText != settings.startupPrompt,
-                            ) { Text("Save") }
-                        }
-                        Text(
-                            "Sent as the system message at the start of every chat conversation.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Agent mode")
-                                Text(
-                                    "Lets the model call web search, calculator, and datetime tools while it answers.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = settings.agentEnabled,
-                                onCheckedChange = { vm.updateAgentEnabled(it) },
-                            )
-                        }
-                    }
-            }
-        }
-
-        if (category == SettingsCategory.Server) {
-            item {
-                SectionCard("Web service") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(if (running) "Server running" else "Server stopped")
-                            Text(
-                                "http://127.0.0.1:${settings.port}/v1",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = running,
-                            onCheckedChange = { if (it) vm.startServer() else vm.stopServer() },
-                        )
-                    }
-                    var portText by remember(settings.port) { mutableStateOf(settings.port.toString()) }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = portText,
-                            onValueChange = { portText = it.filter(Char::isDigit).take(5) },
-                            label = { Text("Port") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedButton(
-                            onClick = { vm.updatePort(portText) },
-                            enabled = !running && portText != settings.port.toString() && portText.isNotBlank(),
-                        ) { Text("Apply") }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Require API key")
-                            Text(
-                                "Bearer auth for all /v1 endpoints",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(checked = settings.requireApiKey, onCheckedChange = { vm.updateRequireApiKey(it) })
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("HTTPS (self-signed TLS)")
-                            Text(
-                                "Clients must accept the self-signed certificate (e.g. curl -k). Restarts the server.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(checked = settings.httpsEnabled, onCheckedChange = { vm.updateHttps(it) })
-                    }
-                    if (settings.httpsEnabled && tlsFingerprint != null) {
-                        Text(
-                            "Cert SHA-256:\n$tlsFingerprint",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "Browsers will show a one-time warning until this certificate is trusted on the client device.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { vm.exportCertificate() }) { Text("Save .crt to Downloads") }
-                            TextButton(
-                                onClick = { if (!vm.installCertificateOnDevice()) _localInstallHint = "No certificate yet" }
-                            ) { Text("Trust on this device") }
-                        }
-                        if (_localInstallHint != null) {
-                            Text(_localInstallHint!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                        }
-                        exportMessage?.let {
-                            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                    TextButton(onClick = { onOpenTab(Tab.SERVER) }) { Text("Open Server dashboard →") }
-                }
-            }
-            item {
-                SectionCard("API keys") {
-                    val active = keys.count { it.enabled }
-                    Text("$active of ${keys.size} keys active")
-                    Text(
-                        "Keys authenticate clients calling your phone's API over the network.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = { onOpenTab(Tab.KEYS) }) { Text("Manage keys →") }
-                }
-            }
-        }
-
-        if (category == SettingsCategory.About) {
-            item {
-                SectionCard("About") {
-                    Text("PocketLLM v$versionName")
-                    Text(
-                        "Local GGUF inference via llama.cpp, served through an OpenAI-compatible API.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = { uriHandler.openUri("https://github.com/Kimi-syl/PocketLLM") }) {
-                        Text("GitHub repository")
-                    }
-                }
-            }
-        }
-
     }
 }
 
+@Composable
+private fun ModelSettingsSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    SectionCard("Web search") {
+        Text("Engine used when the globe toggle is on in chat", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            WebSearch.engines.forEach { (id, label) ->
+                FilterChip(
+                    selected = settings.searchEngine == id,
+                    onClick = { vm.updateSearchEngine(id) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        if (WebSearch.requiresKey(settings.searchEngine)) {
+            var keyText by remember(settings.searchEngine, settings.hfToken) {
+                mutableStateOf(currentKeyFor(settings.searchEngine, settings))
+            }
+            OutlinedTextField(
+                value = keyText,
+                onValueChange = { keyText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("${labelFor(settings.searchEngine)} API key") },
+                singleLine = true,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    onClick = { vm.updateEngineKey(settings.searchEngine, keyText) },
+                    enabled = keyText != currentKeyFor(settings.searchEngine, settings),
+                ) { Text("Save key") }
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    InferenceSection(vm)
+}
+
+@Composable
+private fun InferenceSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    SectionCard("Inference") {
+        val loaded by vm.engine.state.collectAsState()
+        val gpuSupported = remember { com.pocketllm.llm.LlamaBridge.supportsGpuOffload() }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("GPU offload")
+                Text(
+                    when {
+                        !gpuSupported -> "No usable GPU device - CPU only"
+                        settings.gpuOffload -> "Layers run on the GPU for faster inference"
+                        else -> "CPU only - lower power use, slower generation"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.gpuOffload && gpuSupported,
+                onCheckedChange = { vm.updateGpuOffload(it) },
+                enabled = gpuSupported,
+            )
+        }
+        Text(
+            "Takes effect the next time a model is loaded. Unload and reload the model to apply.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        var turnipOn by remember { mutableStateOf(vm.isTurnipEnabled()) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Turnip GPU driver (experimental)")
+                Text(
+                    "Open-source Adreno Vulkan driver. May crash on some GPUs; takes effect after app restart.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = turnipOn, onCheckedChange = {
+                vm.updateTurnipEnabled(it); turnipOn = it
+            })
+        }
+    }
+}
+
+@Composable
+private fun VoiceSection(
+    vm: AppViewModel,
+    ttsReady: Boolean,
+    piperReady: Boolean,
+    piperStatus: String,
+    piperProgress: Float,
+    piperState: com.pocketllm.util.SherpaTtsEngine.State?,
+    ttsEngine: String,
+) {
+    val settings by vm.currentSettings.collectAsState()
+    SectionCard("Voice") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Read replies aloud")
+                Text(
+                    when {
+                        !ttsReady && !piperReady -> "No text-to-speech engine available"
+                        ttsEngine == "piper" && piperReady -> "Piper TTS (high quality, offline)"
+                        ttsEngine == "piper" && vm.piperInstalled && !piperReady -> "Piper TTS (offline, loading model...)"
+                        ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Downloading -> "Piper TTS (downloading model...)"
+                        ttsEngine == "piper" && piperState is com.pocketllm.util.SherpaTtsEngine.State.Extracting -> "Piper TTS (extracting model...)"
+                        ttsEngine == "piper" && !piperReady -> "Piper TTS (model not downloaded)"
+                        else -> "System TTS engine"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.ttsAutoSpeak,
+                onCheckedChange = { vm.updateTtsAutoSpeak(it) },
+                enabled = ttsReady || piperReady,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Companion speaks replies")
+                Text(
+                    "Lets the floating companion talk back through the engine above.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.companionTts,
+                enabled = settings.companionEnabled,
+                onCheckedChange = { vm.updateCompanionTts(it) },
+            )
+        }
+        Text("TTS engine", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = ttsEngine == "system",
+                onClick = { vm.updateTtsEngine("system") },
+                label = { Text("System") },
+            )
+            FilterChip(
+                selected = ttsEngine == "piper",
+                onClick = { vm.updateTtsEngine("piper") },
+                label = { Text("Piper") },
+            )
+        }
+        if (ttsEngine == "piper" && !piperReady) {
+            val isError = piperState is com.pocketllm.util.SherpaTtsEngine.State.Error
+            if (isError) {
+                Text(
+                    "Piper download failed. Check your network connection and tap retry.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    piperStatus,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(onClick = { vm.retryPiperDownload() }) { Text("Retry download") }
+            } else if (piperProgress > 0f && piperProgress < 1f) {
+                Text(
+                    "Downloading... ${(piperProgress * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (vm.piperInstalled) {
+                Text(
+                    "Piper model is downloaded and loading...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "Piper model will download on first use.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatSettingsSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    SectionCard("Chat") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Send on Enter")
+                Text(
+                    "Enter key submits the message instead of newline.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerSettingsSections(
+    vm: AppViewModel,
+    keys: List<com.pocketllm.keys.ApiKeyEntry>,
+) {
+    SectionCard("Web service") {
+        Text("Server lifecycle lives in the Server tab.", style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { }) { Text("Open Server dashboard") }
+    }
+    Spacer(Modifier.height(12.dp))
+    SectionCard("API keys") {
+        val active = keys.count { it.enabled }
+        Text("$active of ${keys.size} keys active")
+        Text(
+            "Keys authenticate clients calling your phone's API over the network.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = { }) { Text("Manage keys") }
+    }
+}
+
+/** Legacy card wrapper, still used by the sub-page section composables. */
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             content()
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroup(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, bottom = 8.dp),
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+/**
+ * A tappable row: icon in a soft circle, title, subtitle, trailing widget.
+ * The single visual unit of the redesigned settings page.
+ */
+@Composable
+private fun SettingsRow(
+    title: String,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    iconEmoji: String? = null,
+    trailing: @Composable () -> Unit = {},
+    onClick: (() -> Unit)? = null,
+) {
+    val rowModifier = if (onClick != null) {
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Row(
+        modifier = rowModifier
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .padding(horizontal = 0.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        when {
+            iconEmoji != null -> Text(
+                iconEmoji,
+                style = MaterialTheme.typography.titleLarge,
+            )
+            icon != null -> Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        trailing()
+    }
+}
+
+/** Thin divider inset past the icon, matching the reference design. */
+@Composable
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 70.dp),
+        thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+    )
+}
+
+/** Dropdown for the colour-mode row: 跟随系统 / 浅色 / 深色. */
+@Composable
+private fun ThemeModeMenu(current: String, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) {
+            Text(
+                when (current) {
+                    "light" -> "浅色"
+                    "dark" -> "深色"
+                    else -> "跟随系统"
+                }
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (mode, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = { onSelect(mode); open = false },
+                )
+            }
         }
     }
 }

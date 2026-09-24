@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Delete
@@ -240,14 +241,17 @@ private fun formatSessionTime(ts: Long): String {
 }
 
 @Composable
-internal fun ScreenHeader(title: String, onMenuClick: () -> Unit, subtitle: String? = null) {
+internal fun ScreenHeader(title: String, onMenuClick: () -> Unit, subtitle: String? = null, onBack: (() -> Unit)? = null) {
     Row(
         Modifier
             .padding(start = 2.dp, end = 16.dp, top = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onMenuClick) {
-            Icon(Icons.Outlined.Menu, contentDescription = "Menu")
+        IconButton(onClick = onBack ?: onMenuClick) {
+            Icon(
+                if (onBack != null) Icons.AutoMirrored.Outlined.ArrowBack else Icons.Outlined.Menu,
+                contentDescription = if (onBack != null) "Back" else "Menu",
+            )
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
