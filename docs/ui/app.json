@@ -1,0 +1,88 @@
+{
+  "$schema_note": "Declarative spec of the in-app UI as built. Values taken from AppRoot.kt and the screen composables; update together with code. The companion overlay is documented separately in companion-overlay.json.",
+
+  "navigation": {
+    "root": "AppRoot",
+    "structure": "ModalNavigationDrawer > Scaffold(topBar, bottomBar=NavigationBar, content=when(tab))",
+    "tab_enum": "Tab",
+    "tabs": [
+      { "id": "CHAT",    "label": "Chat",    "icon": "Icons.Outlined.Chat",        "inBottomBar": true  },
+      { "id": "MODELS",  "label": "Models",  "icon": "Icons.Outlined.Folder",      "inBottomBar": true  },
+      { "id": "USAGE",   "label": "Usage",   "icon": "Icons.Outlined.Insights",    "inBottomBar": true  },
+      { "id": "SERVER",  "label": "Server",  "icon": "Icons.Outlined.Public",      "inBottomBar": false },
+      { "id": "KEYS",    "label": "API keys","icon": "Icons.Outlined.Key",         "inBottomBar": false },
+      { "id": "SETTINGS","label": "Settings","icon": "Icons.Outlined.Settings",    "inBottomBar": false },
+      { "id": "LOGS",    "label": "Logs",    "icon": "Icons.Outlined.Description", "inBottomBar": false }
+    ],
+    "state": "selected tab in rememberSaveable, defaults CHAT",
+    "drawer": {
+      "composable": "ModalNavigationDrawer",
+      "sheet": "ModalDrawerSheet with NavigationDrawerItem list",
+      "opened_by": "onMenu callback passed to every screen (ScreenHeader menu button)"
+    }
+  },
+
+  "screens": {
+    "CHAT": {
+      "file": "ui/ChatScreen.kt",
+      "layout": "Column: ScreenHeader > engine banner (when not ready) > LazyColumn(messages) > agent banner > input row",
+      "messages": {
+        "list": "LazyColumn, auto-scrolls to newest on content change",
+        "bubble": "Bubble(message, onSpeak, ttsSpeaking)",
+        "markdown": "assistant messages render via MarkdownMessage (MarkdownUI); user messages plain"
+      },
+      "input": "text field + send; web-search toggle and agent toggle above",
+      "agent_banner": "shown when agentEnabled && !generating: 'Agent mode on — model can use web search, calculator, and datetime'",
+      "dialogs": ["model picker / overflow dialog (Dialog in ChatScreen.kt)"]
+    },
+    "MODELS": {
+      "file": "ui/ModelsScreen.kt",
+      "sections": [
+        "LocalModelsList > ModelRow (per local model: load/unload)",
+        "HfSearchSection (Hugging Face search, GGUF + MLX, sort dropdown)",
+        "FileDownloadRow (per-file download progress)"
+      ],
+      "helpers": ["formatSize"]
+    },
+    "SERVER":   { "file": "ui/ServerScreen.kt",   "summary": "local API server control and status" },
+    "USAGE":    { "file": "ui/UsageScreen.kt",    "summary": "token usage charts from UsageRepository" },
+    "KEYS":     { "file": "ui/KeysScreen.kt",     "summary": "API key list (KeyRow) with add/edit Dialog" },
+    "LOGS":     { "file": "ui/LogScreen.kt",      "summary": "ServerLog viewer with export to Downloads" },
+    "SETTINGS": {
+      "file": "ui/SettingsScreen.kt",
+      "structure": "SectionCard sections",
+      "sections": [
+        "CompanionSettingsSection (character size, mode, VRM import/compress entry points)",
+        "CloudEntrySettingsSection (remote provider entry)",
+        "CompanionPersonalitySection (TraitSlider, GesturePicker)",
+        "CompanionMemorySection",
+        "CompanionVoiceSection (ui/CompanionVoiceSection.kt)",
+        "CompanionMoodSection (ui/CompanionMoodSection.kt)",
+        "CompanionCheckInSection (ui/CompanionCheckInSection.kt)",
+        "CompanionRemindersSection (ui/CompanionRemindersSection.kt)",
+        "CompanionProfilesSection (ui/CompanionProfilesSection.kt)"
+      ],
+      "navigation": "onOpenTab(Tab) jumps to another tab; Dialog for confirmations"
+    }
+  },
+
+  "shared_components": [
+    { "name": "ScreenHeader", "used_by": "all tabs", "purpose": "title + drawer menu button" },
+    { "name": "SectionCard",  "file": "ui/SettingsScreen.kt", "purpose": "titled card wrapper" },
+    { "name": "ToolCallCard", "file": "agent/ToolCallCard.kt", "purpose": "renders one agent tool invocation inline in chat" },
+    { "name": "AgentToolsDialog", "file": "ui/AgentToolsDialog.kt", "purpose": "agent tool permissions" },
+    { "name": "VrmCompressDialog", "file": "companion/VrmCompressDialog.kt", "purpose": "VRM bone-compression effort picker (presets Low/Medium/High/Max/Custom, bones slider, texture-shrink toggle default OFF, progress)" },
+    { "name": "MarkdownMessage", "file": "ui/ChatScreen.kt", "purpose": "chat markdown renderer" },
+    { "name": "Theme", "file": "ui/theme/Theme.kt", "purpose": "Material3 dynamic colour" }
+  ],
+
+  "character_renderers": {
+    "note": "content layer beneath/behind UI; listed for completeness, unchanged by UI work",
+    "files": [
+      "companion/CompanionCharacter.kt (vector)",
+      "companion/CompanionImageCharacter.kt (image)",
+      "companion/VrmCharacter.kt (Filament VRM)",
+      "companion/Live2DOverlay.kt (Live2D Cubism)"
+    ]
+  }
+}
