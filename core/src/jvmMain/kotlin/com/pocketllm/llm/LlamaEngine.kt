@@ -47,21 +47,38 @@ object LlamaEngine : ChatEngine {
             // report no Vulkan backend; sending gpuLayers=99 anyway segfaults llama_decode.
             val nativeSupportsGpu = try { LlamaBridge.supportsGpuOffload() } catch (_: Throwable) { false }
             runCatching { PLog.log("backend info:\n" + LlamaBridge.backendInfo()) }
-            val effectiveGpuLayers = if (gpuOffload && nativeSupportsGpu) 99 else 0
-            PLog.log(
-                "load: ${file.name} ctx=$contextSize batch=$effectiveBatch threads=$threadCount gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → gpuLayers=$effectiveGpuLayers"
-            )
-            val h = withContext(dispatcher) {
-                LlamaBridge.loadModel(
-                    file.absolutePath,
-                    contextSize,
-                    effectiveBatch,
-                    threadCount,
-                    effectiveGpuLayers,
+
+            // Auto-fallback: `llama_supports_gpu_offload()` only checks whether a GPU
+            // backend *registered*, not whether it actually works. On Mali-G615 the
+            // Vulkan backend enumerates but fails its feature probe
+            // (unresolved: vkGetPhysicalDeviceFeatures2), so a 27B load keeps dying at
+            // gpuLayers=99. Strategy: attempt GPU first, and if model init fails,
+            // transparently retry with gpuLayers=0 (pure CPU) so a 4B model still loads.
+            val gpuLayersToTry = (if (gpuOffload && nativeSupportsGpu) listOf(99, 0) else listOf(0)).distinct()
+            var h = -1L
+            var lastError: String? = null
+            for (layers in gpuLayersToTry) {
+                PLog.log(
+                    "load: ${file.name} ctx=$contextSize batch=$effectiveBatch threads=$threadCount " +
+                        "gpuRequested=$gpuOffload gpuNative=$nativeSupportsGpu → attempt gpuLayers=$layers"
                 )
+                h = withContext(dispatcher) {
+                    LlamaBridge.loadModel(
+                        file.absolutePath,
+                        contextSize,
+                        effectiveBatch,
+                        threadCount,
+                        layers,
+                    )
+                }
+                if (h >= 0L) {
+                    PLog.log("load: OK gpuLayers=$layers")
+                    break
+                }
+                lastError = "gpuLayers=$layers failed to initialize"
             }
             if (h < 0L) {
-                _state.value = EngineState.Error("Failed to load ${file.name}")
+                _state.value = EngineState.Error("Failed to load ${file.name} ($lastError)")
             } else {
                 handle = h
                 _state.value = EngineState.Ready(file.name.removeSuffix(".gguf"), LlamaBridge.contextLength(h))

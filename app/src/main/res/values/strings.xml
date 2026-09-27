@@ -3,4 +3,6 @@
     <string name="app_name">PocketLLM</string>
     <string name="companion_accessibility_summary">Lets the floating companion read the page on screen when you ask it to summarize.</string>
     <string name="companion_accessibility_description">PocketLLM\'s companion reads the text on your screen only at the moment you tap "Summary" on the bubble. It cannot tap, type, or act on other apps.</string>
+    <string name="agent_accessibility_summary">Lets the agent read the screen and tap / type to complete your task on your behalf.</string>
+    <string name="agent_accessibility_description">PocketLLM\'s accessibility agent reads the interactive elements on your screen and performs click / type actions to complete the task you ask for. Granting this gives the agent the ability to act on other apps.</string>
 </resources>

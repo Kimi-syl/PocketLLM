@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Accessibility Agent's "eyes".
+  Needs the full interactive window tree (including non-important views and
+  live regions) so the agent can see buttons, editable fields and chat items
+  even when they aren't part of the "important" view hierarchy.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/agent_accessibility_description"
+    android:notificationTimeout="100"
+    android:summary="@string/agent_accessibility_summary" />
