@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Glowing rounded badge container -->
+    <path
+        android:fillColor="#FF2563EB"
+        android:pathData="M38,28 L70,28 A16,16 0 0,1 86,44 L86,64 A16,16 0 0,1 70,80 L38,80 A16,16 0 0,1 22,64 L22,44 A16,16 0 0,1 38,28 Z" />
+    <path
+        android:fillColor="#FF38BDF8"
+        android:pathData="M40,31 L68,31 A13,13 0 0,1 81,44 L81,64 A13,13 0 0,1 68,77 L40,77 A13,13 0 0,1 27,64 L27,44 A13,13 0 0,1 40,31 Z" />
+    <!-- Center AI Sparkle / Pocket Symbol -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,38 C54,46 47,53 39,54 C47,55 54,62 54,70 C54,62 61,55 69,54 C61,53 54,46 54,38 Z" />
+    <!-- Secondary small sparkle -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M69,40 C69,43 66,46 63,46 C66,46 69,49 69,52 C69,49 72,46 75,46 C72,46 69,43 69,40 Z" />
+    <!-- Subtle bottom pocket notch -->
+    <path
+        android:fillColor="#15FFFFFF"
+        android:pathData="M34,60 L74,60 L68,74 L40,74 Z" />
+</vector>
