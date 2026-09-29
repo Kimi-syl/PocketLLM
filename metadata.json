@@ -1,0 +1,6 @@
+{
+  "name": "PocketLLM",
+  "description": "On-device LLM runner and AI companion for Android",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

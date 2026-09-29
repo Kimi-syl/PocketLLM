@@ -115,6 +115,7 @@ class UiAccessibilityService : AccessibilityService() {
         )
 
         // Only reclaim on pre-33 where recycle() is meaningful.
+        @Suppress("DEPRECATION")
         if (Build.VERSION.SDK_INT < 33) {
             val retained = capped.map { it.node }.toHashSet()
             for (v in visited) if (v !in retained) v.recycle() // refs we created, not kept

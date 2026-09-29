@@ -446,18 +446,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadModel(name: String) {
-        val file = modelRepo.file(name) ?: return
+        val file = modelRepo.file(name)
+        if (file == null || !file.exists()) {
+            engine.setError("Model file $name not found")
+            return
+        }
         viewModelScope.launch {
-            val resolved = settings.current().resolve()
-            com.pocketllm.server.PLog.log("loadModel: preset=${settings.current().speedPreset} → ctx=${resolved.contextSize} batch=${resolved.batchSize} gpu=${resolved.gpuOffload}")
-            engine.load(
-                file = file,
-                contextSize = resolved.contextSize,
-                threads = CpuInfo.recommendedThreads(),
-                gpuOffload = resolved.gpuOffload,
-                batchSize = resolved.batchSize,
-            )
-            refreshModels()
+            try {
+                val resolved = settings.current().resolve()
+                com.pocketllm.server.PLog.log("loadModel: preset=${settings.current().speedPreset} → ctx=${resolved.contextSize} batch=${resolved.batchSize} gpu=${resolved.gpuOffload}")
+                engine.load(
+                    file = file,
+                    contextSize = resolved.contextSize,
+                    threads = CpuInfo.recommendedThreads(),
+                    gpuOffload = resolved.gpuOffload,
+                    batchSize = resolved.batchSize,
+                )
+            } catch (t: Throwable) {
+                com.pocketllm.server.PLog.error("loadModel failed", t)
+                engine.setError(t.message ?: "Failed to load model")
+            } finally {
+                refreshModels()
+            }
+        }
+    }
+
+    fun importModel(uri: android.net.Uri, onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                modelRepo.importFromUri(uri)
+            }
+            result.onSuccess { modelName ->
+                refreshModels()
+                onComplete(true, modelName)
+            }.onFailure { err ->
+                onComplete(false, err.message ?: "Import failed")
+            }
         }
     }
 
@@ -1184,6 +1208,150 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateGpuOffload(enabled: Boolean) {
         updateSettings { it.copy(gpuOffload = enabled) }
+    }
+
+    val chatStorageSizeBytes = MutableStateFlow(0L)
+
+    fun refreshChatStorageSize() {
+        viewModelScope.launch {
+            chatStorageSizeBytes.value = sessionRepo.getStorageSizeBytes()
+        }
+    }
+
+    fun clearChatStorage() {
+        viewModelScope.launch {
+            sessionRepo.clearAll()
+            _sessions.value = emptyList()
+            chatStorageSizeBytes.value = 0L
+        }
+    }
+
+    fun updateDefaultChatModel(model: String) {
+        updateSettings { it.copy(chatModel = model) }
+    }
+
+    fun updatePerChatModelIndependent(independent: Boolean) {
+        updateSettings { it.copy(perChatModelIndependent = independent) }
+    }
+
+    fun updateTitleSummaryModel(model: String) {
+        updateSettings { it.copy(titleSummaryModel = model) }
+    }
+
+    fun updateTitleSummaryEnabled(enabled: Boolean) {
+        updateSettings { it.copy(titleSummaryEnabled = enabled) }
+    }
+
+    fun updateSummaryModel(model: String) {
+        updateSettings { it.copy(summaryModel = model) }
+    }
+
+    fun updateChatSuggestionModel(model: String) {
+        updateSettings { it.copy(chatSuggestionModel = model) }
+    }
+
+    fun updateChatSuggestionEnabled(enabled: Boolean) {
+        updateSettings { it.copy(chatSuggestionEnabled = enabled) }
+    }
+
+    fun updateCompressionModel(model: String) {
+        updateSettings { it.copy(compressionModel = model) }
+    }
+
+    fun updateTranslationModel(model: String) {
+        updateSettings { it.copy(translationModel = model) }
+    }
+
+    fun updateOcrModel(model: String) {
+        updateSettings { it.copy(ocrModel = model) }
+    }
+
+    fun updateTitleSummaryPrompt(prompt: String) {
+        updateSettings { it.copy(titleSummaryPrompt = prompt) }
+    }
+
+    fun updateSummaryPrompt(prompt: String) {
+        updateSettings { it.copy(summaryPrompt = prompt) }
+    }
+
+    fun updateChatSuggestionPrompt(prompt: String) {
+        updateSettings { it.copy(chatSuggestionPrompt = prompt) }
+    }
+
+    fun updateCompressionPrompt(prompt: String) {
+        updateSettings { it.copy(compressionPrompt = prompt) }
+    }
+
+    fun updateTranslationPrompt(prompt: String) {
+        updateSettings { it.copy(translationPrompt = prompt) }
+    }
+
+    fun updateOcrPrompt(prompt: String) {
+        updateSettings { it.copy(ocrPrompt = prompt) }
+    }
+
+    fun updateSettingsStyle(style: String) {
+        updateSettings { it.copy(settingsStyle = style) }
+    }
+
+    fun updateAppLanguage(lang: String) {
+        updateSettings { it.copy(appLanguage = lang) }
+    }
+
+    fun updateFontScale(scale: Float) {
+        updateSettings { it.copy(fontScale = scale) }
+    }
+
+    fun updateHighContrast(enabled: Boolean) {
+        updateSettings { it.copy(highContrast = enabled) }
+    }
+
+    fun updateHapticFeedback(enabled: Boolean) {
+        updateSettings { it.copy(hapticFeedback = enabled) }
+    }
+
+    fun updateReduceMotion(enabled: Boolean) {
+        updateSettings { it.copy(reduceMotion = enabled) }
+    }
+
+    fun updateLargeTouchTargets(enabled: Boolean) {
+        updateSettings { it.copy(largeTouchTargets = enabled) }
+    }
+
+    fun updateSandboxInstalled(installed: Boolean) {
+        updateSettings { it.copy(sandboxInstalled = installed) }
+    }
+
+    fun addSandboxWorkspace(name: String) {
+        updateSettings { current ->
+            val list = current.sandboxWorkspaces.toMutableList()
+            if (!list.contains(name)) list.add(name)
+            current.copy(sandboxWorkspaces = list)
+        }
+    }
+
+    fun removeSandboxWorkspace(name: String) {
+        updateSettings { current ->
+            current.copy(sandboxWorkspaces = current.sandboxWorkspaces.filter { it != name })
+        }
+    }
+
+    fun addMountedFolder(path: String) {
+        updateSettings { current ->
+            val list = current.sandboxMountedFolders.toMutableList()
+            if (!list.contains(path)) list.add(path)
+            current.copy(sandboxMountedFolders = list)
+        }
+    }
+
+    fun removeMountedFolder(path: String) {
+        updateSettings { current ->
+            current.copy(sandboxMountedFolders = current.sandboxMountedFolders.filter { it != path })
+        }
+    }
+
+    fun updateNetworkProxy(proxy: String, enabled: Boolean) {
+        updateSettings { it.copy(networkProxy = proxy, proxyEnabled = enabled) }
     }
 
     fun stopSpeaking() = tts.stop()

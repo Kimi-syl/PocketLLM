@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong
 data class GgufModel(val name: String, val sizeBytes: Long)
 
 class ModelRepository(
-    context: Context,
+    private val context: Context,
     private val tokenProvider: () -> String? = { null },
 ) {
 
@@ -73,6 +73,30 @@ class ModelRepository(
         File(dir, "$name.meta.json").delete()
         File(dir, "$name.part").delete()
         return target.delete()
+    }
+
+    fun importFromUri(uri: android.net.Uri): Result<String> = runCatching {
+        var fileName = "imported-${System.currentTimeMillis()}.gguf"
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst()) {
+                val name = cursor.getString(nameIndex)
+                if (!name.isNullOrBlank()) {
+                    fileName = name
+                }
+            }
+        }
+        if (!fileName.endsWith(".gguf", ignoreCase = true)) {
+            fileName += ".gguf"
+        }
+        val target = File(dir, fileName)
+        val stream = context.contentResolver.openInputStream(uri) ?: throw java.io.IOException("Unable to open stream for URI")
+        stream.use { input ->
+            target.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        fileName
     }
 
     suspend fun download(url: String, cancelled: AtomicBoolean, onProgress: (Float) -> Unit): Result<File> =
@@ -206,8 +230,8 @@ class ModelRepository(
             (head.etag == null || saved.etag == null || saved.etag == head.etag) &&
             part.isFile
 
-        if (reusable && saved != null) {
-            return saved.segments.map { Segment(it.index, it.start, it.end, it.done.coerceAtLeast(0)) }
+        if (reusable) {
+            return saved!!.segments.map { Segment(it.index, it.start, it.end, it.done.coerceAtLeast(0)) }
         }
 
         val planned = planSegments(total, head.acceptRanges)

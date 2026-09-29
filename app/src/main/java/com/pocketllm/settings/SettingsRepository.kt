@@ -37,8 +37,46 @@ data class AppSettings(
     val hfToken: String = "",
     val themeMode: String = "system",
     val dynamicColor: Boolean = true,
+    val settingsStyle: String = "modern", // "modern" or "classic"
+    val appLanguage: String = "system", // "system", "zh-TW", "en", "zh-CN"
+    val fontScale: Float = 1.0f,
+    val highContrast: Boolean = false,
+    val hapticFeedback: Boolean = true,
+    val reduceMotion: Boolean = false,
+    val largeTouchTargets: Boolean = false,
     val startupPrompt: String = "",
     val httpsEnabled: Boolean = false,
+
+    // --- Default Models & Inference Roles ---
+    val chatModel: String = "use_current",
+    val perChatModelIndependent: Boolean = false,
+    val titleSummaryModel: String = "use_current",
+    val titleSummaryEnabled: Boolean = true,
+    val summaryModel: String = "use_current",
+    val chatSuggestionModel: String = "disabled",
+    val chatSuggestionEnabled: Boolean = false,
+    val compressionModel: String = "use_current",
+    val translationModel: String = "use_current",
+    val ocrModel: String = "use_current",
+
+    // --- Role Prompts ---
+    val titleSummaryPrompt: String = "請根據以下對話內容，總結出一個精簡且準確的標題（不超過15個字），不要加標點符號。",
+    val summaryPrompt: String = "請對以下對話生成精準精煉的摘要，保留關鍵上下文與用戶需求。",
+    val chatSuggestionPrompt: String = "根據對話上下文，提供3個用戶可能會繼續提問的簡短後續建議問題。",
+    val compressionPrompt: String = "將以下長對話歷史進行語意壓縮，保留所有重要決策、程式碼片段和關鍵事實。",
+    val translationPrompt: String = "將以下內容精準翻譯為繁體中文，保留專業術語與原始格式。",
+    val ocrPrompt: String = "精確辨識圖片中的文字與結構化內容，保留換行與表格格式。",
+
+    // --- Sandbox & Workspaces ---
+    val sandboxInstalled: Boolean = false,
+    val sandboxWorkspaces: List<String> = emptyList(),
+    val sandboxMountedFolders: List<String> = emptyList(),
+    val sandboxEnvironmentVariables: Map<String, String> = emptyMap(),
+
+    // --- Network & Cloud ---
+    val networkProxy: String = "",
+    val proxyEnabled: Boolean = false,
+
     val searchEngine: String = "duckduckgo",
     val braveKey: String = "",
     val tavilyKey: String = "",

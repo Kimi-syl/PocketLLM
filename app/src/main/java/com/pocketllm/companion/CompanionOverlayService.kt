@@ -885,6 +885,7 @@ class CompanionOverlayService : Service() {
             x = if (expanded) 0 else clampBubbleX(bubbleX, width)
             y = clampBubbleY(bubbleY, height)
             if (expanded) {
+                @Suppress("DEPRECATION")
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
         }

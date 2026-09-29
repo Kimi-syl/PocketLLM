@@ -5,9 +5,46 @@ fun interface TokenSink {
 }
 
 object LlamaBridge {
+    @Volatile
+    var loadError: Throwable? = null
+        private set
+
     init {
-        val explicit = System.getenv("POCKETLLM_NATIVE_LIB")
-        if (explicit != null) System.load(explicit) else System.loadLibrary("pocketllm")
+        try {
+            val explicit = System.getenv("POCKETLLM_NATIVE_LIB")
+            if (explicit != null) {
+                System.load(explicit)
+            } else {
+                runCatching { System.loadLibrary("c++_shared") }
+                runCatching { System.loadLibrary("OpenCLshim") }
+                runCatching { System.loadLibrary("vkshim") }
+                runCatching { System.loadLibrary("vulkan_freedreno") }
+                System.loadLibrary("pocketllm")
+            }
+        } catch (t: Throwable) {
+            loadError = t
+        }
+    }
+
+    val isAvailable: Boolean
+        get() = loadError == null
+
+    fun safeSupportsGpuOffload(): Boolean {
+        if (loadError != null) return false
+        return try {
+            supportsGpuOffload()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun safeBackendInfo(): String {
+        if (loadError != null) return "Native backend not available (${loadError?.message ?: "library load error"})"
+        return try {
+            backendInfo()
+        } catch (t: Throwable) {
+            "Backend error: ${t.message}"
+        }
     }
 
     external fun backendInit()

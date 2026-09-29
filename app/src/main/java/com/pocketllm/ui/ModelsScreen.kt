@@ -1,5 +1,7 @@
 package com.pocketllm.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,11 +13,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -24,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -39,8 +45,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Widgets
+import androidx.compose.material3.Surface
 import com.pocketllm.AppViewModel
 import com.pocketllm.llm.EngineState
 import com.pocketllm.models.GgufModel
@@ -48,15 +59,81 @@ import com.pocketllm.models.GgufModel
 @Composable
 fun ModelsScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
     var tab by remember { mutableIntStateOf(0) }
+    val settings by vm.currentSettings.collectAsState()
+    var showEnvDialog by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         ScreenHeader("Models", onMenu)
+
+        // Sandbox Environment banner - makes sandbox prominently visible and accessible
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { showEnvDialog = true },
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            shape = RoundedCornerShape(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Widgets,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "沙盒環境: Alpine 3.21",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (settings.sandboxInstalled) "• 已就緒" else "• 未安裝",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (settings.sandboxInstalled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "管理環境 >",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+
         TabRow(selectedTabIndex = tab) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("On device") })
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("本機模型") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Hugging Face") })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("預設模型") })
         }
         Box(Modifier.weight(1f)) {
-            if (tab == 0) LocalModelsList(vm) else HfSearchSection(vm)
+            when (tab) {
+                0 -> LocalModelsList(vm)
+                1 -> HfSearchSection(vm)
+                2 -> DefaultModelsContent(vm)
+            }
+        }
+    }
+
+    if (showEnvDialog) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showEnvDialog = false }) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f)
+                    .clip(RoundedCornerShape(16.dp)),
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                WorkspaceAndEnvironmentScreen(vm, onBack = { showEnvDialog = false })
+            }
         }
     }
 }
@@ -71,19 +148,46 @@ private fun LocalModelsList(vm: AppViewModel) {
         if (engineState is EngineState.Ready || engineState is EngineState.Empty) vm.refreshModels()
     }
 
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            vm.importModel(uri)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            val stateLabel = when (val s = engineState) {
-                is EngineState.Loading -> "Loading ${s.fileName}…"
-                is EngineState.Ready -> "Loaded: ${s.modelName} (${s.contextSize} ctx)"
-                is EngineState.Error -> s.message
-                EngineState.Empty -> "No model loaded"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val stateLabel = when (val s = engineState) {
+                    is EngineState.Loading -> "Loading ${s.fileName}…"
+                    is EngineState.Ready -> "Loaded: ${s.modelName} (${s.contextSize} ctx)"
+                    is EngineState.Error -> s.message
+                    EngineState.Empty -> "No model loaded"
+                }
+                Text(
+                    stateLabel,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (engineState is EngineState.Error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = { importLauncher.launch("*/*") },
+                    enabled = engineState !is EngineState.Loading,
+                ) {
+                    Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import")
+                }
             }
-            Text(stateLabel, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         items(models, key = { it.name }) { model ->
             ModelRow(

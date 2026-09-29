@@ -36,7 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Chat
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
@@ -69,7 +69,7 @@ import androidx.compose.ui.unit.sp
  * cannot drift apart: adding a tool here forces a branch in [CompanionToolPanel].
  */
 enum class CompanionTool(val label: String, val icon: ImageVector) {
-    SESSIONS("Chat sessions", Icons.Outlined.Chat),
+    SESSIONS("Chat sessions", Icons.AutoMirrored.Outlined.Chat),
     BRAIN("Model", Icons.Outlined.Memory),
     CHARACTER("Character", Icons.Outlined.Person),
     SETTINGS("Settings", Icons.Outlined.Settings),

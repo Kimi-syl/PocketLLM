@@ -119,4 +119,16 @@ class ChatSessionRepository(context: Context) {
             s
         }
     }
+
+    suspend fun getStorageSizeBytes(): Long = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            dir.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+        }
+    }
+
+    suspend fun clearAll() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            dir.listFiles()?.forEach { it.delete() }
+        }
+    }
 }

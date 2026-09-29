@@ -58,7 +58,7 @@ import java.util.Locale
 import com.pocketllm.AppViewModel
 import com.pocketllm.ChatUiMessage
 import com.pocketllm.llm.EngineState
-import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import com.pocketllm.agent.ToolCallCard
 import androidx.compose.foundation.ExperimentalFoundationApi
 
@@ -205,7 +205,7 @@ fun ChatScreen(vm: AppViewModel, onMenu: () -> Unit = {}) {
                 Icon(
                     Icons.Outlined.AttachFile,
                     contentDescription = "Attach file",
-                    tint = if (vm.attachment.value != null) MaterialTheme.colorScheme.primary
+                    tint = if (attachment != null) MaterialTheme.colorScheme.primary
                     else Color.Unspecified,
                 )
             }
@@ -318,7 +318,7 @@ private fun Bubble(
                             modifier = Modifier.size(24.dp),
                         ) {
                             androidx.compose.material3.Icon(
-                                Icons.Outlined.VolumeUp,
+                                Icons.AutoMirrored.Outlined.VolumeUp,
                                 contentDescription = "Read aloud",
                                 tint = if (ttsSpeaking) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,

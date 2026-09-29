@@ -15,8 +15,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Folder
@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,9 +61,10 @@ import java.util.Date
 import java.util.Locale
 
 enum class Tab(val label: String, val icon: ImageVector, val inBottomBar: Boolean) {
-    CHAT("Chat", Icons.Outlined.Chat, true),
+    CHAT("Chat", Icons.AutoMirrored.Outlined.Chat, true),
     MODELS("Models", Icons.Outlined.Folder, true),
     USAGE("Usage", Icons.Outlined.Insights, true),
+    SANDBOX("沙盒環境", Icons.Outlined.Terminal, false),
     SERVER("Server", Icons.Outlined.Public, false),
     KEYS("API keys", Icons.Outlined.Key, false),
     SETTINGS("Settings", Icons.Outlined.Settings, false),
@@ -76,6 +78,21 @@ fun AppRoot(vm: AppViewModel) {
     val drawerState = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
+    val settings by vm.currentSettings.collectAsState()
+    val lang = settings.appLanguage
+
+    fun getTabLabel(tab: Tab): String {
+        return when (tab) {
+            Tab.CHAT -> I18n.t("tab_chat", lang)
+            Tab.MODELS -> I18n.t("tab_models", lang)
+            Tab.USAGE -> I18n.t("tab_usage", lang)
+            Tab.SANDBOX -> I18n.t("tab_sandbox", lang)
+            Tab.SERVER -> I18n.t("tab_server", lang)
+            Tab.KEYS -> I18n.t("tab_keys", lang)
+            Tab.SETTINGS -> I18n.t("tab_settings", lang)
+            Tab.LOGS -> I18n.t("tab_logs", lang)
+        }
+    }
 
     LaunchedEffect(Unit) { vm.refreshSessions() }
 
@@ -100,7 +117,7 @@ fun AppRoot(vm: AppViewModel) {
                 ) {
                     NavigationDrawerItem(
                         icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                        label = { Text("New chat") },
+                        label = { Text(I18n.t("new_chat", lang)) },
                         selected = false,
                         onClick = {
                             scope.launch { drawerState.close() }
@@ -117,7 +134,7 @@ fun AppRoot(vm: AppViewModel) {
                 val sessions by vm.sessions.collectAsState()
                 val currentId by vm.currentSessionId.collectAsState()
                 Text(
-                    "Recent chats",
+                    I18n.t("recent_chats", lang),
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -146,7 +163,7 @@ fun AppRoot(vm: AppViewModel) {
                 Tab.entries.forEach { tab ->
                     NavigationDrawerItem(
                         icon = { Icon(tab.icon, contentDescription = null) },
-                        label = { Text(tab.label) },
+                        label = { Text(getTabLabel(tab)) },
                         selected = tab == current,
                         onClick = {
                             scope.launch { drawerState.close() }
@@ -165,8 +182,8 @@ fun AppRoot(vm: AppViewModel) {
                         NavigationBarItem(
                             selected = tab == current,
                             onClick = { selected = tab.name },
-                            icon = { Icon(tab.icon, contentDescription = tab.label) },
-                            label = { Text(tab.label) },
+                            icon = { Icon(tab.icon, contentDescription = getTabLabel(tab)) },
+                            label = { Text(getTabLabel(tab)) },
                         )
                     }
                 }
@@ -176,6 +193,7 @@ fun AppRoot(vm: AppViewModel) {
                 when (current) {
                     Tab.MODELS -> ModelsScreen(vm, openDrawer)
                     Tab.CHAT -> ChatScreen(vm, openDrawer)
+                    Tab.SANDBOX -> WorkspaceAndEnvironmentScreen(vm, onBack = { selected = Tab.CHAT.name })
                     Tab.SERVER -> ServerScreen(vm, openDrawer)
                     Tab.USAGE -> UsageScreen(vm, openDrawer)
                     Tab.KEYS -> KeysScreen(vm, openDrawer)

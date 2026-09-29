@@ -150,9 +150,13 @@ fun VrmCharacter(
                 // it, so every call fails with UnsatisfiedLinkError ("No
                 // implementation found for ...nCreateBuilder") until these run. Each
                 // is a no-op whose only job is to trigger System.loadLibrary.
-                Filament.init() // libfilament-jni
-                Gltfio.init()   // libgltfio-jni
-                Utils.init()    // libfilament-utils-jni
+                try {
+                    Filament.init() // libfilament-jni
+                    Gltfio.init()   // libgltfio-jni
+                    Utils.init()    // libfilament-utils-jni
+                } catch (t: Throwable) {
+                    android.util.Log.e("VrmCharacter", "Filament native init failed", t)
+                }
 
                 // UiHelper defaults to OPAQUE. That makes it request
                 // EGL_ALPHA_SIZE = 0 (no alpha channel at all) and set the holder

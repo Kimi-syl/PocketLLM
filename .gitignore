@@ -13,8 +13,14 @@ app/src/main/cpp/llama.cpp/
 build-native/
 *.log
 
+# Keystore and secrets
+.env
+debug.keystore
+debug.keystore.base64
+*.keystore
+
 # Native libraries
-app/src/main/jniLibs/
+# app/src/main/jniLibs/
 *.apk
 build-native/
 
@@ -24,3 +30,27 @@ app/build/
 core/build/
 cli/build/
 build-cli-dist/
+
+# Gradle files and directories (user requested: do not commit anything related to gradle)
+.gradle/
+gradle/
+gradlew
+gradlew.bat
+gradle.properties
+build.gradle.kts
+settings.gradle.kts
+*/build.gradle.kts
+**/build.gradle.kts
+**/build/
+
+# TTS (Text-to-Speech) binary model files (exclude binaries/model weights, keep Kotlin source code)
+*.onnx
+*.onnx.json
+*piper*.tar.gz
+*piper*.bin
+*sherpa*.bin
+*sherpa*.onnx
+assets/tts/**
+**/tts_models/**
+**/piper/**
+**/sherpa/**
