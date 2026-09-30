@@ -69,7 +69,7 @@ enum class CompanionSpecies(val id: String, val label: String) {
         }
 
     companion object {
-        /** Null when the id is "off" or unrecognised, which means "draw the emoji". */
+        /** Null when the id is unrecognised. The emoji fallback mode was removed. */
         fun byId(id: String?): CompanionSpecies? = entries.firstOrNull { it.id == id }
     }
 }

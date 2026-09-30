@@ -283,12 +283,6 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                 item { SearchSettingsSection(vm) }
             }
             subPage == SettingsCategory.Companion -> {
-                item {
-                    CompanionHeroCard(
-                        vm = vm,
-                        onOpenSettings = {},
-                    )
-                }
                 item { CompanionSettingsSection(vm) }
                 item { CompanionAppearanceSection(vm) }
                 item { CompanionProfilesSection(vm) }
@@ -3090,7 +3084,7 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             val speciesOptions =
-                listOf("off" to "Emoji", "image" to "My image", "live2d" to "Live2D", "vrm" to "VRM") +
+                listOf("image" to "My image", "live2d" to "Live2D", "vrm" to "VRM") +
                 com.pocketllm.companion.CompanionSpecies.entries.map { it.id to it.label }
             speciesOptions.forEach { (id, label) ->
                 FilterChip(
@@ -3400,50 +3394,6 @@ private fun CompanionPersonalitySection(vm: AppViewModel) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-        // Only offered when there is no character to draw instead; showing emoji
-        // chips beside a cat that ignores them is just confusing.
-        if (settings.companionCharacter == "off") {
-            var glyph by remember(settings.companionGlyph) { mutableStateOf(settings.companionGlyph) }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                com.pocketllm.companion.BUBBLE_GLYPH_CHOICES.forEach { face ->
-                    Surface(
-                        shape = CircleShape,
-                        color = if (settings.companionGlyph == face) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clickable {
-                                glyph = face
-                                // Applied immediately: picking a face is the whole
-                                // gesture, so a separate Save step is just a chore.
-                                vm.updateCompanionGlyph(face)
-                            },
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(face, fontSize = 17.sp)
-                        }
-                    }
-                }
-            }
-            OutlinedTextField(
-                value = glyph,
-                onValueChange = { glyph = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Bubble face (any emoji)") },
-                singleLine = true,
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(
-                    onClick = { vm.updateCompanionGlyph(glyph) },
-                    enabled = glyph != settings.companionGlyph,
-                ) { Text("Save face") }
             }
         }
         TraitSlider("Size", settings.companionBubbleSize, "Small", "Large", range = 36..120) {
