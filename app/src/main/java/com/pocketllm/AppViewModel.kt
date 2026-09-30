@@ -1420,13 +1420,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else trimmed
         // Consume the attachment once it's been sent.
         _attachment.value = null
-        if (_uiAgentEnabled.value) {
+        if (_uiAgentEnabled.value && looksLikeUiCommand(enriched)) {
             sendChatWithUiAgent(enriched)
         } else if (_agentEnabled.value) {
             sendChatWithAgent(enriched)
         } else {
             sendChatPlain(enriched)
         }
+    }
+
+
+    /**
+     * Keyword gate for the UI agent: with the service on, only messages that
+     * actually ask the agent to *do* something on screen route to it — plain
+     * conversation must never be hijacked just because accessibility is on.
+     * A message can always force the agent by prefixing "@ui".
+     */
+    private fun looksLikeUiCommand(text: String): Boolean {
+        val t = text.trim()
+        if (t.startsWith("@ui", ignoreCase = true)) return true
+        if (t.length > 120) return false   // long prose is conversation, not a command
+        val words = t.lowercase().split(Regex("[^\\p{L}\\p{Nd}]+")).filter { it.isNotBlank() }
+        if (words.size > 12) return false  // ditto
+        val verbs = setOf("open", "close", "tap", "click", "press", "type", "swipe",
+                          "scroll", "go", "back", "launch", "start", "stop", "play",
+                          "pause", "toggle", "turn", "set", "enable", "disable",
+                          "打開", "關閉", "點", "按", "輸入", "滑動", "返回", "啟動", "切換", "關掉")
+        val subjects = setOf("app", "screen", "settings", "browser", "youtube", "camera",
+                             "wifi", "bluetooth", "volume", "brightness", "keyboard",
+                             "通知", "相機", "瀏覽器", "設定", "螢幕", "音量", "亮度", "鍵盤")
+        val verbHit = words.any { it in verbs }
+        val subjectHit = words.any { it in subjects }
+        return verbHit && (subjectHit || words.size <= 4)
     }
 
     private fun sendChatPlain(trimmed: String) {

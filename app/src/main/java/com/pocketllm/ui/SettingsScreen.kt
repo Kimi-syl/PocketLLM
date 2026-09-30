@@ -2515,29 +2515,63 @@ private fun ClassicSettingsLayout(
                     onClick = { onOpenSubPage(SettingsCategory.Preference) },
                 )
                 SettingsDivider()
-                SettingsRow(
-                    title = I18n.t("lang_dropdown_title", lang),
-                    subtitle = I18n.t("lang_dropdown_desc", lang),
-                    icon = Icons.Outlined.Language,
-                    trailingText = when (settings.appLanguage) {
-                        "zh-TW" -> "繁體中文"
-                        "zh-CN" -> "简体中文"
-                        "en" -> "English"
-                        else -> I18n.t("lang_system", lang)
-                    },
-                    onClick = { onOpenSubPage(SettingsCategory.Preference) },
-                )
+                var langMenu by remember { mutableStateOf(false) }
+                Box {
+                    SettingsRow(
+                        title = I18n.t("lang_dropdown_title", lang),
+                        subtitle = I18n.t("lang_dropdown_desc", lang),
+                        icon = Icons.Outlined.Language,
+                        trailingText = when (settings.appLanguage) {
+                            "zh-TW" -> "繁體中文"
+                            "zh-CN" -> "简体中文"
+                            "en" -> "English"
+                            else -> I18n.t("lang_system", lang)
+                        },
+                        onClick = { langMenu = true },
+                    )
+                    DropdownMenu(expanded = langMenu, onDismissRequest = { langMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("繁體中文") },
+                            onClick = { vm.updateAppLanguage("zh-TW"); langMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("简体中文") },
+                            onClick = { vm.updateAppLanguage("zh-CN"); langMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("English") },
+                            onClick = { vm.updateAppLanguage("en"); langMenu = false },
+                        )
+                    }
+                }
                 SettingsDivider()
-                SettingsRow(
-                    title = I18n.t("theme_color_mode", lang),
-                    icon = Icons.Outlined.Palette,
-                    trailingText = when (settings.themeMode) {
-                        "light" -> I18n.t("theme_light", lang)
-                        "dark" -> I18n.t("theme_dark", lang)
-                        else -> I18n.t("theme_system", lang)
-                    },
-                    onClick = { onOpenSubPage(SettingsCategory.Preference) },
-                )
+                var themeMenu by remember { mutableStateOf(false) }
+                Box {
+                    SettingsRow(
+                        title = I18n.t("theme_color_mode", lang),
+                        icon = Icons.Outlined.Palette,
+                        trailingText = when (settings.themeMode) {
+                            "light" -> I18n.t("theme_light", lang)
+                            "dark" -> I18n.t("theme_dark", lang)
+                            else -> I18n.t("theme_system", lang)
+                        },
+                        onClick = { themeMenu = true },
+                    )
+                    DropdownMenu(expanded = themeMenu, onDismissRequest = { themeMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("theme_light", lang)) },
+                            onClick = { vm.updateThemeMode("light"); themeMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("theme_dark", lang)) },
+                            onClick = { vm.updateThemeMode("dark"); themeMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("theme_system", lang)) },
+                            onClick = { vm.updateThemeMode("system"); themeMenu = false },
+                        )
+                    }
+                }
             }
         }
 
@@ -2659,6 +2693,20 @@ private fun ExtensionSettingsSection(vm: AppViewModel) {
             Switch(
                 checked = vm.agentEnabled.collectAsState().value,
                 onCheckedChange = { vm.toggleAgent() },
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("UI Agent 模式", style = MaterialTheme.typography.bodyMedium)
+                Text("螢幕操作智能體：開啟後才可手動切換；搭配 @ui 前綴或簡短指令觸發", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(
+                checked = vm.uiAgentEnabled.collectAsState().value,
+                onCheckedChange = { vm.updateUiAgentEnabled(it) },
             )
         }
     }
