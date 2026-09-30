@@ -41,6 +41,10 @@ class UiAccessibilityService : AccessibilityService() {
         var isConnected: Boolean = false
             private set
 
+        /** True when the service is connected and has published at least one snapshot. */
+        val isRunning: Boolean
+            get() = isConnected && snapshot.get().let { !it.isEmpty() && it.nodesById.isNotEmpty() }
+
         /** Latest published tree snapshot; read by the loop from any thread. */
         val snapshot = AtomicReference(NodeSnapshot.empty())
     }

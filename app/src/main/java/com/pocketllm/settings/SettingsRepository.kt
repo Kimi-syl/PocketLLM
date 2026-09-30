@@ -86,6 +86,9 @@ data class AppSettings(
     val ttsEngine: String = "system",
     val gpuOffload: Boolean = true,
     val agentEnabled: Boolean = false,
+    val uiAgentEnabled: Boolean = false,
+    val uiAgentMaxSteps: Int = 8,
+    val uiAgentMaxRetries: Int = 3,
     val enabledTools: Set<String> = setOf(
         "web_search", "read_url", "calculate", "datetime",
         "read_file", "write_file", "run_code", "device_info",  // clipboard is opt-in: it exposes user data

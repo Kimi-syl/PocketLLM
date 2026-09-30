@@ -28,6 +28,7 @@ object I18n {
             "search_service" -> if (en) "Search Service" else if (cn) "搜索服务" else "搜尋服務"
             "voice_service" -> if (en) "Voice Service" else if (cn) "语音服务" else "語音服務"
             "mcp" -> "MCP"
+            "ui_agent_title" -> if (en) "UI Agent" else if (cn) "UI 智能体" else "UI 智能體"
             "workspace_env" -> if (en) "Workspace & Environment" else if (cn) "工作区与环境" else "工作區與環境"
             "scheduled_tasks" -> if (en) "Scheduled Tasks" else if (cn) "定时任务" else "定時任務"
             "skills" -> if (en) "Skills" else if (cn) "技能" else "技能"

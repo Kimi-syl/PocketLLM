@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.pocketllm.ui.I18n
 
 data class ChatUiMessage(
     val role: String,
@@ -182,12 +183,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _agentEnabled = MutableStateFlow(false)
     val agentEnabled: StateFlow<Boolean> = _agentEnabled
 
+    private val _uiAgentEnabled = MutableStateFlow(false)
+    val uiAgentEnabled: StateFlow<Boolean> = _uiAgentEnabled
+
     fun toggleAgent() {
         _agentEnabled.value = !_agentEnabled.value
     }
 
     private val sandboxDir: java.io.File = java.io.File(context.filesDir, "sandbox").also { it.mkdirs() }
     private val readFileTool = com.pocketllm.agent.ReadFileTool(sandboxDir).also { it.setContext(context) }
+    private val uiAgentExecutor = com.pocketllm.agent.UiAgentExecutor()
     private val writeFileTool = com.pocketllm.agent.WriteFileTool(sandboxDir)
     private val runCodeTool = com.pocketllm.agent.RunCodeTool(sandboxDir)
     private val clipboardTool = com.pocketllm.agent.ClipboardReadTool(context)
@@ -281,6 +286,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
         tts.setEngine(settings.current().ttsEngine)
         _agentEnabled.value = settings.current().agentEnabled
+        _uiAgentEnabled.value = settings.current().uiAgentEnabled
         // Pick up an already-downloaded Piper model without any download UI.
         if (settings.current().ttsEngine == "piper") {
             viewModelScope.launch { tts.preparePiper() }
@@ -1161,6 +1167,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _agentEnabled.value = enabled
     }
 
+    fun updateUiAgentEnabled(enabled: Boolean) {
+        updateSettings { it.copy(uiAgentEnabled = enabled) }
+        _uiAgentEnabled.value = enabled
+    }
+
+    fun updateUiAgentTuning(maxSteps: Int, maxRetries: Int) {
+        updateSettings { it.copy(uiAgentMaxSteps = maxSteps, uiAgentMaxRetries = maxRetries) }
+    }
+
     fun updateTtsEngine(engine: String) {
         updateSettings { it.copy(ttsEngine = engine) }
         tts.setEngine(engine)
@@ -1405,7 +1420,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else trimmed
         // Consume the attachment once it's been sent.
         _attachment.value = null
-        if (_agentEnabled.value) {
+        if (_uiAgentEnabled.value) {
+            sendChatWithUiAgent(enriched)
+        } else if (_agentEnabled.value) {
             sendChatWithAgent(enriched)
         } else {
             sendChatPlain(enriched)
@@ -1504,6 +1521,67 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+            } finally {
+                _generating.value = false
+            }
+        }
+    }
+
+    /**
+     * UI accessibility agent path: runs the ReAct [UiAgentLoop] against the
+     * on-screen UI tree instead of the tool registry. Requires the
+     * accessibility service to be enabled (it publishes the node snapshot);
+     * without it the request degrades to a plain chat answer that explains
+     * why, rather than silently pretending to act.
+     */
+    private fun sendChatWithUiAgent(trimmed: String) {
+        viewModelScope.launch {
+            com.pocketllm.server.ServerLog.log("sendChatWithUiAgent: starting")
+            _generating.value = true
+            try {
+                val userTs = System.currentTimeMillis()
+                _chatMessages.value = _chatMessages.value + ChatUiMessage("user", trimmed, timestamp = userTs)
+                val replyIndex = _chatMessages.value.lastIndex
+
+                fun setReply(text: String) {
+                    _chatMessages.update { list ->
+                        list.toMutableList().also { it[replyIndex] = it[replyIndex].copy(content = text) }
+                    }
+                }
+
+                if (!com.pocketllm.agent.UiAccessibilityService.isRunning) {
+                    setReply(
+                        if (I18n.isEnglish(_currentSettings.value.appLanguage))
+                            "The screen-reading service isn't active. Enable PocketLLM in Settings → Accessibility → Installed services, then try again."
+                        else
+                            "螢幕讀取服務尚未啟用。請在 設定 → 無障礙 → 已安裝的服務 中啟用 PocketLLM，再試一次。"
+                    )
+                    return@launch
+                }
+
+                val tuning = _currentSettings.value
+                val loop = com.pocketllm.agent.UiAgentLoop(
+                    engine = engine,
+                    executor = uiAgentExecutor,
+                    maxSteps = tuning.uiAgentMaxSteps.coerceIn(1, 16),
+                    maxRetries = tuning.uiAgentMaxRetries.coerceIn(1, 6),
+                )
+                val logLines = mutableListOf<String>()
+                val result = loop.run(trimmed) { line ->
+                    logLines += line
+                    com.pocketllm.server.ServerLog.log("ui-agent: $line")
+                }
+                when (result) {
+                    is com.pocketllm.agent.UiAgentLoop.UiResult.Done ->
+                        setReply(result.answer ?: logLines.lastOrNull() ?: "Done.")
+                    is com.pocketllm.agent.UiAgentLoop.UiResult.Error ->
+                        setReply("UI agent error: ${result.message}")
+                }
+            } catch (e: Throwable) {
+                com.pocketllm.server.ServerLog.log("sendChatWithUiAgent: failed: ${e.message}")
+                _chatMessages.value = _chatMessages.value + ChatUiMessage(
+                    "assistant", "UI agent failed: ${e.message}", timestamp = System.currentTimeMillis(),
+                )
             } finally {
                 _generating.value = false
             }

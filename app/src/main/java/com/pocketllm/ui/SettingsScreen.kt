@@ -264,6 +264,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                 }
             }
             subPage == SettingsCategory.Accessibility -> {
+                item { UiAgentSection(vm) }
                 item { AccessibilitySettingsSection(vm) }
             }
             subPage == SettingsCategory.Provider -> {
@@ -355,176 +356,7 @@ return
                 }
             }
 
-            // Prominent Sandbox Environment Card ("make sandbox environment more visible")
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { subPage = SettingsCategory.Workspace },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (settings.sandboxInstalled)
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                        else
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                    ),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (settings.sandboxInstalled) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Outlined.Terminal,
-                                contentDescription = null,
-                                tint = if (settings.sandboxInstalled) MaterialTheme.colorScheme.onPrimary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    I18n.t("sandbox_title", lang),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = if (settings.sandboxInstalled) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
-                                ) {
-                                    Text(
-                                        if (settings.sandboxInstalled) I18n.t("sandbox_ready", lang)
-                                        else I18n.t("sandbox_uninstalled", lang),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (settings.sandboxInstalled) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                if (settings.sandboxInstalled)
-                                    I18n.t("sandbox_desc_ready", lang)
-                                else
-                                    I18n.t("sandbox_desc_idle", lang),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Icon(
-                            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            // Prominent Companion Momo Hero Card ("Where is my old companion setting?")
-            item {
-                CompanionHeroCard(
-                    vm = vm,
-                    onOpenSettings = { subPage = SettingsCategory.Companion },
-                )
-            }
-
-            // Section 1: Top Group (Matches IMG_5100)
-            item {
-                SettingsGroup {
-                    SettingsRow(
-                        title = I18n.t("search_service", lang),
-                        icon = Icons.Outlined.Public,
-                        onClick = { subPage = SettingsCategory.Search },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("voice_service", lang),
-                        icon = Icons.Outlined.VolumeUp,
-                        onClick = { subPage = SettingsCategory.Voice },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("mcp", lang),
-                        icon = Icons.Outlined.Terminal,
-                        onClick = { mcpDialogOpen = true },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("workspace_env", lang),
-                        icon = Icons.Outlined.Folder,
-                        trailingText = if (settings.sandboxInstalled) "Alpine 3.21 · 就緒" else "未設定",
-                        onClick = { subPage = SettingsCategory.Workspace },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("scheduled_tasks", lang),
-                        icon = Icons.Outlined.Schedule,
-                        onClick = { scheduledTasksDialogOpen = true },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("skills", lang),
-                        icon = Icons.Outlined.AutoAwesome,
-                        onClick = { subPage = SettingsCategory.Skills },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("lorebook", lang),
-                        icon = Icons.Outlined.MenuBook,
-                        onClick = { worldBookDialogOpen = true },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("memory", lang),
-                        icon = Icons.Outlined.Psychology,
-                        onClick = { subPage = SettingsCategory.Memory },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("quick_phrases", lang),
-                        icon = Icons.Outlined.Bolt,
-                        onClick = { quickPhrasesDialogOpen = true },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("prompt_injection", lang),
-                        icon = Icons.Outlined.Layers,
-                        onClick = { subPage = SettingsCategory.PromptInjection },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("network_proxy", lang),
-                        icon = Icons.Outlined.Dns,
-                        onClick = { networkProxyDialogOpen = true },
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        title = I18n.t("default_models", lang),
-                        icon = Icons.Outlined.SmartToy,
-                        onClick = { subPage = SettingsCategory.DefaultModels },
-                    )
-                }
-            }
-
-            // Section 2: 伴侶、客製化與無障礙 (Personalization & Companion & Accessibility)
+            // Section: 伴侶、客製化與無障礙 (Personalization & Companion & Accessibility)
             item {
                 SettingsGroup(title = I18n.t("customisation_group", lang)) {
                     SettingsRow(
@@ -565,7 +397,37 @@ return
                 }
             }
 
-            // Section 3: 資料設定
+            // Section: model & services
+            item {
+                SettingsGroup {
+                    SettingsRow(
+                        title = I18n.t("search_service", lang),
+                        icon = Icons.Outlined.Public,
+                        onClick = { subPage = SettingsCategory.Search },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        title = I18n.t("prompt_injection", lang),
+                        icon = Icons.Outlined.Layers,
+                        onClick = { subPage = SettingsCategory.PromptInjection },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        title = I18n.t("network_proxy", lang),
+                        icon = Icons.Outlined.Dns,
+                        onClick = { networkProxyDialogOpen = true },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        title = I18n.t("default_models", lang),
+                        icon = Icons.Outlined.SmartToy,
+                        onClick = { subPage = SettingsCategory.DefaultModels },
+                    )
+                }
+            }
+
+
+            // Section: data
             item {
                 SettingsGroup(title = I18n.t("data_settings", lang)) {
                     SettingsRow(
@@ -583,7 +445,7 @@ return
                 }
             }
 
-            // Section 4: 關於
+            // Section: about
             item {
                 SettingsGroup(title = I18n.t("about_group", lang)) {
                     SettingsRow(
@@ -2141,6 +2003,118 @@ private fun PreferenceSettingsSection(
                 Text(if (I18n.isEnglish(lang)) "Open" else "前往設定")
             }
         }
+    }
+}
+
+/**
+ * UI accessibility AGENT settings — distinct from the traditional
+ * accessibility options below. Toggles the screen-reading ReAct agent that
+ * can see the screen and tap/type on the user's behalf, shows whether the
+ * accessibility service is actually connected, exposes step/retry tuning,
+ * and links into the system page that enables the service.
+ */
+@Composable
+private fun UiAgentSection(vm: AppViewModel) {
+    val lang = vm.currentSettings.collectAsState().value.appLanguage
+    val enabled = vm.uiAgentEnabled.collectAsState().value
+    val context = LocalContext.current
+    var serviceConnected by remember { mutableStateOf(com.pocketllm.agent.UiAccessibilityService.isRunning) }
+
+    // Re-check on resume: the user may enable the service in system settings
+    // and come back; re-checking on ON_RESUME keeps the status honest.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                serviceConnected = com.pocketllm.agent.UiAccessibilityService.isRunning
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
+    SectionCard(I18n.t("ui_agent_title", lang)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (I18n.isEnglish(lang)) "Screen agent (eyes & hands)"
+                    else "螢幕智能體（眼與手）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (I18n.isEnglish(lang))
+                        "Lets the model see the current screen and tap/type for you (ReAct loop)"
+                    else "讓模型看見螢幕並代替你點擊／輸入（ReAct 迴圈）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = { vm.updateUiAgentEnabled(it) })
+        }
+
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(10.dp))
+
+        // Live service status - honest state, not a decorative label.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = if (serviceConnected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+            ) {
+                Text(
+                    if (serviceConnected) "CONNECTED" else if (I18n.isEnglish(lang)) "NOT CONNECTED" else "未連接",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (serviceConnected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (I18n.isEnglish(lang)) "Accessibility service status" else "無障礙服務狀態",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        TextButton(onClick = {
+            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }) {
+            Text(if (I18n.isEnglish(lang)) "Open system accessibility settings" else "開啟系統無障礙設定")
+        }
+
+        Spacer(Modifier.height(6.dp))
+
+        // Step/retry tuning - real values consumed by UiAgentLoop.
+        val steps = vm.currentSettings.collectAsState().value.uiAgentMaxSteps.coerceIn(1, 16)
+        val retries = vm.currentSettings.collectAsState().value.uiAgentMaxRetries.coerceIn(1, 6)
+        Text(
+            if (I18n.isEnglish(lang)) "Max steps per goal: " + steps else "每個目標最多步數：" + steps,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Slider(
+            value = steps.toFloat(),
+            onValueChange = { vm.updateUiAgentTuning(it.toInt(), retries) },
+            valueRange = 1f..16f,
+            steps = 14,
+        )
+        Text(
+            if (I18n.isEnglish(lang)) "Retries on parse failure: " + retries else "解析失敗重試次數：" + retries,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Slider(
+            value = retries.toFloat(),
+            onValueChange = { vm.updateUiAgentTuning(steps, it.toInt()) },
+            valueRange = 1f..6f,
+            steps = 4,
+        )
     }
 }
 
