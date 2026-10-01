@@ -383,9 +383,9 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: payload = 88; break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: payload = 24; break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: payload = 24; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR: payload = 16; break;
+            case 1000411001u /* PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR (not in this headers) */: payload = 16; break;
             case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: payload = 136; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR: payload = 16; break;
+            case 1000361000u /* PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR */: payload = 16; break;
             default: payload = 16; break; /* unknown small struct: safe floor */
         }
         if (payload > 16) memset((unsigned char *)s + 16, 0, payload - 16);
