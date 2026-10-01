@@ -350,7 +350,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *pCre
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2 *pFeatures) {
     static void (*fn)(VkPhysicalDevice, VkPhysicalDeviceFeatures2 *) = NULL;
     if (!fn) fn = (void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures2 *))resolve_for("vkGetPhysicalDeviceFeatures2");
-    if (fn) fn(physicalDevice, pFeatures);
+    if (fn) {
+        fn(physicalDevice, pFeatures);
+        return;
+    }
+    /* Unresolved on this driver: leaving pFeatures untouched hands ggml a
+     * pNext chain of stack garbage (vk11_features, shaderFloat16, ...) that
+     * it later trusts — the crash looked like a hang inside loadModel.
+     * Zero the payload of every struct in the chain: all-features-off is a
+     * lie this driver can support, garbage is not. Each chained struct
+     * begins with the same 16-byte VkStructureType+pNext header (both
+     * pointers on arm64), so everything past that is the feature payload. */
+    VkBaseOutStructure *s = (VkBaseOutStructure *)pFeatures;
+    while (s != NULL) {
+        unsigned char *base = (unsigned char *)s;
+        memset(base + 16, 0, 4096 - 16);
+        s = s->pNext;
+    }
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy *pRegions) {
