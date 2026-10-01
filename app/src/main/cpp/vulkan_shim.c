@@ -217,6 +217,20 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
 
 const char *vulkan_shim_debug(void) { return g_diag; }
 
+/* True when the active system driver is known-broken for llama.cpp: it does
+ * not export even v1 vkGetPhysicalDeviceFeatures, so ggml's device probe
+ * would run blind and the load path dies later in vkCreateBuffer with a
+ * null device handle. llama_jni consults this before llama_backend_init()
+ * and sets GGML_DISABLE_VULKAN=1 to keep the backend unregistered, which
+ * also stops CPU loads from routing tensor buffers through the vk host
+ * allocator. */
+int vulkan_shim_driver_broken(void) {
+    if (!g_gipa || !g_create_instance) return 1;
+    void *f1 = g_gipa(NULL, "vkGetPhysicalDeviceFeatures");
+    void *f2 = g_gipa(NULL, "vkGetPhysicalDeviceFeatures2");
+    return (f1 == NULL && f2 == NULL);
+}
+
 /* Fork-isolated driver probe: exercises instance creation + physical device
  * enumeration in a child process so a driver segfault (Turnip on some GPUs)
  * kills only the child. The parent reports what happened. Runs on demand

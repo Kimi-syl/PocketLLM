@@ -71,12 +71,20 @@ size_t utf8SequenceLength(unsigned char lead) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
+    /* A driver that cannot answer feature queries kills the load path
+     * regardless of gpuLayers: even CPU layers route host buffers through
+     * the vk host allocator once the backend registers. Deregistering
+     * before llama_backend_init keeps every load on the plain CPU path. */
+    if (vulkan_shim_driver_broken()) {
+        setenv("GGML_DISABLE_VULKAN", "1", 1);
+    }
     llama_backend_init();
 }
 
 extern "C" const char *opencl_shim_debug(void);
 extern "C" const char *vulkan_shim_debug(void);
 extern "C" const char *vulkan_shim_probe(void);
+extern "C" int vulkan_shim_driver_broken(void);
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
