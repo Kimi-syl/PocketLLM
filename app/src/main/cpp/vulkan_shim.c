@@ -354,17 +354,41 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
         fn(physicalDevice, pFeatures);
         return;
     }
-    /* Unresolved on this driver: leaving pFeatures untouched hands ggml a
-     * pNext chain of stack garbage (vk11_features, shaderFloat16, ...) that
-     * it later trusts — the crash looked like a hang inside loadModel.
-     * Zero the payload of every struct in the chain: all-features-off is a
-     * lie this driver can support, garbage is not. Each chained struct
-     * begins with the same 16-byte VkStructureType+pNext header (both
-     * pointers on arm64), so everything past that is the feature payload. */
-    VkBaseOutStructure *s = (VkBaseOutStructure *)pFeatures;
+    /* Unresolved on this Mali driver. Returning without touching pFeatures
+     * leaves the caller's pNext chain (VkPhysicalDeviceVulkan11/12Features
+     * etc.) holding stack garbage that ggml trusts -> UB. But we also cannot
+     * memset a fixed size past each header: the chain structs are separate
+     * stack locals and zeroing past the end smashes the frame (that made a
+     * later load die in vkCreateBuffer with a null device).
+     *
+     * Correct fallback: v1 vkGetPhysicalDeviceFeatures IS exported by every
+     * driver - use it to fill the base struct, and zero only the small
+     * fixed-size payloads of the chain structs ggml actually chains
+     * (11/12Features: 56/80 bytes; zero 256 to be generous but stay inside
+     * any one struct's own allocation is impossible to know, so instead
+     * walk the chain and zero only sizeof-bounded payloads via sType). */
+    {
+        static void (*fn_v1)(VkPhysicalDevice, VkPhysicalDeviceFeatures *) = NULL;
+        if (!fn_v1) fn_v1 = (void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures *))resolve_for("vkGetPhysicalDeviceFeatures");
+        if (fn_v1) fn_v1(physicalDevice, &pFeatures->features);
+        else memset(&pFeatures->features, 0, sizeof(pFeatures->features));
+    }
+    VkBaseOutStructure *s = (VkBaseOutStructure *)pFeatures->pNext;
     while (s != NULL) {
-        unsigned char *base = (unsigned char *)s;
-        memset(base + 16, 0, 4096 - 16);
+        /* payload sizes keyed by sType; everything ggml chains is covered.
+         * -1 leaves the sType/pNext header intact. */
+        size_t payload = 0;
+        switch (s->sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: payload = 56; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: payload = 88; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: payload = 24; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: payload = 24; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR: payload = 16; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: payload = 136; break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR: payload = 16; break;
+            default: payload = 16; break; /* unknown small struct: safe floor */
+        }
+        if (payload > 16) memset((unsigned char *)s + 16, 0, payload - 16);
         s = s->pNext;
     }
 }
