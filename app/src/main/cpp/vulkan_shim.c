@@ -322,6 +322,195 @@ int vulkan_shim_driver_broken(void) {
     return !(g_pd2 || g_pd2k);
 }
 
+/* Fork-isolated GPU-usable probe: the full ggml load path in miniature —
+ * instance (KHR injected) -> features2 chain -> vkCreateDevice ->
+ * createBuffer + allocateMemory + map -> free. A driver that survives this
+ * can serve llama.cpp; one that segfaults only kills the child, and
+ * llama_jni keeps gpuLayers=99 attempts off the table (CPU loads stay safe
+ * via no_host). Runs on demand from supportsGpuOffload(), never at load. */
+static char g_gpu_probe[512];
+
+static void gpu_probe_child(int fd) {
+    uint32_t api = 0;
+    PFN_vkEnumerateInstanceVersion ev =
+        (PFN_vkEnumerateInstanceVersion)g_gipa(NULL, "vkEnumerateInstanceVersion");
+    if (ev) ev(&api);
+    if (VK_API_VERSION_MAJOR(api) < 1 || VK_API_VERSION_MINOR(api) < 1) {
+        write(fd, "api<1.1\n", 8);
+        _exit(0);
+    }
+    const char *exts[1] = { kGPDP2 };
+    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "pocketllm-gpuprobe", .apiVersion = api};
+    VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+    if (instance_ext_advertised(kGPDP2)) {
+        ci.enabledExtensionCount = 1;
+        ci.ppEnabledExtensionNames = exts;
+    }
+    VkInstance inst = VK_NULL_HANDLE;
+    if (g_create_instance(&ci, NULL, &inst) != VK_SUCCESS) {
+        write(fd, "instance failed\n", 16);
+        _exit(0);
+    }
+    PFN_vkEnumeratePhysicalDevices eps =
+        (PFN_vkEnumeratePhysicalDevices)g_gipa(inst, "vkEnumeratePhysicalDevices");
+    PFN_vkGetPhysicalDeviceFeatures2 pdf2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)g_gipa(inst, "vkGetPhysicalDeviceFeatures2");
+    if (!pdf2) pdf2 = (PFN_vkGetPhysicalDeviceFeatures2)g_gipa(inst, "vkGetPhysicalDeviceFeatures2KHR");
+    PFN_vkGetPhysicalDeviceProperties gp =
+        (PFN_vkGetPhysicalDeviceProperties)g_gipa(inst, "vkGetPhysicalDeviceProperties");
+    if (!eps || !pdf2 || !gp) {
+        write(fd, "enum fns missing\n", 17);
+        _exit(0);
+    }
+    uint32_t count = 0;
+    if (eps(inst, &count, NULL) != VK_SUCCESS || count == 0) {
+        write(fd, "no devices\n", 11);
+        _exit(0);
+    }
+    VkPhysicalDevice *devs = (VkPhysicalDevice *)calloc(count, sizeof(VkPhysicalDevice));
+    if (!devs) _exit(0);
+    eps(inst, &count, devs);
+    const char *verdict = "no usable device\n";
+    for (uint32_t i = 0; i < count; i++) {
+        /* Mirrors ggml: chained 11/12 features must come back populated and
+         * storageBuffer16BitAccess is a hard requirement. */
+        VkPhysicalDeviceVulkan12Features vk12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan11Features vk11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vk12};
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vk11};
+        pdf2(devs[i], &f2);
+        if (!vk11.storageBuffer16BitAccess) {
+            continue; /* ggml throws "does not support 16-bit storage" */
+        }
+        VkPhysicalDeviceProperties props;
+        gp(devs[i], &props);
+        (void)props;
+        /* queue family 0 with compute+graphics is what ggml picks first */
+        float prio = 1.0f;
+        VkDeviceQueueCreateInfo qci = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = 0,
+            .queueCount = 1,
+            .pQueuePriorities = &prio,
+        };
+        const char *dev_exts[2] = {"VK_KHR_16bit_storage", "VK_KHR_shader_float16_int8"};
+        VkDeviceCreateInfo dci = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = &qci,
+            .enabledExtensionCount = 2,
+            .ppEnabledExtensionNames = dev_exts,
+        };
+        VkPhysicalDeviceFeatures2 dfeatures = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vk11};
+        dci.pNext = &dfeatures;
+        PFN_vkCreateDevice cd = (PFN_vkCreateDevice)g_gipa(inst, "vkCreateDevice");
+        if (!cd) { verdict = "no vkCreateDevice\n"; continue; }
+        VkDevice logidev = VK_NULL_HANDLE;
+        VkResult r = cd(devs[i], &dci, NULL, &logidev);
+        if (r != VK_SUCCESS) { verdict = "createDevice failed\n"; continue; }
+        PFN_vkCreateBuffer cb = (PFN_vkCreateBuffer)g_gipa(inst, "vkCreateBuffer");
+        PFN_vkAllocateMemory am = (PFN_vkAllocateMemory)g_gipa(inst, "vkAllocateMemory");
+        PFN_vkMapMemory mm = (PFN_vkMapMemory)g_gipa(inst, "vkMapMemory");
+        PFN_vkFreeMemory fm = (PFN_vkFreeMemory)g_gipa(inst, "vkFreeMemory");
+        PFN_vkDestroyBuffer db = (PFN_vkDestroyBuffer)g_gipa(inst, "vkDestroyBuffer");
+        PFN_vkDestroyDevice dd = (PFN_vkDestroyDevice)g_gipa(inst, "vkDestroyDevice");
+        if (cb && am && mm && fm && db && dd) {
+            VkBufferCreateInfo bci = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = 1 << 20,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            VkBuffer buf = VK_NULL_HANDLE;
+            r = cb(logidev, &bci, NULL, &buf);
+            if (r != VK_SUCCESS) {
+                verdict = "createBuffer failed\n";
+            } else {
+                VkMemoryRequirements mr;
+                PFN_vkGetBufferMemoryRequirements gb =
+                    (PFN_vkGetBufferMemoryRequirements)g_gipa(inst, "vkGetBufferMemoryRequirements");
+                if (!gb) { verdict = "no mem reqs fn\n"; }
+                else {
+                    gb(logidev, buf, &mr);
+                    PFN_vkGetPhysicalDeviceMemoryProperties gmp =
+                        (PFN_vkGetPhysicalDeviceMemoryProperties)g_gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
+                    VkPhysicalDeviceMemoryProperties mp;
+                    gmp(devs[i], &mp);
+                    uint32_t type = VK_MAX_MEMORY_TYPES;
+                    for (uint32_t t = 0; t < mp.memoryTypeCount; t++) {
+                        if ((mr.memoryTypeBits & (1u << t)) &&
+                            (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+                            (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                            type = t; break;
+                        }
+                    }
+                    if (type == VK_MAX_MEMORY_TYPES) {
+                        verdict = "no host-visible mem type\n";
+                    } else {
+                        VkMemoryAllocateInfo mai = {
+                            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                            .allocationSize = mr.size,
+                            .memoryTypeIndex = type,
+                        };
+                        VkDeviceMemory mem = VK_NULL_HANDLE;
+                        r = am(logidev, &mai, NULL, &mem);
+                        if (r != VK_SUCCESS) {
+                            verdict = "allocateMemory failed\n";
+                        } else {
+                            void *mapped = NULL;
+                            r = mm(logidev, mem, 0, mr.size, 0, &mapped);
+                            if (r != VK_SUCCESS || !mapped) {
+                                verdict = "map failed\n";
+                            } else {
+                                verdict = "GPU USABLE\n";
+                            }
+                            fm(logidev, mem, NULL);
+                        }
+                    }
+                }
+                db(logidev, buf, NULL);
+            }
+            dd(logidev, NULL);
+        } else {
+            verdict = "dev fns missing\n";
+        }
+        break;
+    }
+    free(devs);
+    write(fd, verdict, strlen(verdict));
+    _exit(0);
+}
+
+const char *vulkan_shim_gpu_usable(void) {
+    if (!g_driver || !g_gipa || !g_create_instance) return NULL;
+    int fds[2];
+    if (pipe(fds) != 0) return NULL;
+    pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return NULL; }
+    if (pid == 0) {
+        close(fds[0]);
+        gpu_probe_child(fds[1]);
+        _exit(0);
+    }
+    close(fds[1]);
+    char out[64] = {0};
+    size_t got = 0;
+    ssize_t r;
+    while (got < sizeof(out) - 1 &&
+           (r = read(fds[0], out + got, sizeof(out) - 1 - got)) > 0) got += (size_t)r;
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFSIGNALED(status)) {
+        snprintf(g_gpu_probe, sizeof(g_gpu_probe), "CRASHED (signal %d)", WTERMSIG(status));
+        diagf("gpu probe: %s\n", g_gpu_probe);
+        return NULL;
+    }
+    snprintf(g_gpu_probe, sizeof(g_gpu_probe), "%s", out);
+    diagf("gpu probe: %s", g_gpu_probe);
+    if (strcmp(out, "GPU USABLE\n") == 0) return g_gpu_probe;
+    return NULL;
+}
+
 /* Fork-isolated driver probe: exercises instance creation + physical device
  * enumeration in a child process so a driver segfault (Turnip on some GPUs)
  * kills only the child. The parent reports what happened. Runs on demand
