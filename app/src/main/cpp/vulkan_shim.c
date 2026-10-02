@@ -7,6 +7,26 @@
  * If Turnip is unavailable or fails to init, we fall back to the system
  * libvulkan so capable devices keep working.
  *
+ * Physical-device feature queries get a layered fallback for drivers whose
+ * loader does not hand out core-1.1 vkGetPhysicalDeviceFeatures2 (seen on
+ * MediaTek Mali):
+ *   1. core vkGetPhysicalDeviceFeatures2
+ *   2. KHR alias vkGetPhysicalDeviceFeatures2KHR (spec-promoted: same
+ *      command, same struct type, same sType value - nothing to convert)
+ *   3. v1 vkGetPhysicalDeviceFeatures (no KHR alias of the v1 command
+ *      exists - the extension only added *2 commands) fills the base
+ *      struct, plus sType-bounded zeroing of the pNext chain so ggml never
+ *      reads garbage
+ *   4. nothing resolvable -> vulkan_shim_driver_broken() reports the driver
+ *      broken and llama_jni keeps the Vulkan backend unregistered
+ *
+ * Instances are tracked no matter how they are created: ggml's dispatcher
+ * resolves vkCreateInstance through OUR vkGetInstanceProcAddr, so that name
+ * routes to the storing wrapper (which also injects
+ * VK_KHR_get_physical_device_properties2 when the driver advertises it -
+ * loaders predating core 1.1 wire the *2KHR entry points only for instances
+ * that enable the extension).
+ *
  * Diagnostics are collected for backendInfo().
  */
 #include <vulkan/vulkan.h>
@@ -14,6 +34,7 @@
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -217,18 +238,88 @@ __attribute__((constructor)) static void vulkan_shim_init(void) {
 
 const char *vulkan_shim_debug(void) { return g_diag; }
 
-/* True when the active system driver is known-broken for llama.cpp: it does
- * not export even v1 vkGetPhysicalDeviceFeatures, so ggml's device probe
- * would run blind and the load path dies later in vkCreateBuffer with a
- * null device handle. llama_jni consults this before llama_backend_init()
- * and sets GGML_DISABLE_VULKAN=1 to keep the backend unregistered, which
- * also stops CPU loads from routing tensor buffers through the vk host
- * allocator. */
+/* ---- Instance tracking ----
+ * ggml's DispatchLoaderDynamic resolves vkCreateInstance through our
+ * vkGetInstanceProcAddr, so routing that one name to our wrapper here is
+ * what makes g_instances[] complete. Physical-device commands may only be
+ * resolvable instance-level (a NULL instance legally returns NULL), so an
+ * empty g_instances[] silently disables every fallback below - the bug that
+ * logged "unresolved" on a working driver. */
+
+static VkInstance g_instances[8] = {0};
+static int g_instance_count = 0;
+
+static const char kGPDP2[] = "VK_KHR_get_physical_device_properties2";
+
+static int ext_list_contains(const VkInstanceCreateInfo *ci, const char *name) {
+    for (uint32_t i = 0; i < ci->enabledExtensionCount; i++) {
+        const char *const e = ci->ppEnabledExtensionNames ? ci->ppEnabledExtensionNames[i] : NULL;
+        if (e && strcmp(e, name) == 0) return 1;
+    }
+    return 0;
+}
+
+static int instance_ext_advertised(const char *name) {
+    if (!g_eiep) return 0;
+    uint32_t n = 0;
+    if (g_eiep(NULL, &n, NULL) != VK_SUCCESS || n == 0) return 0;
+    VkExtensionProperties *props = (VkExtensionProperties *)malloc(n * sizeof(*props));
+    if (!props) return 0;
+    int found = 0;
+    if (g_eiep(NULL, &n, props) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < n; i++) {
+            if (strcmp(props[i].extensionName, name) == 0) { found = 1; break; }
+        }
+    }
+    free(props);
+    return found;
+}
+
+/* ---- Physical-device feature query resolution ----
+ * The KHR command is the spec-promoted alias of the core one: same
+ * signature, same struct type, same sType enum value. One pointer type
+ * serves both spellings. */
+
+static PFN_vkGetPhysicalDeviceFeatures2 g_pd2  = NULL;  /* core spelling */
+static PFN_vkGetPhysicalDeviceFeatures2 g_pd2k = NULL;  /* KHR spelling  */
+static PFN_vkGetPhysicalDeviceFeatures  g_pd1  = NULL;  /* v1, base only */
+
+static void ensure_feature_fns(void) {
+    if (g_pd2 || g_pd2k) return;
+    if (!g_gipa) return;
+    for (int i = 0; i < g_instance_count && !(g_pd2 || g_pd2k); i++) {
+        if (!g_pd2) {
+            g_pd2 = (PFN_vkGetPhysicalDeviceFeatures2)g_gipa(g_instances[i], "vkGetPhysicalDeviceFeatures2");
+        }
+        if (!g_pd2k) {
+            g_pd2k = (PFN_vkGetPhysicalDeviceFeatures2)g_gipa(g_instances[i], "vkGetPhysicalDeviceFeatures2KHR");
+        }
+        if (!g_pd1) {
+            g_pd1 = (PFN_vkGetPhysicalDeviceFeatures)g_gipa(g_instances[i], "vkGetPhysicalDeviceFeatures");
+        }
+    }
+    if (!g_pd2 && !g_pd2k && !g_pd1 && g_instance_count == 0) {
+        /* Spec: NULL instance resolves only global commands, but some
+         * Android loaders hand out trampolines anyway; try once. */
+        g_pd1 = (PFN_vkGetPhysicalDeviceFeatures)g_gipa(NULL, "vkGetPhysicalDeviceFeatures");
+    }
+    if (g_pd2)       diagf("features2 via core\n");
+    else if (g_pd2k) diagf("features2 via KHR alias\n");
+    else if (g_pd1)  diagf("features2 unavailable, v1 only (chain zeroed)\n");
+    else             diagf("no feature query resolvable\n");
+}
+
+/* True when the driver cannot answer 2-level feature queries at all: ggml's
+ * chained feature structs (Vulkan11/12Features, shaderFloat16, ...) could
+ * never hold real values and the pNext chain would be conservatively zeroed
+ * (all-false features), which forfeits fp16. llama_jni consults this before
+ * llama_backend_init() and sets GGML_DISABLE_VULKAN=1 so the backend never
+ * registers - this also keeps CPU-only loads from routing tensor buffers
+ * through the vk host allocator on a driver that cannot create buffers. */
 int vulkan_shim_driver_broken(void) {
     if (!g_gipa || !g_create_instance) return 1;
-    void *f1 = g_gipa(NULL, "vkGetPhysicalDeviceFeatures");
-    void *f2 = g_gipa(NULL, "vkGetPhysicalDeviceFeatures2");
-    return (f1 == NULL && f2 == NULL);
+    ensure_feature_fns();
+    return !(g_pd2 || g_pd2k);
 }
 
 /* Fork-isolated driver probe: exercises instance creation + physical device
@@ -275,6 +366,17 @@ const char *vulkan_shim_probe(void) {
                 break;
             }
             n += (size_t)snprintf(out + n, sizeof(out) - n, "instance ok\n");
+
+            /* Feature-query resolution report (the whole point of the shim). */
+            {
+                void *f2  = (void *)g_gipa(inst, "vkGetPhysicalDeviceFeatures2");
+                void *f2k = (void *)g_gipa(inst, "vkGetPhysicalDeviceFeatures2KHR");
+                void *f1  = (void *)g_gipa(inst, "vkGetPhysicalDeviceFeatures");
+                n += (size_t)snprintf(out + n, sizeof(out) - n, "feat fns: core2=%d khr2=%d v1=%d\n",
+                                      f2 != NULL, f2k != NULL, f1 != NULL);
+                n += (size_t)snprintf(out + n, sizeof(out) - n, "ext gpdp2 advertised: %s\n",
+                                      instance_ext_advertised(kGPDP2) ? "yes" : "no");
+            }
 
             PFN_vkEnumeratePhysicalDevices eps =
                 (PFN_vkEnumeratePhysicalDevices)g_gipa(inst, "vkEnumeratePhysicalDevices");
@@ -325,9 +427,6 @@ const char *vulkan_shim_probe(void) {
  * of them at System.loadLibrary time, so the shim exports them too and
  * resolves each against the instance(s) it created. */
 
-static VkInstance g_instances[8] = {0};
-static int g_instance_count = 0;
-
 static void *resolve_for(const char *name) {
     if (!g_gipa) return NULL;
     void *f = NULL;
@@ -341,6 +440,11 @@ static void *resolve_for(const char *name) {
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *name) {
     if (!g_gipa) return NULL;
+    /* Route instance creation through our wrapper so instances created via
+     * ggml's dispatcher are tracked and get the KHR extension injected. */
+    if (strcmp(name, "vkCreateInstance") == 0) {
+        return (PFN_vkVoidFunction)vkCreateInstance;
+    }
     return g_gipa(instance, name);
 }
 
@@ -353,54 +457,77 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, co
 
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkInstance *pInstance) {
     if (!g_create_instance) return VK_ERROR_INITIALIZATION_FAILED;
-    VkResult r = g_create_instance(pCreateInfo, pAllocator, pInstance);
+    VkInstanceCreateInfo ci = *pCreateInfo;
+    const char *ext_ptrs[32];
+    int injected = 0;
+    /* Enable VK_KHR_get_physical_device_properties2 when the driver
+     * advertises it: loaders predating core 1.1 wire the *2KHR entry points
+     * only for instances that enable the extension. Core-1.1+ drivers
+     * accept it as an implicitly-available instance extension. */
+    if (ci.enabledExtensionCount < 32 &&
+        !ext_list_contains(&ci, kGPDP2) &&
+        instance_ext_advertised(kGPDP2)) {
+        for (uint32_t i = 0; i < ci.enabledExtensionCount; i++) {
+            ext_ptrs[i] = ci.ppEnabledExtensionNames[i];
+        }
+        ext_ptrs[ci.enabledExtensionCount] = kGPDP2;
+        ci.ppEnabledExtensionNames = ext_ptrs;
+        ci.enabledExtensionCount += 1;
+        injected = 1;
+    }
+    VkResult r = g_create_instance(&ci, pAllocator, pInstance);
     if (r == VK_SUCCESS && pInstance && g_instance_count < 8) {
         g_instances[g_instance_count++] = *pInstance;
-        diagf("instance stored (%d)\n", g_instance_count);
+        diagf("instance stored (%d)%s\n", g_instance_count, injected ? " +gpdp2" : "");
     }
     return r;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2 *pFeatures) {
-    static void (*fn)(VkPhysicalDevice, VkPhysicalDeviceFeatures2 *) = NULL;
-    if (!fn) fn = (void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures2 *))resolve_for("vkGetPhysicalDeviceFeatures2");
-    if (fn) {
-        fn(physicalDevice, pFeatures);
+    ensure_feature_fns();
+    if (g_pd2) {
+        g_pd2(physicalDevice, pFeatures);
         return;
     }
-    /* Unresolved on this Mali driver. Returning without touching pFeatures
-     * leaves the caller's pNext chain (VkPhysicalDeviceVulkan11/12Features
-     * etc.) holding stack garbage that ggml trusts -> UB. But we also cannot
-     * memset a fixed size past each header: the chain structs are separate
-     * stack locals and zeroing past the end smashes the frame (that made a
-     * later load die in vkCreateBuffer with a null device).
-     *
-     * Correct fallback: v1 vkGetPhysicalDeviceFeatures IS exported by every
-     * driver - use it to fill the base struct, and zero only the small
-     * fixed-size payloads of the chain structs ggml actually chains
-     * (11/12Features: 56/80 bytes; zero 256 to be generous but stay inside
-     * any one struct's own allocation is impossible to know, so instead
-     * walk the chain and zero only sizeof-bounded payloads via sType). */
+    if (g_pd2k) {
+        /* VkPhysicalDeviceFeatures2KHR is the same struct type and
+         * VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR the same enum
+         * value as the core spellings (spec-promoted alias), so the struct
+         * and its pNext chain pass through unmodified - no conversion
+         * needed, not even of sType. */
+        g_pd2k(physicalDevice, pFeatures);
+        return;
+    }
+    /* Nothing 2-level resolvable. v1 fills the base struct (a KHR alias of
+     * the v1 command does not exist - the extension only added *2 commands);
+     * the pNext chain is zeroed bounded by each struct's own sizeof so ggml
+     * never reads garbage. All-false chain features are safe at device
+     * creation (they request nothing); garbage was what crashed. */
     {
-        static void (*fn_v1)(VkPhysicalDevice, VkPhysicalDeviceFeatures *) = NULL;
-        if (!fn_v1) fn_v1 = (void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures *))resolve_for("vkGetPhysicalDeviceFeatures");
-        if (fn_v1) fn_v1(physicalDevice, &pFeatures->features);
+        if (!g_pd1) {
+            for (int i = 0; i < g_instance_count && !g_pd1; i++) {
+                g_pd1 = (PFN_vkGetPhysicalDeviceFeatures)g_gipa(g_instances[i], "vkGetPhysicalDeviceFeatures");
+            }
+        }
+        if (g_pd1) g_pd1(physicalDevice, &pFeatures->features);
         else memset(&pFeatures->features, 0, sizeof(pFeatures->features));
     }
     VkBaseOutStructure *s = (VkBaseOutStructure *)pFeatures->pNext;
     while (s != NULL) {
-        /* payload sizes keyed by sType; everything ggml chains is covered.
-         * -1 leaves the sType/pNext header intact. */
-        size_t payload = 0;
-        switch (s->sType) {
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: payload = 56; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: payload = 88; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: payload = 24; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: payload = 24; break;
-            case 1000411001u /* PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR (not in this headers) */: payload = 16; break;
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: payload = 136; break;
-            case 1000361000u /* PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR */: payload = 16; break;
-            default: payload = 16; break; /* unknown small struct: safe floor */
+        /* payload = the struct's own full size keyed by sType; zeroing from
+         * the 16-byte header to its own sizeof never crosses into a
+         * neighbouring stack local. Unknown structs keep the 16-byte floor
+         * (header only). */
+        size_t payload = 16;
+        switch ((unsigned int)s->sType) {
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: payload = sizeof(VkPhysicalDeviceVulkan11Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: payload = sizeof(VkPhysicalDeviceVulkan12Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: payload = sizeof(VkPhysicalDeviceVulkan13Features); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: payload = sizeof(VkPhysicalDeviceFeatures2); break;
+            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: payload = sizeof(VkPhysicalDeviceCooperativeMatrixFeaturesKHR); break;
+            case 1000411001u /* PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR (older headers) */: payload = 16; break;
+            case 1000361000u /* PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR (older headers) */: payload = 16; break;
+            default: break;
         }
         if (payload > 16) memset((unsigned char *)s + 16, 0, payload - 16);
         s = s->pNext;
