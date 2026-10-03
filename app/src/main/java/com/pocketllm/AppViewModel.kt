@@ -22,6 +22,7 @@ import com.pocketllm.sessions.SessionMessage
 import com.pocketllm.settings.AppSettings
 import com.pocketllm.settings.SettingsRepository
 import com.pocketllm.settings.SpeedPreset
+import com.pocketllm.util.FishAudioTts
 import com.pocketllm.util.TtsManager
 import com.pocketllm.util.WebSearch
 import com.pocketllm.usage.UsageRecord
@@ -77,6 +78,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val usageRepo = UsageRepository(context)
     private val tlsInfo = MutableStateFlow<String?>(null)
     val tlsFingerprint: StateFlow<String?> = tlsInfo
+
+    // --- Advanced: long-term memory, cloned voice, CPU capabilities ---------
+    val memoryStore = com.pocketllm.memory.MemoryStore.get(context)
+
+    private val _memoryEntries =
+        MutableStateFlow<List<com.pocketllm.memory.MemoryStore.Entry>>(emptyList())
+    val memoryEntries: StateFlow<List<com.pocketllm.memory.MemoryStore.Entry>> = _memoryEntries
+
+    val fishAudioTts = FishAudioTts(context)
+
+    /** Cached: /proc/cpuinfo is read once, not on every recomposition. */
+    val cpuFeatures: CpuInfo.Features by lazy { CpuInfo.features() }
 
     private val tts = TtsManager(context)
     private val sessionRepo = ChatSessionRepository(context)
@@ -1180,6 +1193,76 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiAgentEnabled.value = enabled
     }
 
+    // --- Advanced settings ---------------------------------------------------
+
+    fun updateUiAgentGrammar(enabled: Boolean) =
+        updateSettings { it.copy(uiAgentGrammar = enabled) }
+
+    fun updateMemoryEnabled(enabled: Boolean) =
+        updateSettings { it.copy(memoryEnabled = enabled) }
+
+    fun updateVoiceCloneEnabled(enabled: Boolean) =
+        updateSettings { it.copy(voiceCloneEnabled = enabled) }
+
+    fun updateFishAudioKey(value: String) =
+        updateSettings { it.copy(fishAudioKey = value) }
+
+    fun updateFishAudioVoiceId(value: String) =
+        updateSettings { it.copy(fishAudioVoiceId = value) }
+
+    fun updateMcpEnabled(enabled: Boolean) =
+        updateSettings { it.copy(mcpEnabled = enabled) }
+
+    fun updateMcpServerUrl(value: String) =
+        updateSettings { it.copy(mcpServerUrl = value) }
+
+    fun updateMcpServerToken(value: String) =
+        updateSettings { it.copy(mcpServerToken = value) }
+
+    /** Loads stored facts for the settings list. */
+    fun refreshMemoryStore() {
+        viewModelScope.launch {
+            _memoryEntries.value = withContext(Dispatchers.IO) { memoryStore.all() }
+        }
+    }
+
+    fun rememberFact(subject: String, fact: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { memoryStore.remember(subject, fact) }
+            refreshMemoryStore()
+        }
+    }
+
+    fun forgetFact(id: Long) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { memoryStore.forget(id) }
+            refreshMemoryStore()
+        }
+    }
+
+    fun clearMemory() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { memoryStore.clear() }
+            refreshMemoryStore()
+        }
+    }
+
+    /** Plays a sample through the cloning backend; [onResult] gets "OK" or the error. */
+    fun testVoiceClone(text: String, onResult: (String) -> Unit) {
+        val s = settings.current()
+        viewModelScope.launch {
+            val r = fishAudioTts.speak(text, s.fishAudioKey, s.fishAudioVoiceId, s.fishAudioModel)
+            onResult(r.exceptionOrNull()?.message ?: "OK")
+        }
+    }
+
+    /** Facts block for prompt injection; empty when memory is off or empty. */
+    fun memoryPromptBlock(): String {
+        val s = settings.current()
+        if (!s.memoryEnabled) return ""
+        return runCatching { memoryStore.promptBlock(s.memoryMaxEntries) }.getOrDefault("")
+    }
+
     fun updateUiAgentTuning(maxSteps: Int, maxRetries: Int) {
         updateSettings { it.copy(uiAgentMaxSteps = maxSteps, uiAgentMaxRetries = maxRetries) }
     }
@@ -1598,6 +1681,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     executor = uiAgentExecutor,
                     maxSteps = tuning.uiAgentMaxSteps.coerceIn(1, 16),
                     maxRetries = tuning.uiAgentMaxRetries.coerceIn(1, 6),
+                    useGrammar = tuning.uiAgentGrammar,
                 )
                 val logLines = mutableListOf<String>()
                 val result = loop.run(trimmed) { line ->

@@ -93,6 +93,28 @@ data class AppSettings(
         "web_search", "read_url", "calculate", "datetime",
         "read_file", "write_file", "run_code", "device_info",  // clipboard is opt-in: it exposes user data
     ),
+    // --- Advanced: strict grammar, memory, voice cloning, MCP ---------------
+    /**
+     * Constrain UI-agent generation with a JSON GBNF grammar. Small models
+     * otherwise emit "Actually…"-style chatter around the action object; the
+     * grammar makes every token part of a valid JSON value.
+     */
+    val uiAgentGrammar: Boolean = true,
+    /** Consult the long-term memory store when building companion/agent prompts. */
+    val memoryEnabled: Boolean = false,
+    /** Maximum facts injected into a prompt (highest priority first). */
+    val memoryMaxEntries: Int = 25,
+    /** Zero-shot voice cloning through Fish Audio's TTS API. */
+    val voiceCloneEnabled: Boolean = false,
+    val fishAudioKey: String = "",
+    /** Reference voice id (Fish Audio model id) used for cloning. */
+    val fishAudioVoiceId: String = "",
+    val fishAudioModel: String = "s1",
+    /** MCP server (streamable HTTP JSON-RPC endpoint). */
+    val mcpEnabled: Boolean = false,
+    val mcpServerUrl: String = "",
+    val mcpServerToken: String = "",
+
     /**
      * Coarse performance profile. Resolved into concrete (contextSize, batchSize,
      * gpuOffload) at model load time. See [SpeedPreset] for what each preset means.

@@ -14,12 +14,27 @@ fi
 BUILD_DIR="build-native"
 NPROCS=${POCKETLLM_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
 
+# Optional CPU baseline. llama.cpp selects its quantised matmul kernels at
+# compile time, so the device's SIMD features only help if the build targets
+# them. Set e.g.
+#   POCKETLLM_ARM_ARCH="armv8.2-a+dotprod+fp16"
+# to enable SDOT/UDOT (DotProd) and half-precision kernels on Cortex-A78/A55
+# class cores - the CPU-features row in Settings reports whether the running
+# device supports them. Left unset the build stays portable (baseline armv8-a),
+# which is the safe default for an APK that ships to unknown devices.
+ARM_ARCH_ARGS=()
+if [ -n "${POCKETLLM_ARM_ARCH:-}" ]; then
+    echo "=== CPU baseline: ${POCKETLLM_ARM_ARCH} ==="
+    ARM_ARCH_ARGS+=("-DGGML_CPU_ARM_ARCH=${POCKETLLM_ARM_ARCH}")
+fi
+
 echo "=== Building native libraries (${NPROCS} jobs) ==="
 cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
     -DCMAKE_FIND_ROOT_PATH="/opt/tusr;/usr" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_PREFIX_PATH="$SCRIPT_DIR/vulkan-host" \
+    "${ARM_ARCH_ARGS[@]}" \
     -DGGML_OPENCL=ON \
     -DOpenCL_LIBRARY="$SCRIPT_DIR/opencl-host/lib/libOpenCLshim.so" \
     -DOpenCL_INCLUDE_DIR="$SCRIPT_DIR/opencl-host/include" \

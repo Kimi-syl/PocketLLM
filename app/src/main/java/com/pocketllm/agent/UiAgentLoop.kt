@@ -37,7 +37,32 @@ class UiAgentLoop(
     private val settleMs: Long = 500L,
     private val maxGenerateTokens: Int = 160,
     private val temperature: Float = 0.2f,
+    /**
+     * Constrain generation to a single JSON value (llama.cpp GBNF). Off by
+     * default: the regex/balanced-brace fallback is the BYOM-safe path. On, the
+     * model physically cannot emit the "好的，我幫你點擊：" preface — every token
+     * must belong to valid JSON — which removes most parse retries on small
+     * models. Toggled from Settings → Advanced.
+     */
+    private val useGrammar: Boolean = false,
 ) {
+
+    companion object {
+        /**
+         * The JSON grammar shipped with llama.cpp, trimmed to the value types
+         * an action object needs. Kept close to upstream so the syntax is
+         * exactly what llama_sampler_init_grammar accepts.
+         */
+        val JSON_GRAMMAR: String = """
+            root   ::= ws value ws
+            value  ::= object | array | string | number | ("true" | "false" | "null") ws
+            object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+            array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+            string ::= "\"" ( [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* "\"" ws
+            number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+            ws ::= | " " | "\n" [ \t]{0,20}
+        """.trimIndent()
+    }
 
     sealed interface UiResult {
         data class Done(val answer: String?) : UiResult
@@ -145,7 +170,7 @@ class UiAgentLoop(
                 topP = 0.9f,
                 topK = 40,
                 seed = -1,
-                grammar = null, // BYOM model: NO GBNF — regex/JSON fallback only
+                grammar = if (useGrammar) JSON_GRAMMAR else null,
             ),
         ) { sb.append(it) }
         return if (result == null) null else sb.toString()

@@ -40,6 +40,7 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Face
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SentimentSatisfied
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.TravelExplore
@@ -134,6 +136,7 @@ private enum class SettingsCategory(val label: String) {
     Server("伺服器"),
     Chat("聊天設置"),
     Accessibility("無障礙設定"),
+    Advanced("進階設定"),
 }
 
 @Composable
@@ -229,6 +232,7 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
                             subPage == SettingsCategory.Memory -> I18n.t("memory", lang)
                             subPage == SettingsCategory.Chat -> "聊天設置"
                             subPage == SettingsCategory.Server -> "伺服器"
+                            subPage == SettingsCategory.Advanced -> "進階設定"
                             else -> I18n.t("settings", lang)
                         },
                         onMenuClick = onMenu,
@@ -266,6 +270,9 @@ fun SettingsScreen(vm: AppViewModel, onOpenTab: (Tab) -> Unit = {}, onMenu: () -
             subPage == SettingsCategory.Accessibility -> {
                 item { UiAgentSection(vm) }
                 item { AccessibilitySettingsSection(vm) }
+            }
+            subPage == SettingsCategory.Advanced -> {
+                item { AdvancedSettingsSection(vm) }
             }
             subPage == SettingsCategory.Provider -> {
                 item { CloudEntrySettingsSection(vm) }
@@ -416,6 +423,15 @@ return
                         title = I18n.t("default_models", lang),
                         icon = Icons.Outlined.SmartToy,
                         onClick = { subPage = SettingsCategory.DefaultModels },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        title = "進階設定",
+                        subtitle = if (I18n.isEnglish(lang))
+                            "CPU features, strict JSON grammar, memory, voice cloning, MCP"
+                        else "CPU 指令集、嚴格 JSON 語法約束、記憶庫、聲音克隆、MCP",
+                        icon = Icons.Outlined.Tune,
+                        onClick = { subPage = SettingsCategory.Advanced },
                     )
                 }
             }
@@ -2719,6 +2735,216 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             content()
+        }
+    }
+}
+
+/**
+ * Advanced: CPU capabilities, strict-JSON grammar, long-term memory, cloned
+ * voice and MCP. Every control here drives real behaviour - the CPU card is a
+ * truthful read-out, the switches are read at generate/load time, and the
+ * memory list is the actual SQLite store.
+ */
+@Composable
+private fun AdvancedSettingsSection(vm: AppViewModel) {
+    val settings by vm.currentSettings.collectAsState()
+    val memory by vm.memoryEntries.collectAsState()
+    val features = vm.cpuFeatures
+
+    var newSubject by remember { mutableStateOf("") }
+    var newFact by remember { mutableStateOf("") }
+    var voiceTestMsg by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) { vm.refreshMemoryStore() }
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+        // --- CPU ---------------------------------------------------------
+        SectionCard("CPU 指令集") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "偵測到的 SIMD 能力",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        features.label(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Text(
+                    "${vm.cpuFeatures.let { com.pocketllm.llm.CpuInfo.recommendedThreads() }} 執行緒",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                if (features.dotProd || features.fp16)
+                    "此裝置支援 FP16 / DotProd。以 POCKETLLM_ARM_ARCH=armv8.2-a+dotprod+fp16 重新建置原生庫即可啟用對應核心。"
+                else "未偵測到 FP16 / DotProd，維持基準核心。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // --- Strict JSON grammar ------------------------------------------
+        SectionCard("嚴格 JSON 語法約束 (GBNF)") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("螢幕智能體強制輸出 JSON", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "以 GBNF 文法限制生成，模型無法在動作前後加入「好的，我幫你點擊：」等文字，減少解析重試。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.uiAgentGrammar,
+                    onCheckedChange = { vm.updateUiAgentGrammar(it) },
+                )
+            }
+        }
+
+        // --- Long-term memory ---------------------------------------------
+        SectionCard("長期記憶庫 (SQLite)") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("啟用記憶", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "記住「阿媽 = Mother」這類事實，並在提示中注入。共 ${memory.size} 筆。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.memoryEnabled,
+                    onCheckedChange = { vm.updateMemoryEnabled(it) },
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = newSubject,
+                    onValueChange = { newSubject = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("主體") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = newFact,
+                    onValueChange = { newFact = it },
+                    modifier = Modifier.weight(1.4f),
+                    label = { Text("事實") },
+                    singleLine = true,
+                )
+                TextButton(
+                    enabled = newSubject.isNotBlank() && newFact.isNotBlank(),
+                    onClick = {
+                        vm.rememberFact(newSubject, newFact)
+                        newSubject = ""
+                        newFact = ""
+                    },
+                ) { Text("記住") }
+            }
+            if (memory.isNotEmpty()) {
+                HorizontalDivider()
+                memory.take(8).forEach { entry ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.subject, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                            Text(
+                                entry.fact,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { vm.forgetFact(entry.id) }) {
+                            Icon(Icons.Outlined.Delete, contentDescription = "Forget")
+                        }
+                    }
+                }
+                TextButton(onClick = { vm.clearMemory() }) { Text("清空全部") }
+            }
+        }
+
+        // --- Voice cloning -------------------------------------------------
+        SectionCard("聲音克隆 (Fish Audio)") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("啟用克隆語音", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "使用 Fish Audio 的零樣本克隆，以參考音色朗讀回覆。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.voiceCloneEnabled,
+                    onCheckedChange = { vm.updateVoiceCloneEnabled(it) },
+                )
+            }
+            OutlinedTextField(
+                value = settings.fishAudioKey,
+                onValueChange = { vm.updateFishAudioKey(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Fish Audio API Key") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = settings.fishAudioVoiceId,
+                onValueChange = { vm.updateFishAudioVoiceId(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("參考音色 ID (reference_id)") },
+                singleLine = true,
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    voiceTestMsg = "…"
+                    vm.testVoiceClone("你好，這是 PocketLLM 的聲音克隆測試。") { voiceTestMsg = it }
+                }) { Text("測試播放") }
+                voiceTestMsg?.let {
+                    Spacer(Modifier.width(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        // --- MCP ------------------------------------------------------------
+        SectionCard("MCP 伺服器") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("啟用 MCP", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "連線至 Model Context Protocol 伺服器（HTTP JSON-RPC）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.mcpEnabled,
+                    onCheckedChange = { vm.updateMcpEnabled(it) },
+                )
+            }
+            OutlinedTextField(
+                value = settings.mcpServerUrl,
+                onValueChange = { vm.updateMcpServerUrl(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("伺服器 URL") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = settings.mcpServerToken,
+                onValueChange = { vm.updateMcpServerToken(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Bearer Token (選填)") },
+                singleLine = true,
+            )
         }
     }
 }
