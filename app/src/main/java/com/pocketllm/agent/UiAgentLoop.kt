@@ -45,6 +45,11 @@ class UiAgentLoop(
      * models. Toggled from Settings → Advanced.
      */
     private val useGrammar: Boolean = false,
+    /**
+     * Pre-rendered list of MCP tools ("name — description" lines). Empty when
+     * MCP is off, so the prompt is unchanged by default.
+     */
+    private val mcpToolsBlock: String = "",
 ) {
 
     companion object {
@@ -201,6 +206,12 @@ class UiAgentLoop(
         appendLine("""{"action":"click","id":<id>}  or  {"action":"type","id":<id>,"text":"<text>"}""")
         appendLine("""{"action":"scroll_down","id":<id>}  or  {"action":"scroll_up","id":<id>}  or  {"action":"focus","id":<id>}""")
         appendLine("""{"action":"finish","text":"<final answer if the goal is achieved or impossible>"}""")
+        if (mcpToolsBlock.isNotBlank()) {
+            appendLine()
+            appendLine("Remote MCP tools you may call when the goal needs them:")
+            appendLine(mcpToolsBlock)
+            appendLine("""Call one with: {"action":"mcp","tool":"<name>","args":{...}}""")
+        }
         appendLine()
         appendLine("If the goal is already achieved, or no action can achieve it, respond with the finish action. No markdown. No extra commentary.")
     }

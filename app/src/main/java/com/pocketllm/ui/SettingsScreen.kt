@@ -2750,10 +2750,12 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
     val settings by vm.currentSettings.collectAsState()
     val memory by vm.memoryEntries.collectAsState()
     val features = vm.cpuFeatures
+    val context = LocalContext.current
 
     var newSubject by remember { mutableStateOf("") }
     var newFact by remember { mutableStateOf("") }
     var voiceTestMsg by remember { mutableStateOf<String?>(null) }
+    var mcpTestMsg by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { vm.refreshMemoryStore() }
 
@@ -2915,6 +2917,74 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
             }
         }
 
+        // --- Local (offline) voice ------------------------------------------
+        SectionCard("本地語音（離線多說話人）") {
+            Text(
+                "離線 Piper/sherpa 模型的多說話人索引（單說話人模型會忽略）。" +
+                    "真正的零樣本克隆需要語者編碼器模型（XTTS-v2 / GPT-SoVITS 等），或使用上方的 Fish Audio API。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Speaker ID：${settings.ttsSpeakerId}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.width(12.dp))
+                TextButton(onClick = { vm.updateTtsSpeakerId((settings.ttsSpeakerId - 1).coerceAtLeast(0)) }) { Text("−") }
+                TextButton(onClick = { vm.updateTtsSpeakerId(settings.ttsSpeakerId + 1) }) { Text("＋") }
+            }
+        }
+
+        // --- Local Python sandbox -------------------------------------------
+        SectionCard("本地 Python 環境 (PRoot + Alpine)") {
+            val sandbox = remember { com.pocketllm.util.SandboxManager(context) }
+            val status = remember { sandbox.status() }
+            Text(
+                when {
+                    status.ready -> "環境就緒 · ${status.rootfsPath}"
+                    !status.rootfsInstalled && !status.prootAvailable -> "未就緒：缺少 rootfs 與 proot"
+                    !status.rootfsInstalled -> "未就緒：缺少 Alpine rootfs"
+                    else -> "未就緒：缺少 proot 二進位"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "將 Alpine minirootfs 解壓到 files/alpine，並把 proot 二進位放到 files/bin/proot 或打包為 jniLibs/libproot.so，即可在 App 內執行真正的 python3 / pip。終端機不再輸出模擬結果。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // --- Dynamic assistant role -----------------------------------------
+        SectionCard("動態助理角色 (AssistStructure)") {
+            val assistCtx by vm.assistContext.collectAsState()
+            val held = vm.assistantRoleHeld()
+            Text(
+                if (held) "已取得數位助理權限" else "尚未取得助理權限",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "取得系統「數位助理」角色後，平台會提供 AssistStructure 螢幕語意快照，可作為代理的螢幕上下文。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val activity = LocalContext.current as? android.app.Activity
+                TextButton(
+                    onClick = { activity?.let { vm.requestAssistantRole(it) } },
+                    enabled = activity != null && !held && vm.assistantRoleAvailable(),
+                ) { Text(if (held) "已啟用" else "取得助理權限") }
+                TextButton(onClick = { vm.refreshAssistContext() }) { Text("讀取快照") }
+            }
+            if (assistCtx.isNotBlank()) {
+                HorizontalDivider()
+                Text(
+                    assistCtx.take(600),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+
         // --- MCP ------------------------------------------------------------
         SectionCard("MCP 伺服器") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -2945,6 +3015,27 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 label = { Text("Bearer Token (選填)") },
                 singleLine = true,
             )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    mcpTestMsg = "…"
+                    vm.testMcp { mcpTestMsg = it }
+                }) { Text("連線測試") }
+                mcpTestMsg?.let {
+                    Spacer(Modifier.width(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            val tools by vm.mcpTools.collectAsState()
+            if (tools.isNotEmpty()) {
+                HorizontalDivider()
+                tools.take(6).forEach { t ->
+                    Text(
+                        "• ${t.name} — ${t.description.take(80)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }

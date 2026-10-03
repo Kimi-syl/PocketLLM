@@ -61,6 +61,20 @@ class ModelRepository(
             ?.sortedBy { it.name }
             ?: emptyList()
 
+    /** Raw checkpoints in the models dir. Inspectable, but not runnable until converted. */
+    fun listSafetensors(): List<GgufModel> =
+        dir.listFiles { f -> f.isFile && f.extension == "safetensors" }
+            ?.map { GgufModel(it.name, it.length()) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+
+    fun safetensorsInfo(name: String): Result<SafetensorsReader.Info>? {
+        if (!name.endsWith(".safetensors")) return null
+        val f = File(dir, name)
+        if (!f.exists()) return null
+        return SafetensorsReader.read(f)
+    }
+
     private fun safeName(name: String): String? =
         name.takeIf {
             it.isNotEmpty() && !it.contains('/') && !it.contains('\\') && !it.contains("..") && it.endsWith(".gguf")

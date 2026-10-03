@@ -66,6 +66,8 @@ private data class ChatMetrics(
     val totalDurationMs: Long,
 )
 
+private const val ASSISTANT_ROLE_REQUEST_CODE = 4001
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val context: Application get() = getApplication()
@@ -90,6 +92,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Cached: /proc/cpuinfo is read once, not on every recomposition. */
     val cpuFeatures: CpuInfo.Features by lazy { CpuInfo.features() }
+
+    // --- MCP ---------------------------------------------------------------
+    private val _mcpTools = MutableStateFlow<List<com.pocketllm.mcp.McpClient.Tool>>(emptyList())
+    val mcpTools: StateFlow<List<com.pocketllm.mcp.McpClient.Tool>> = _mcpTools
+
+    /** Connects to the configured MCP server and lists its tools (real check). */
+    fun testMcp(onResult: (String) -> Unit) {
+        val s = settings.current()
+        if (s.mcpServerUrl.isBlank()) {
+            onResult("請先填寫伺服器 URL")
+            return
+        }
+        viewModelScope.launch {
+            val client = com.pocketllm.mcp.McpClient(s.mcpServerUrl, s.mcpServerToken)
+            val r = client.tools()
+            r.onSuccess { _mcpTools.value = it }
+            onResult(r.exceptionOrNull()?.message ?: "OK — ${r.getOrNull()?.size ?: 0} tools")
+        }
+    }
+
+    /** Invokes one MCP tool; used by the screen agent when it emits an mcp action. */
+    suspend fun callMcpTool(name: String, argsJson: String): String {
+        val s = settings.current()
+        if (!s.mcpEnabled || s.mcpServerUrl.isBlank()) return "MCP is not enabled"
+        val client = com.pocketllm.mcp.McpClient(s.mcpServerUrl, s.mcpServerToken)
+        val args = runCatching { org.json.JSONObject(argsJson.ifBlank { "{}" }) }
+            .getOrDefault(org.json.JSONObject())
+        return client.call(name, args).fold(
+            onSuccess = { it },
+            onFailure = { "MCP error: ${it.message}" },
+        )
+    }
 
     private val tts = TtsManager(context)
     private val sessionRepo = ChatSessionRepository(context)
@@ -117,6 +151,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _models = MutableStateFlow<List<GgufModel>>(emptyList())
     val models: StateFlow<List<GgufModel>> = _models
+
+    /** Raw safetensors checkpoints present in the models dir (inspect-only). */
+    private val _safetensors = MutableStateFlow<List<GgufModel>>(emptyList())
+    val safetensors: StateFlow<List<GgufModel>> = _safetensors
 
     private val _downloadProgress = MutableStateFlow<Float?>(null)
     val downloadProgress: StateFlow<Float?> = _downloadProgress
@@ -210,7 +248,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sandboxDir: java.io.File = java.io.File(context.filesDir, "sandbox").also { it.mkdirs() }
     private val readFileTool = com.pocketllm.agent.ReadFileTool(sandboxDir).also { it.setContext(context) }
-    private val uiAgentExecutor = com.pocketllm.agent.UiAgentExecutor(context)
+    private val uiAgentExecutor = com.pocketllm.agent.UiAgentExecutor(
+        context = context,
+        mcpCall = { tool, args -> callMcpTool(tool, args) },
+    )
     private val writeFileTool = com.pocketllm.agent.WriteFileTool(sandboxDir)
     private val runCodeTool = com.pocketllm.agent.RunCodeTool(sandboxDir)
     private val clipboardTool = com.pocketllm.agent.ClipboardReadTool(context)
@@ -303,6 +344,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _currentSettings.value = settings.current()
         tlsInfo.value = com.pocketllm.util.TlsCertManager.readFingerprint(context.filesDir)
         tts.setEngine(settings.current().ttsEngine)
+        tts.setPiperSpeakerId(settings.current().ttsSpeakerId)
         _agentEnabled.value = settings.current().agentEnabled
         _uiAgentEnabled.value = settings.current().uiAgentEnabled
         // Pick up an already-downloaded Piper model without any download UI.
@@ -424,6 +466,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshModels() {
         _models.value = modelRepo.list()
+        _safetensors.value = modelRepo.listSafetensors()
+    }
+
+    /**
+     * Human-readable safetensors summary. Honest about the fact that llama.cpp
+     * needs GGUF, so the file can be inspected but not executed as-is.
+     */
+    suspend fun safetensorsInfo(name: String): String = withContext(Dispatchers.IO) {
+        val info = modelRepo.safetensorsInfo(name)
+            ?: return@withContext "找不到檔案"
+        info.fold(
+            onSuccess = { it.summary() + "\n\n⚠ 這是原始 checkpoint，需轉換為 GGUF 才能在 llama.cpp 執行。" },
+            onFailure = { "讀取失敗：${it.message}" },
+        )
     }
 
     fun searchHuggingFace(query: String) {
@@ -1210,14 +1266,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun updateFishAudioVoiceId(value: String) =
         updateSettings { it.copy(fishAudioVoiceId = value) }
 
-    fun updateMcpEnabled(enabled: Boolean) =
+    fun updateMcpEnabled(enabled: Boolean) {
         updateSettings { it.copy(mcpEnabled = enabled) }
+        // Refresh the tool list so the agent prompt has something to advertise.
+        if (enabled && settings.current().mcpServerUrl.isNotBlank()) testMcp { }
+    }
 
     fun updateMcpServerUrl(value: String) =
         updateSettings { it.copy(mcpServerUrl = value) }
 
     fun updateMcpServerToken(value: String) =
         updateSettings { it.copy(mcpServerToken = value) }
+
+    // --- Dynamic assistant role (AssistStructure screen context) -------------
+
+    private val _assistContext = MutableStateFlow("")
+    val assistContext: StateFlow<String> = _assistContext
+
+    fun assistantRoleHeld(): Boolean = runCatching {
+        context.getSystemService(android.app.role.RoleManager::class.java)
+            ?.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT) == true
+    }.getOrDefault(false)
+
+    fun assistantRoleAvailable(): Boolean = runCatching {
+        context.getSystemService(android.app.role.RoleManager::class.java)
+            ?.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) == true
+    }.getOrDefault(false)
+
+    /** Launches the system dialog asking to become the device assistant. */
+    fun requestAssistantRole(activity: android.app.Activity) {
+        val rm = context.getSystemService(android.app.role.RoleManager::class.java) ?: return
+        if (!rm.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT)) return
+        runCatching {
+            activity.startActivityForResult(
+                rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT),
+                ASSISTANT_ROLE_REQUEST_CODE,
+            )
+        }
+    }
+
+    fun refreshAssistContext() {
+        _assistContext.value = com.pocketllm.voice.AssistContextHolder.lastContext
+    }
 
     /** Loads stored facts for the settings list. */
     fun refreshMemoryStore() {
@@ -1274,6 +1364,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // Load if present; the download itself starts on first use.
             viewModelScope.launch { tts.preparePiper() }
         }
+    }
+
+    /** Offline (multi-speaker) voice selection for the Piper/sherpa engine. */
+    fun updateTtsSpeakerId(id: Int) {
+        updateSettings { it.copy(ttsSpeakerId = id) }
+        tts.setPiperSpeakerId(id)
     }
 
     fun retryPiperDownload() {
@@ -1682,6 +1778,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     maxSteps = tuning.uiAgentMaxSteps.coerceIn(1, 16),
                     maxRetries = tuning.uiAgentMaxRetries.coerceIn(1, 6),
                     useGrammar = tuning.uiAgentGrammar,
+                    mcpToolsBlock = if (tuning.mcpEnabled) {
+                        _mcpTools.value.joinToString("\n") { "- ${it.name}: ${it.description}" }
+                    } else "",
                 )
                 val logLines = mutableListOf<String>()
                 val result = loop.run(trimmed) { line ->

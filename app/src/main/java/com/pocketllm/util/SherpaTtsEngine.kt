@@ -263,6 +263,12 @@ class SherpaTtsEngine(private val context: Context) {
      */
     @Volatile private var speakGeneration = 0
 
+    /**
+     * Offline speaker index for multi-speaker VITS/Piper models. Single-speaker
+     * models ignore it. Set from Settings → Advanced → 本地語音.
+     */
+    @Volatile var speakerId: Int = 0
+
     fun speak(text: String, speed: Float = 1.0f) {
         val engine = tts ?: return
         if (text.isBlank()) return
@@ -271,7 +277,7 @@ class SherpaTtsEngine(private val context: Context) {
 
         Thread {
             try {
-                val audio = engine.generate(text, sid = 0, speed = speed)
+                val audio = engine.generate(text, sid = speakerId, speed = speed)
                 if (generation != speakGeneration) return@Thread // superseded/stopped
                 val pcmData = ShortArray(audio.samples.size) { i ->
                     (audio.samples[i] * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()

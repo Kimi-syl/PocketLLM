@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +43,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -143,6 +146,9 @@ private fun LocalModelsList(vm: AppViewModel) {
     val models by vm.models.collectAsState()
     val engineState by vm.engine.state.collectAsState()
     val loadedFile = vm.loadedFileName()
+    val stModels by vm.safetensors.collectAsState()
+    val scope = rememberCoroutineScope()
+    var stInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     LaunchedEffect(engineState) {
         if (engineState is EngineState.Ready || engineState is EngineState.Empty) vm.refreshModels()
@@ -208,6 +214,35 @@ private fun LocalModelsList(vm: AppViewModel) {
                 )
             }
         }
+        items(stModels, key = { "st_${it.name}" }) { st ->
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(st.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        Text(
+                            "safetensors · ${formatSize(st.sizeBytes)} · 需轉換為 GGUF",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = {
+                        scope.launch { stInfo = st.name to vm.safetensorsInfo(st.name) }
+                    }) { Text("檢視") }
+                }
+            }
+        }
+    }
+
+    stInfo?.let { (name, info) ->
+        AlertDialog(
+            onDismissRequest = { stInfo = null },
+            title = { Text(name, maxLines = 2, style = MaterialTheme.typography.titleSmall) },
+            text = { Text(info, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = { TextButton(onClick = { stInfo = null }) { Text("關閉") } },
+        )
     }
 }
 

@@ -813,6 +813,11 @@ private fun EnvPresetRow(name: String, desc: String, status: String) {
 
 @Composable
 fun InteractiveSandboxTerminal(isInstalled: Boolean) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Real executor: runs through PRoot + the Alpine rootfs, or reports exactly
+    // what is missing. No canned output.
+    val sandbox = remember { com.pocketllm.util.SandboxManager(context) }
     var commandInput by remember { mutableStateOf("") }
     val terminalLines = remember {
         mutableStateListOf(
@@ -915,7 +920,7 @@ fun InteractiveSandboxTerminal(isInstalled: Boolean) {
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .clickable {
-                                executeSandboxCmd(cmd, isInstalled, terminalLines)
+                                scope.launch { executeSandboxCmd(sandbox, cmd, terminalLines) }
                             },
                         color = Color(0xFF2D2D2D),
                         shape = RoundedCornerShape(6.dp)
@@ -954,7 +959,7 @@ fun InteractiveSandboxTerminal(isInstalled: Boolean) {
                     onClick = {
                         val cmd = commandInput.trim()
                         if (cmd.isNotBlank()) {
-                            executeSandboxCmd(cmd, isInstalled, terminalLines)
+                            scope.launch { executeSandboxCmd(sandbox, cmd, terminalLines) }
                             commandInput = ""
                         }
                     },
@@ -968,54 +973,30 @@ fun InteractiveSandboxTerminal(isInstalled: Boolean) {
     }
 }
 
-private fun executeSandboxCmd(cmd: String, isInstalled: Boolean, output: MutableList<String>) {
+/**
+ * Runs one command in the real sandbox (PRoot + Alpine rootfs). Replaces the
+ * previous canned output: if the environment is not installed the terminal now
+ * says precisely which piece is missing.
+ */
+private suspend fun executeSandboxCmd(
+    sandbox: com.pocketllm.util.SandboxManager,
+    cmd: String,
+    output: MutableList<String>,
+) {
     output.add("$ $cmd")
-    if (!isInstalled) {
-        output.add("sh: $cmd: sandbox rootfs is not initialized yet. Tap '安裝環境' above.")
+    val status = sandbox.status()
+    if (!status.ready) {
+        output.add("sandbox: 環境尚未就緒")
+        if (!status.rootfsInstalled) {
+            output.add("sandbox: 缺少 Alpine rootfs（${status.rootfsPath}/bin/sh）")
+        }
+        if (!status.prootAvailable) {
+            output.add("sandbox: 缺少 proot 二進位（files/bin/proot 或 jniLibs/libproot.so）")
+        }
         return
     }
-    when (cmd.trim()) {
-        "python3 -V", "python -V", "python --version", "python3 --version" -> {
-            output.add("Python 3.11.8 (main, Jan 14 2024, 18:22:15) [GCC 13.2.1 20231014] on linux")
-        }
-        "node -v", "node --version" -> {
-            output.add("v20.11.1")
-        }
-        "git --version" -> {
-            output.add("git version 2.43.0")
-        }
-        "ls -la", "ls -la /workspace", "ls" -> {
-            output.add("total 16")
-            output.add("drwxr-xr-x    4 root     root          4096 Sep 28 18:00 .")
-            output.add("drwxr-xr-x   18 root     root          4096 Sep 28 18:00 ..")
-            output.add("-rw-r--r--    1 root     root           312 Sep 28 18:01 hello.py")
-            output.add("drwxr-xr-x    2 root     root          4096 Sep 28 18:01 project-1")
-        }
-        "cat /etc/os-release" -> {
-            output.add("NAME=\"Alpine Linux\"")
-            output.add("ID=alpine")
-            output.add("VERSION_ID=3.21.0")
-            output.add("PRETTY_NAME=\"Alpine Linux v3.21\"")
-            output.add("HOME_URL=\"https://alpinelinux.org/\"")
-        }
-        "uname -a" -> {
-            output.add("Linux pocketllm-sandbox 6.1.0-ish #1 PREEMPT aarch64 Linux")
-        }
-        "df -h" -> {
-            output.add("Filesystem                Size      Used Available Use% Mounted on")
-            output.add("/dev/root                58.4G     12.2G     46.2G  21% /")
-            output.add("tmpfs                     2.8G         0      2.8G   0% /dev/shm")
-        }
-        "help" -> {
-            output.add("PocketLLM Sandbox Environment Shell")
-            output.add("Commands supported: python3, node, git, ls, cat, uname, df, echo, env, pip")
-        }
-        else -> {
-            if (cmd.startsWith("echo ")) {
-                output.add(cmd.removePrefix("echo ").replace("\"", ""))
-            } else {
-                output.add("[sandbox stdout]: executed `$cmd` (status: 0)")
-            }
-        }
-    }
+    sandbox.run(cmd).fold(
+        onSuccess = { text -> text.lineSequence().forEach { output.add(it) } },
+        onFailure = { output.add("sandbox: ${it.message}") },
+    )
 }

@@ -42,6 +42,12 @@ class UiAgentExecutor(
     private val resolveNode: (Int) -> AccessibilityNodeInfo? = { id ->
         UiAccessibilityService.snapshot.get().nodesById[id]
     },
+    /**
+     * Optional bridge to an MCP server: (toolName, argsJson) -> text result.
+     * Supplied by the ViewModel when MCP is enabled, so the model can call
+     * remote tools with the {"action":"mcp","tool":…,"args":{…}} form.
+     */
+    private val mcpCall: (suspend (String, String) -> String)? = null,
 ) {
 
     sealed interface Result {
@@ -50,7 +56,7 @@ class UiAgentExecutor(
     }
 
     /** Entry point: `executeAction(jsonString)` — parses, routes, acts. */
-    fun executeAction(actionJson: String): Result {
+    suspend fun executeAction(actionJson: String): Result {
         val obj = try {
             JSONObject(actionJson)
         } catch (e: Exception) {
@@ -63,8 +69,20 @@ class UiAgentExecutor(
             "open_app", "launch_app" -> openApp(obj.optString("package").trim())
             "dial", "call", "phone" -> dial(obj.optString("number").trim())
             "open_url", "browse", "web" -> openUrl(obj.optString("url").trim())
+            "mcp", "mcp_call" -> mcpAction(obj)
             else -> executeNodeAction(action, obj)
         }
+    }
+
+    /** Remote tool call through the MCP bridge. */
+    private suspend fun mcpAction(obj: JSONObject): Result {
+        val handler = mcpCall ?: return Result.Err("MCP is not enabled in Settings")
+        val tool = obj.optString("tool").ifBlank { obj.optString("name") }.trim()
+        if (tool.isBlank()) return Result.Err("mcp action needs a 'tool' name")
+        val args = obj.optJSONObject("args")?.toString()
+            ?: obj.optString("arguments", "{}").ifBlank { "{}" }
+        val out = handler(tool, args)
+        return Result.Ok("mcp:$tool → ${out.take(500)}")
     }
 
     // --- system intent routing ---------------------------------------------

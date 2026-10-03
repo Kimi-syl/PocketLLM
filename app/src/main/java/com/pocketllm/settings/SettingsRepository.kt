@@ -84,6 +84,8 @@ data class AppSettings(
     val firecrawlKey: String = "",
     val ttsAutoSpeak: Boolean = false,
     val ttsEngine: String = "system",
+    /** Offline (Piper/sherpa) speaker index; only multi-speaker models use it. */
+    val ttsSpeakerId: Int = 0,
     val gpuOffload: Boolean = true,
     val agentEnabled: Boolean = false,
     val uiAgentEnabled: Boolean = false,

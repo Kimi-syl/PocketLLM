@@ -88,6 +88,11 @@ class TtsManager(context: Context) {
         }
     }
 
+    /** Applies the offline speaker index (multi-speaker models only). */
+    fun setPiperSpeakerId(id: Int) {
+        piperTts.speakerId = id
+    }
+
     private fun speakSystem(text: String) {
         val engine = systemTts ?: return
         if (!_ready.value) return

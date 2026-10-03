@@ -82,6 +82,38 @@
         </service>
 
         <!--
+          Dynamic-assistant role. Holding ROLE_ASSISTANT is what lets the
+          platform hand us an AssistStructure (semantic screen snapshot). The
+          role is requested at runtime from Settings → Advanced; the services
+          below are inert until the user grants it.
+        -->
+        <service
+            android:name=".voice.PocketAssistService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".voice.PocketAssistSessionService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <service
+            android:name=".voice.PocketAssistRecognitionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SPEECH_RECOGNITION_SERVICE">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+        </service>
+
+        <!--
           Reminder delivery. Declared rather than registered at runtime so a
           reminder still arrives when the app process is not running.
         -->
