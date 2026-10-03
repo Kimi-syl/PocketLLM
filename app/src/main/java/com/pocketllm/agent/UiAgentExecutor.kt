@@ -2,6 +2,7 @@ package com.pocketllm.agent
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -140,35 +141,38 @@ class UiAgentExecutor(
 
     // --- concrete actions --------------------------------------------------
 
-    private fun click(node: AccessibilityNodeInfo, id: Int): Result = try {
-        if (!node.isVisibleToUser) return Result.Err("Node #$id is off-screen / not visible")
-        // 1) Direct ACTION_CLICK on the node itself.
-        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            Result.Ok("click on #$id")
-        } else {
-            // 2) Walk up to a clickable ancestor — many controls only make the
-            //    container clickable.
-            if (clickClickableAncestor(node)) {
-                Result.Ok("click via clickable ancestor of #$id")
+    private fun click(node: AccessibilityNodeInfo, id: Int): Result {
+        return try {
+            if (!node.isVisibleToUser) return Result.Err("Node #$id is off-screen / not visible")
+            // 1) Direct ACTION_CLICK on the node itself.
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                Result.Ok("click on #$id")
             } else {
-                // 3) Coordinate gesture fallback — synthetic tap that bypasses
-                //    the target's accessibility handling.
-                val b = node.boundsInScreen
-                val cx = b.exactCenterX().toInt()
-                val cy = b.exactCenterY().toInt()
-                if (UiAccessibilityService.dispatchTap(cx, cy)) {
-                    Result.Ok("tap #$id at ($cx,$cy)")
+                // 2) Walk up to a clickable ancestor — many controls only make the
+                //    container clickable.
+                if (clickClickableAncestor(node)) {
+                    Result.Ok("click via clickable ancestor of #$id")
                 } else {
-                    Result.Err("click failed on #$id (ACTION_CLICK + ancestors + gesture all failed)")
+                    // 3) Coordinate gesture fallback — synthetic tap that bypasses
+                    //    the target's accessibility handling.
+                    val b = Rect()
+                    node.getBoundsInScreen(b)
+                    val cx = b.exactCenterX().toInt()
+                    val cy = b.exactCenterY().toInt()
+                    if (UiAccessibilityService.dispatchTap(cx, cy)) {
+                        Result.Ok("tap #$id at ($cx,$cy)")
+                    } else {
+                        Result.Err("click failed on #$id (ACTION_CLICK + ancestors + gesture all failed)")
+                    }
                 }
             }
-        }
-    } catch (e: Exception) {
-        if (e is IllegalStateException) {
-            // Node recycled by the service between capture and use (API 26–32).
-            Result.Err("Node #$id became stale/recycled — the UI tree will refresh; retry")
-        } else {
-            Result.Err("click failed on #$id: ${e.message ?: e::class.java.simpleName}")
+        } catch (e: Exception) {
+            if (e is IllegalStateException) {
+                // Node recycled by the service between capture and use (API 26–32).
+                Result.Err("Node #$id became stale/recycled — the UI tree will refresh; retry")
+            } else {
+                Result.Err("click failed on #$id: ${e.message ?: e::class.java.simpleName}")
+            }
         }
     }
 
@@ -207,24 +211,26 @@ class UiAgentExecutor(
         return clicked
     }
 
-    private fun type(node: AccessibilityNodeInfo, id: Int, text: String): Result = try {
-        if (text.isEmpty()) return Result.Err("type action needs a non-empty 'text'")
-        if (!node.isEditable && !node.isFocusable) {
-            return Result.Err("Node #$id is not an editable/focusable field")
-        }
-        val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        }
-        // Focus first so the field is the active input target, then replace text.
-        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (ok) Result.Ok("typed ${text.length} chars into #$id")
-        else Result.Err("ACTION_SET_TEXT failed on #$id")
-    } catch (e: Exception) {
-        if (e is IllegalStateException) {
-            Result.Err("Node #$id became stale/recycled — refresh the tree and retry")
-        } else {
-            Result.Err("type failed on #$id: ${e.message ?: e::class.java.simpleName}")
+    private fun type(node: AccessibilityNodeInfo, id: Int, text: String): Result {
+        return try {
+            if (text.isEmpty()) return Result.Err("type action needs a non-empty 'text'")
+            if (!node.isEditable && !node.isFocusable) {
+                return Result.Err("Node #$id is not an editable/focusable field")
+            }
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            // Focus first so the field is the active input target, then replace text.
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            if (ok) Result.Ok("typed ${text.length} chars into #$id")
+            else Result.Err("ACTION_SET_TEXT failed on #$id")
+        } catch (e: Exception) {
+            if (e is IllegalStateException) {
+                Result.Err("Node #$id became stale/recycled — refresh the tree and retry")
+            } else {
+                Result.Err("type failed on #$id: ${e.message ?: e::class.java.simpleName}")
+            }
         }
     }
 
@@ -238,16 +244,18 @@ class UiAgentExecutor(
         Result.Err("clear failed on #$id: ${e.message ?: e::class.java.simpleName}")
     }
 
-    private fun perform(node: AccessibilityNodeInfo, id: Int, action: Int, label: String): Result = try {
-        if (!node.isVisibleToUser) return Result.Err("Node #$id is off-screen / not visible")
-        val ok = node.performAction(action)
-        if (ok) Result.Ok("$label on #$id")
-        else Result.Err("$label failed on #$id (action=$action)")
-    } catch (e: Exception) {
-        if (e is IllegalStateException) {
-            Result.Err("Node #$id became stale/recycled — refresh the tree and retry")
-        } else {
-            Result.Err("$label failed on #$id: ${e.message ?: e::class.java.simpleName}")
+    private fun perform(node: AccessibilityNodeInfo, id: Int, action: Int, label: String): Result {
+        return try {
+            if (!node.isVisibleToUser) return Result.Err("Node #$id is off-screen / not visible")
+            val ok = node.performAction(action)
+            if (ok) Result.Ok("$label on #$id")
+            else Result.Err("$label failed on #$id (action=$action)")
+        } catch (e: Exception) {
+            if (e is IllegalStateException) {
+                Result.Err("Node #$id became stale/recycled — refresh the tree and retry")
+            } else {
+                Result.Err("$label failed on #$id: ${e.message ?: e::class.java.simpleName}")
+            }
         }
     }
 }
