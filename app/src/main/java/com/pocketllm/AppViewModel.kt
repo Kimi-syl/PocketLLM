@@ -197,7 +197,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sandboxDir: java.io.File = java.io.File(context.filesDir, "sandbox").also { it.mkdirs() }
     private val readFileTool = com.pocketllm.agent.ReadFileTool(sandboxDir).also { it.setContext(context) }
-    private val uiAgentExecutor = com.pocketllm.agent.UiAgentExecutor()
+    private val uiAgentExecutor = com.pocketllm.agent.UiAgentExecutor(context)
     private val writeFileTool = com.pocketllm.agent.WriteFileTool(sandboxDir)
     private val runCodeTool = com.pocketllm.agent.RunCodeTool(sandboxDir)
     private val clipboardTool = com.pocketllm.agent.ClipboardReadTool(context)
