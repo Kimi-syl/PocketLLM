@@ -19,9 +19,14 @@ endforeach()
 
 add_library(${CMAKE_PROJECT_NAME} SHARED llama_jni.cpp)
 
+# vulkan_shim.c compiles into the standalone libvkshim.so (its source lives
+# here for reference; the shim is built by build_shim.sh and vendored into
+# jniLibs). llama_jni.cpp imports its entry points via DT_NEEDED.
+
 target_link_libraries(${CMAKE_PROJECT_NAME}
     PRIVATE
-    llama)
+    llama
+    ${Vulkan_LIBRARY})
 
 if(NOT ANDROID)
     if(DEFINED ENV{JAVA_HOME})

@@ -69,6 +69,12 @@ size_t utf8SequenceLength(unsigned char lead) {
 
 } // namespace
 
+extern "C" const char *opencl_shim_debug(void);
+extern "C" const char *vulkan_shim_debug(void);
+extern "C" const char *vulkan_shim_probe(void);
+extern "C" int vulkan_shim_driver_broken(void);
+extern "C" const char *vulkan_shim_gpu_usable(void);
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
     /* A driver that cannot answer feature queries kills the load path
@@ -80,12 +86,6 @@ Java_com_pocketllm_llm_LlamaBridge_backendInit(JNIEnv*, jobject) {
     }
     llama_backend_init();
 }
-
-extern "C" const char *opencl_shim_debug(void);
-extern "C" const char *vulkan_shim_debug(void);
-extern "C" const char *vulkan_shim_probe(void);
-extern "C" int vulkan_shim_driver_broken(void);
-extern "C" const char *vulkan_shim_gpu_usable(void);
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pocketllm_llm_LlamaBridge_backendInfo(JNIEnv* env, jobject) {
@@ -146,6 +146,12 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
      * (Mali-G68). no_host makes select_weight_buft fall through to plain
      * CPU buffers, so a gpuLayers=0 load never touches the driver. */
     mparams.no_host = gpuLayers == 0;
+    {
+        char plog[128];
+        snprintf(plog, sizeof(plog), "mparams: n_gpu_layers=%d no_host=%d\n",
+                 mparams.n_gpu_layers, (int)mparams.no_host);
+        ggml_log_forward(GGML_LOG_LEVEL_INFO, plog, nullptr);
+    }
     llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
     if (model == nullptr) return -1;
 
