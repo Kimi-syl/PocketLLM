@@ -154,6 +154,13 @@ class UiAgentLoop(
     private fun buildPrompt(goal: String, treeJson: String, feedback: String?): String = buildString {
         appendLine("You are an Android automation agent. You control the phone by issuing ONE JSON action per turn.")
         appendLine()
+        appendLine("PREFER system actions: to open an app, dial, or open a URL, use the intent actions below instead of clicking blind UI. Use id-based actions only to drive controls inside the currently open app.")
+        appendLine()
+        appendLine("System actions (no id needed):")
+        appendLine("""{"action":"open_app","package":"<package name OR app label, e.g. com.google.android.apps.maps or Maps>"}""")
+        appendLine("""{"action":"dial","number":"<phone number>"}""")
+        appendLine("""{"action":"open_url","url":"<full url>"}""")
+        appendLine()
         appendLine("The current screen (filtered UI tree) is a JSON array of interactive nodes:")
         appendLine(treeJson.ifBlank { "[]" })
         appendLine()
@@ -165,13 +172,12 @@ class UiAgentLoop(
         }
         appendLine()
         appendLine("Respond with ONLY ONE JSON object, one of:")
-        appendLine("""{"action":"click","id":<id>}""")
-        appendLine("""{"action":"type","id":<id>,"text":"<text>"}""")
-        appendLine("""{"action":"scroll_down","id":<id>}  or  {"action":"scroll_up","id":<id>}""")
-        appendLine("""{"action":"focus","id":<id>}""")
+        appendLine("""{"action":"open_app","package":"..."}  or  {"action":"dial","number":"..."}  or  {"action":"open_url","url":"..."}""")
+        appendLine("""{"action":"click","id":<id>}  or  {"action":"type","id":<id>,"text":"<text>"}""")
+        appendLine("""{"action":"scroll_down","id":<id>}  or  {"action":"scroll_up","id":<id>}  or  {"action":"focus","id":<id>}""")
         appendLine("""{"action":"finish","text":"<final answer if the goal is achieved or impossible>"}""")
         appendLine()
-        appendLine("If the goal is already achieved, or no UI action can achieve it, respond with the finish action. No markdown. No extra commentary.")
+        appendLine("If the goal is already achieved, or no action can achieve it, respond with the finish action. No markdown. No extra commentary.")
     }
 
     // --- robust JSON extraction -------------------------------------------

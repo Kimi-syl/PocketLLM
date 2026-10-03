@@ -2,7 +2,11 @@ package com.pocketllm.agent
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
@@ -38,12 +42,27 @@ class UiAccessibilityService : AccessibilityService() {
         private const val MAX_DEPTH = 32    // guard against pathological trees
 
         @Volatile
+        private var instance: UiAccessibilityService? = null
+
+        /**
+         * Coordinate-gesture fallback for clicks that fail via ACTION_CLICK
+         * (including on ancestors). Synthesises a short tap at (x, y) in screen
+         * coordinates via [AccessibilityService.dispatchGesture], which works
+         * even when the target app rejects the accessibility click. Returns
+         * true if the gesture was accepted for dispatch.
+         */
+        fun dispatchTap(x: Int, y: Int): Boolean {
+            val svc = instance ?: return false
+            return svc.dispatchTapImpl(x, y)
+        }
+
+        @Volatile
         var isConnected: Boolean = false
             private set
 
         /** True when the service is connected and has published at least one snapshot. */
         val isRunning: Boolean
-            get() = isConnected && snapshot.get().let { !it.isEmpty() && it.nodesById.isNotEmpty() }
+            get() = isConnected && snapshot.get().nodesById.isNotEmpty()
 
         /** Latest published tree snapshot; read by the loop from any thread. */
         val snapshot = AtomicReference(NodeSnapshot.empty())
@@ -80,13 +99,24 @@ class UiAccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         isConnected = true
+        instance = this
     }
 
     override fun onInterrupt() { /* no-op */ }
 
     override fun onDestroy() {
         isConnected = false
+        if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    /** Short tap at a screen coordinate (used as the ACTION_CLICK fallback). */
+    private fun dispatchTapImpl(x: Int, y: Int): Boolean {
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
+            .build()
+        return dispatchGesture(gesture, null, Handler(Looper.getMainLooper()))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
