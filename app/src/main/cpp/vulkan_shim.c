@@ -42,6 +42,8 @@
 
 /* Exact AOSP hardware HAL layouts (hardware/libhardware hardware.h, LP64).
  * Not in the NDK, so reproduced here - offsets must match the driver. */
+#define MAKE_TAG_CONSTANT(A, B, C, D) (((A) << 24) | ((B) << 16) | ((C) << 8) | (D))
+#define HARDWARE_MODULE_TAG MAKE_TAG_CONSTANT('H', 'W', 'M', 'T')
 typedef struct hw_device_t hw_device_t;
 typedef struct hw_module_t hw_module_t;
 typedef struct {
@@ -56,7 +58,10 @@ struct hw_module_t {
     const char *author;
     hw_module_methods_t *methods;
     void *dso;
-    uint64_t reserved[32 - 7]; /* padding to 128 bytes on LP64 */
+    /* AOSP hardware.h LP64: uint64_t reserved[32 - 7] (the uint32_t flavour
+     * is the 32-bit build). Verified against the vendored Turnip HMI blob:
+     * tag at 0, id at 8, methods at 32 - identical under either layout. */
+    uint64_t reserved[32 - 7];
 };
 struct hw_device_t {
     uint32_t tag;
@@ -160,71 +165,83 @@ static void load_system_fallback(void) {
     diagf("using system vulkan driver\n");
 }
 
+/* Turnip driver loading, kept OUT of the constructor: a mismatched Turnip
+ * can SIGSEGV inside dlopen/HMI-open, and a crash in a constructor is
+ * unrecoverable at app startup. This runs ONLY inside the fork-isolated
+ * probe child - a crash kills the child, the parent reports broken. */
+static void init_turnip_driver(void) {
+    if (g_driver) return; /* already initialized (Turnip or system) */
+
+    Dl_info info;
+    void *self = (void *)&init_turnip_driver;
+    /* Turnip is opt-in: it segfaults on some GPUs (e.g. Adreno 610), and only
+     * load it when the app settings created the flag file. */
+    int turnip_enabled = access("/data/data/com.pocketllm/files/turnip.on", F_OK) == 0;
+    diagf("turnip opt-in flag: %s\n", turnip_enabled ? "on" : "off (default)");
+    if (!turnip_enabled) return;
+
+    int vendor = detect_gpu_vendor();
+    if (vendor != 0) {
+        /* Turnip is the Mesa Adreno (freedreno) driver. It is not a generic
+         * Vulkan ICD — it talks directly to the freedreno kernel driver,
+         * which only exists on Qualcomm SoCs. On Mali/PowerVR/Tegra devices
+         * the .so will load (it's a self-contained Mesa build) but every
+         * vkCreateInstance / vkAllocateMemory will fail or crash inside the
+         * driver. */
+        diagf("turnip NOT loaded: bundled driver is for Adreno (Qualcomm), but this device has %s\n",
+               gpu_vendor_name(vendor));
+        return;
+    }
+    if (!dladdr(self, &info) || !info.dli_fname) {
+        diagf("dladdr failed\n");
+        return;
+    }
+    char path[512];
+    snprintf(path, sizeof(path), "%s", info.dli_fname);
+    char *slash = strrchr(path, '/');
+    if (!slash) {
+        diagf("dladdr path has no slash\n");
+        return;
+    }
+    snprintf(slash + 1, sizeof(path) - (slash + 1 - path), "libvulkan_freedreno.so");
+    diagf("turnip path: %s\n", path);
+    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    diagf("dlopen turnip: %s\n", h ? "ok" : "failed");
+    if (!h) {
+        diagf("turnip dlopen error: %s\n", dlerror() ? dlerror() : "");
+        return;
+    }
+    hw_module_t *hmi = (hw_module_t *)dlsym(h, "HMI");
+    if (!hmi) {
+        diagf("HMI dlsym failed\n");
+        return;
+    }
+    if (hmi->tag != HARDWARE_MODULE_TAG || !hmi->id || strcmp(hmi->id, "vulkan") != 0) {
+        diagf("HMI id != vulkan (%s)\n", hmi->id ? hmi->id : "?");
+        return;
+    }
+    hwvulkan_device_t *dev = NULL;
+    int rc = hmi->methods->open(hmi, "vk0", (hw_device_t **)&dev);
+    diagf("HMI open: rc=%d\n", rc);
+    if (rc == 0 && dev) {
+        g_gipa = dev->GetInstanceProcAddr;
+        g_create_instance = dev->CreateInstance;
+        g_eiep = dev->EnumerateInstanceExtensionProperties;
+        g_driver = h;
+        g_using_turnip = 1;
+        diagf("turnip driver ready (drm render node)\n");
+    }
+}
+
 __attribute__((constructor)) static void vulkan_shim_init(void) {
     diagf("vulkan shim init\n");
 
     int vendor = detect_gpu_vendor();
     diagf("gpu vendor: %s\n", gpu_vendor_name(vendor));
 
-    /* Locate our own lib dir (the turnip driver ships next to us). */
-    Dl_info info;
-    void *self = (void *)&vulkan_shim_init;
-    /* Turnip is opt-in: it segfaults on some GPUs (e.g. Adreno 610), and a
-     * native crash cannot be caught in-process. Only load it when the app
-     * settings created the flag file. */
-    int turnip_enabled = access("/data/data/com.pocketllm/files/turnip.on", F_OK) == 0;
-    diagf("turnip opt-in flag: %s\n", turnip_enabled ? "on" : "off (default)");
-    if (turnip_enabled && vendor != 0) {
-        /* Turnip is the Mesa Adreno (freedreno) driver. It is not a generic
-         * Vulkan ICD — it talks directly to the freedreno kernel driver,
-         * which only exists on Qualcomm SoCs. On Mali/PowerVR/Tegra devices
-         * the .so will load (it's a self-contained Mesa build) but every
-         * vkCreateInstance / vkAllocateMemory will fail or crash inside the
-         * driver. Refuse to load it here so the user gets a clear message
-         * instead of a native crash they can't recover from. */
-        diagf("turnip NOT loaded: bundled driver is for Adreno (Qualcomm), but this device has %s. Falling back to system Vulkan.\n",
-               gpu_vendor_name(vendor));
-        turnip_enabled = 0;
-    }
-    if (dladdr(self, &info) && info.dli_fname && turnip_enabled) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s", info.dli_fname);
-        char *slash = strrchr(path, '/');
-        if (slash) {
-            snprintf(slash + 1, sizeof(path) - (slash + 1 - path), "libvulkan_freedreno.so");
-            diagf("turnip path: %s\n", path);
-            void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-            diagf("dlopen turnip: %s\n", h ? "ok" : "failed");
-            if (h) {
-                hw_module_t *hmi = (hw_module_t *)dlsym(h, "HMI");
-                if (!hmi) {
-                    diagf("HMI dlsym failed\n");
-                } else if (strcmp(hmi->id, "vulkan") != 0) {
-                    diagf("HMI id != vulkan (%s)\n", hmi->id ? hmi->id : "?");
-                } else {
-                    hwvulkan_device_t *dev = NULL;
-                    int rc = hmi->methods->open(hmi, "vk0", (hw_device_t **)&dev);
-                    diagf("HMI open: rc=%d\n", rc);
-                    if (rc == 0 && dev) {
-                        g_gipa = dev->GetInstanceProcAddr;
-                        g_create_instance = dev->CreateInstance;
-                        g_eiep = dev->EnumerateInstanceExtensionProperties;
-                        g_driver = h;
-                        g_using_turnip = 1;
-                        diagf("turnip driver ready (drm render node)\n");
-                    }
-                }
-            } else {
-                diagf("turnip dlopen error: %s\n", dlerror() ? dlerror() : "");
-            }
-        } else {
-            diagf("dladdr path has no slash\n");
-        }
-    } else if (!turnip_enabled) {
-        diagf("turnip skipped: disabled\n");
-    } else {
-        diagf("dladdr failed\n");
-    }
+    /* Constructor only touches the SYSTEM driver - dlopen of the platform
+     * libvulkan is safe. Turnip (opt-in, crash-prone) is loaded later, in
+     * the fork-isolated probe child via init_turnip_driver(). */
 
     if (!g_gipa) {
         load_system_fallback();
@@ -550,8 +567,14 @@ static char g_gpu_verdict[128];
  * Mirrors the exact call sequence ggml uses on a working device: instance
  * with KHR injected, features2 chain (storageBuffer16BitAccess is ggml's
  * hard requirement), device creation with 16bit_storage + float16_int8,
- * then a 1 MB storage buffer, memory alloc, and map. */
+ * then a 32 MB storage buffer, memory alloc, and map. */
 static void gpu_probe_child(int fd) {
+    /* Opt-in Turnip runs here, fork-isolated: a mismatched driver can
+     * SIGSEGV during dlopen/HMI-open and only this child dies. If Turnip
+     * initializes, the probe continues against it; otherwise the system
+     * driver (loaded by the constructor) is already wired. */
+    init_turnip_driver();
+
     uint32_t api = 0;
     PFN_vkEnumerateInstanceVersion ev =
         (PFN_vkEnumerateInstanceVersion)g_gipa(NULL, "vkEnumerateInstanceVersion");
@@ -645,7 +668,9 @@ static void gpu_probe_child(int fd) {
         } else {
             VkBufferCreateInfo bci = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = 1u << 20,
+                /* LLM tensor allocations are tens of MB; validate the driver
+                 * under real memory pressure, not a token buffer. */
+                .size = 32u << 20,
                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -741,6 +766,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
      * handle that segfaults on first use. Refuse instead - callers either
      * handle the error or fall back to CPU buffers. */
     (void)physicalDevice; (void)pCreateInfo; (void)pAllocator; (void)pDevice;
+    /* Fix ordering race: llama.cpp may reach device creation before anything
+     * called vulkan_shim_gpu_usable() (g_gpu_state still 0 = unknown). Force
+     * the fork-isolated probe to run FIRST so the verdict below is real;
+     * a crashing driver kills only the probe child, never this process. */
+    if (g_gpu_state == 0) {
+        vulkan_shim_gpu_usable();
+    }
     if (g_gpu_state < 0) {
         diagf("vkCreateDevice refused (driver broken)\n");
         return VK_ERROR_INITIALIZATION_FAILED;
