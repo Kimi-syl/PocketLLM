@@ -108,6 +108,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _downloadProgress = MutableStateFlow<Float?>(null)
     val downloadProgress: StateFlow<Float?> = _downloadProgress
 
+    /** URL of the model being downloaded right now, null when idle. Lets the
+     *  UI render the progress bar inline under the row that started it. */
+    private val _downloadingUrl = MutableStateFlow<String?>(null)
+    val downloadingUrl: StateFlow<String?> = _downloadingUrl
+
     private val _searchResults = MutableStateFlow<List<HfSearchResult>>(emptyList())
     val searchResults: StateFlow<List<HfSearchResult>> = _searchResults
 
@@ -437,12 +442,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadModel(url: String) {
         if (_downloadProgress.value != null) return
         downloadCancelled.set(false)
+        val target = url.trim()
         viewModelScope.launch {
             _downloadProgress.value = 0f
-            modelRepo.download(url.trim(), downloadCancelled) { progress -> _downloadProgress.value = progress }
+            _downloadingUrl.value = target
+            modelRepo.download(target, downloadCancelled) { progress -> _downloadProgress.value = progress }
                 .onSuccess { ServerLog.log("Downloaded ${it.name}") }
                 .onFailure { ServerLog.log("Download failed: ${it.message}") }
             _downloadProgress.value = null
+            _downloadingUrl.value = null
             refreshModels()
         }
     }

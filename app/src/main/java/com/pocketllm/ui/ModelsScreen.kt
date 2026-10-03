@@ -254,10 +254,18 @@ private fun HfSearchSection(vm: AppViewModel) {
     val filesLoading by vm.filesLoading.collectAsState()
     val models by vm.models.collectAsState()
     val downloadProgress by vm.downloadProgress.collectAsState()
+    val downloadingUrl by vm.downloadingUrl.collectAsState()
 
     var query by remember { mutableStateOf("") }
     var directUrl by remember { mutableStateOf("") }
     var expandedRepo by remember { mutableStateOf<String?>(null) }
+    // True while a download started from the Direct URL field is running, so
+    // its progress can render under that field (it has no file row).
+    var directDownloadActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(downloadProgress) {
+        if (downloadProgress == null) directDownloadActive = false
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -315,16 +323,16 @@ private fun HfSearchSection(vm: AppViewModel) {
                             listing != null && listing.second.isEmpty() ->
                                 Text("No GGUF files in this repo", style = MaterialTheme.typography.bodySmall)
                             listing != null -> listing.second.forEach { entry ->
+                                val fileUrl = "https://huggingface.co/${result.repoId}/resolve/main/${entry.path}"
                                 FileDownloadRow(
                                     fileName = entry.path.substringAfterLast('/'),
                                     sizeBytes = entry.realSize,
                                     alreadyOnDevice = models.any { it.name == entry.path.substringAfterLast('/') },
                                     downloadEnabled = downloadProgress == null,
-                                    onDownload = {
-                                        vm.downloadModel(
-                                            "https://huggingface.co/${result.repoId}/resolve/main/${entry.path}"
-                                        )
-                                    },
+                                    // Progress only on the row that owns the running download.
+                                    progress = if (downloadingUrl == fileUrl) downloadProgress else null,
+                                    onDownload = { vm.downloadModel(fileUrl) },
+                                    onCancel = { vm.cancelDownload() },
                                 )
                             }
                         }
@@ -353,27 +361,41 @@ private fun HfSearchSection(vm: AppViewModel) {
             )
         }
         item {
-            Button(
-                onClick = {
-                    vm.downloadModel(directUrl)
-                    directUrl = ""
-                },
-                enabled = directUrl.isNotBlank() && downloadProgress == null,
-            ) { Text("Download URL") }
-        }
-
-        downloadProgress?.let { progress ->
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Downloading… ${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
-                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                            TextButton(onClick = { vm.cancelDownload() }) { Text("Cancel") }
-                        }
+            Column(Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        vm.downloadModel(directUrl)
+                        directDownloadActive = true
+                        directUrl = ""
+                    },
+                    enabled = directUrl.isNotBlank() && downloadProgress == null,
+                ) { Text("Download URL") }
+                if (directDownloadActive) {
+                    downloadProgress?.let { progress ->
+                        InlineDownloadProgress(progress = progress, onCancel = { vm.cancelDownload() })
                     }
                 }
             }
+        }
+    }
+}
+
+/** Progress bar + cancel, rendered directly under the entry being downloaded. */
+@Composable
+private fun InlineDownloadProgress(progress: Float, onCancel: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            "Downloading… ${(progress * 100).toInt()}%",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+        )
+        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+            TextButton(onClick = onCancel) { Text("Cancel") }
         }
     }
 }
@@ -384,25 +406,32 @@ private fun FileDownloadRow(
     sizeBytes: Long,
     alreadyOnDevice: Boolean,
     downloadEnabled: Boolean,
+    progress: Float?,
     onDownload: () -> Unit,
+    onCancel: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(fileName, style = MaterialTheme.typography.bodySmall)
-            Text(
-                formatSize(sizeBytes) + if (alreadyOnDevice) " · on device" else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (!alreadyOnDevice) {
-            IconButton(onClick = onDownload, enabled = downloadEnabled) {
-                Icon(Icons.Outlined.Download, contentDescription = "Download")
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(fileName, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    formatSize(sizeBytes) + if (alreadyOnDevice) " · on device" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+            if (!alreadyOnDevice) {
+                IconButton(onClick = onDownload, enabled = downloadEnabled) {
+                    Icon(Icons.Outlined.Download, contentDescription = "Download")
+                }
+            }
+        }
+        if (progress != null) {
+            InlineDownloadProgress(progress = progress, onCancel = onCancel)
         }
     }
 }
