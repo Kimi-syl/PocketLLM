@@ -1322,16 +1322,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) == true
     }.getOrDefault(false)
 
-    /** Launches the system dialog asking to become the device assistant. */
-    fun requestAssistantRole(activity: android.app.Activity) {
-        val rm = context.getSystemService(android.app.role.RoleManager::class.java) ?: return
-        if (!rm.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT)) return
+    /**
+     * Opens the system's "Digital assistant" settings.
+     *
+     * RoleManager.createRequestRoleIntent is the stock path, but it is
+     * unavailable on MIUI and several AOSP forks (isRoleAvailable returns false
+     * and the old code silently did nothing). Walk a cascade of intents that the
+     * OEM settings apps actually implement, and report what happened so the UI
+     * can tell the user instead of appearing broken.
+     */
+    fun openAssistantSettings(activity: android.app.Activity): String {
+        // 1) Role request — stock Android 10+.
         runCatching {
-            activity.startActivityForResult(
-                rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT),
-                ASSISTANT_ROLE_REQUEST_CODE,
-            )
+            val rm = context.getSystemService(android.app.role.RoleManager::class.java)
+            if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT)) {
+                activity.startActivityForResult(
+                    rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT),
+                    ASSISTANT_ROLE_REQUEST_CODE,
+                )
+                return "已開啟助理角色授權視窗"
+            }
         }
+
+        // 2) OEM settings screens, most specific first.
+        val candidates = listOf(
+            "已開啟數位助理設定" to android.content.Intent("android.settings.VOICE_INPUT_SETTINGS"),
+            "已開啟預設應用程式設定" to android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS
+            ),
+            "已開啟應用程式設定" to android.content.Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.parse("package:${context.packageName}"),
+            ),
+            "已開啟系統設定" to android.content.Intent(android.provider.Settings.ACTION_SETTINGS),
+        )
+        for ((message, intent) in candidates) {
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { activity.startActivity(intent) }.isSuccess) return message
+        }
+        return "無法自動開啟，請手動前往：設定 → 應用程式 → 預設應用程式 → 數位助理"
     }
 
     fun refreshAssistContext() {

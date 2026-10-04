@@ -40,6 +40,7 @@ class UiAccessibilityService : AccessibilityService() {
         private const val TAG = "UiAccessibility"
         private const val MAX_NODES = 256   // hard cap → bounds prompt size
         private const val MAX_DEPTH = 32    // guard against pathological trees
+        private const val NULL_ROOT_STREAK_LIMIT = 20  // events without a window → zombie
 
         @Volatile
         private var instance: UiAccessibilityService? = null
@@ -59,6 +60,14 @@ class UiAccessibilityService : AccessibilityService() {
         @Volatile
         var isConnected: Boolean = false
             private set
+
+        /**
+         * Set when the health check finds a wedged instance (connected according
+         * to the framework, but unable to read any window). The settings screen
+         * surfaces this so the user knows to re-enable the service.
+         */
+        @Volatile
+        var zombieDetected: Boolean = false
 
         /** True when the service is connected and has published at least one snapshot. */
         val isRunning: Boolean
@@ -100,6 +109,37 @@ class UiAccessibilityService : AccessibilityService() {
         }
         isConnected = true
         instance = this
+        zombieDetected = false
+        nullRootStreak = 0
+
+        // MIUI (and some Teclast builds) fire a burst of events right after the
+        // service is bound; reading the tree during that window can yield null.
+        // Wait for things to settle before judging the instance healthy.
+        Handler(Looper.getMainLooper()).postDelayed({ verifyHealthyOrDisableSelf() }, 1500)
+    }
+
+    /**
+     * A "zombie" instance is one the framework still reports as connected while
+     * it can no longer read any window - observed on MIUI and the Teclast P20HD
+     * after the app is closed and reopened. The tree stays empty until the user
+     * toggles the service off and on by hand.
+     *
+     * We detect it here and call [disableSelf] so the framework tears the dead
+     * instance down instead of leaving it wedged.
+     */
+    private fun verifyHealthyOrDisableSelf() {
+        if (!isConnected) return
+        val root = rootInActiveWindow
+        if (root != null) {
+            // Publish an initial snapshot so isRunning flips true immediately
+            // rather than waiting for the first content-changed event.
+            publishSnapshot(root, root.packageName?.toString())
+            return
+        }
+        if (snapshot.get().isEmpty()) {
+            zombieDetected = true
+            runCatching { disableSelf() }
+        }
     }
 
     override fun onInterrupt() { /* no-op */ }
@@ -109,6 +149,9 @@ class UiAccessibilityService : AccessibilityService() {
         if (instance === this) instance = null
         super.onDestroy()
     }
+
+    /** Consecutive events where the framework handed us no active window. */
+    private var nullRootStreak = 0
 
     /** Short tap at a screen coordinate (used as the ACTION_CLICK fallback). */
     private fun dispatchTapImpl(x: Int, y: Int): Boolean {
@@ -129,7 +172,22 @@ class UiAccessibilityService : AccessibilityService() {
             else -> return
         }
 
-        val root = rootInActiveWindow ?: return
+        val root = rootInActiveWindow
+        if (root == null) {
+            // Connected, yet the framework hands us no window. Brief gaps happen
+            // during transitions; a long streak means the instance is wedged.
+            if (++nullRootStreak >= NULL_ROOT_STREAK_LIMIT) {
+                zombieDetected = true
+                runCatching { disableSelf() }
+            }
+            return
+        }
+        nullRootStreak = 0
+        publishSnapshot(root, event.packageName?.toString())
+    }
+
+    /** Builds a snapshot from [root] and swaps it into [snapshot]. */
+    private fun publishSnapshot(root: AccessibilityNodeInfo, pkg: String?) {
         val nodes = ArrayList<UiNode>(64)
         val visited = ArrayList<AccessibilityNodeInfo>(64)
         parseNodeTree(root, nodes, visited, depth = 0)
@@ -144,7 +202,7 @@ class UiAccessibilityService : AccessibilityService() {
                 nodesById = byId,
                 json = json,
                 capturedAtMs = System.currentTimeMillis(),
-                windowTitle = event.packageName?.toString() ?: "",
+                windowTitle = pkg ?: "",
             )
         )
 

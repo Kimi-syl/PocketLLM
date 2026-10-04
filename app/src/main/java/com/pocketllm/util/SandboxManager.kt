@@ -1,8 +1,10 @@
 package com.pocketllm.util
 
 import android.content.Context
+import android.system.Os
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -101,43 +103,213 @@ class SandboxManager(private val context: Context) {
         val asset = firstAsset() ?: return@withContext Result.failure(
             IllegalStateException("APK 內缺少 rootfs 資產（${assetNames.joinToString()}）")
         )
-        val tar = File("/system/bin/tar")
-        if (!tar.exists()) return@withContext Result.failure(
-            IllegalStateException("系統缺少 tar，無法解壓 rootfs")
-        )
         rootfsDir.mkdirs()
         val staged = File(context.cacheDir, "alpine-rootfs.stage")
         try {
             context.assets.open(asset).use { input ->
                 staged.outputStream().use { out -> input.copyTo(out) }
             }
-            // The asset may be gzipped or a plain tar depending on how AGP
-            // handled it; sniff the magic bytes rather than trusting the name.
-            val magic = staged.inputStream().use { s ->
-                val b = ByteArray(2); s.read(b); b
-            }
+            val magic = staged.inputStream().use { s -> val b = ByteArray(2); s.read(b); b }
             val gzipped = magic.size == 2 && magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte()
-            val args = if (gzipped) {
-                listOf(tar.absolutePath, "-xzf", staged.absolutePath, "-C", rootfsDir.absolutePath)
-            } else {
-                listOf(tar.absolutePath, "-xf", staged.absolutePath, "-C", rootfsDir.absolutePath)
-            }
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val out = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
+            extractTar(staged, rootfsDir, gzipped)
             staged.delete()
-            if (code == 0 && File(rootfsDir, "bin/sh").exists()) {
+            if (File(rootfsDir, "bin/sh").exists()) {
                 writeResolvConf()
                 Result.success(Unit)
             } else {
-                Result.failure(IllegalStateException("解壓 rootfs 失敗（exit $code）：${out.take(300)}"))
+                Result.failure(IllegalStateException("解壓後找不到 bin/sh"))
             }
         } catch (t: Throwable) {
             staged.delete()
             Result.failure(t)
         }
+    }
+
+    /**
+     * Minimal tar extractor that deliberately never restores ownership.
+     *
+     * The platform tar (toybox) tries to chown extracted entries to their
+     * archived uid/gid, which Android's SELinux policy denies for an unprivileged
+     * app: `chown ".sys": Operation not permitted`, exit 1, partial rootfs. We
+     * own the location and never need root ownership - PRoot fabricates it - so
+     * skipping chown entirely is both correct and the reason this works.
+     *
+     * Handles regular files, directories, symlinks, hardlinks, GNU long names and
+     * PAX extended headers. Device/fifo entries are skipped (PRoot binds /dev).
+     */
+    private fun extractTar(archive: File, dest: File, gzipped: Boolean) {
+        val raw = archive.inputStream().buffered()
+        val input = if (gzipped) GZIPInputStream(raw, 1 shl 16) else raw
+        input.use { stream ->
+            val hdr = ByteArray(512)
+            var longName: String? = null
+            var longLink: String? = null
+            var paxPath: String? = null
+            var paxSize: Long? = null
+            var paxLink: String? = null
+
+            while (true) {
+                if (!readFully(stream, hdr)) break
+                if (hdr.all { it == 0.toByte() }) break
+
+                var name = cstr(hdr, 0, 100)
+                val prefix = cstr(hdr, 345, 155)
+                if (prefix.isNotEmpty()) name = "$prefix/$name"
+                var size = parseOctal(hdr, 124, 12)
+                val mode = parseOctal(hdr, 100, 8)
+                val type = hdr[156].toInt().toChar()
+                var link = cstr(hdr, 157, 100)
+
+                when (type) {
+                    'x', 'g' -> {                       // PAX extended header
+                        val body = readPayload(stream, size)
+                        parsePax(body) { k, v ->
+                            when (k) {
+                                "path" -> paxPath = v
+                                "size" -> paxSize = v.toLongOrNull()
+                                "linkpath" -> paxLink = v
+                            }
+                        }
+                        continue
+                    }
+                    'L' -> {                            // GNU long name
+                        longName = readPayload(stream, size).toString(Charsets.UTF_8).trimEnd('\u0000')
+                        continue
+                    }
+                    'K' -> {                            // GNU long link name
+                        longLink = readPayload(stream, size).toString(Charsets.UTF_8).trimEnd('\u0000')
+                        continue
+                    }
+                }
+
+                name = longName ?: paxPath ?: name
+                longName = null
+                paxPath = null
+                link = longLink ?: paxLink ?: link
+                longLink = null
+                paxLink = null
+                size = paxSize ?: size
+                paxSize = null
+
+                val target = safeResolve(dest, name)
+                if (target == null) {
+                    skipPayload(stream, size)
+                    continue
+                }
+
+                when (type) {
+                    '5' -> target.mkdirs()
+                    '2' -> {                            // symlink
+                        target.parentFile?.mkdirs()
+                        target.delete()
+                        runCatching { Os.symlink(link, target.absolutePath) }
+                            .onFailure {
+                                // Unprivileged fallback: a regular copy of the target.
+                                val src = safeResolve(dest, link)
+                                if (src != null && src.exists()) src.copyTo(target, overwrite = true)
+                            }
+                    }
+                    '1' -> {                            // hardlink
+                        val src = safeResolve(dest, link)
+                        target.parentFile?.mkdirs()
+                        if (src != null && src.exists()) src.copyTo(target, overwrite = true)
+                    }
+                    '0', '\u0000' -> {                  // regular file
+                        target.parentFile?.mkdirs()
+                        target.outputStream().use { out -> transfer(stream, out, size) }
+                        skipPadding(stream, size)
+                        applyMode(target, mode)
+                    }
+                    else -> skipPayload(stream, size)   // devices, fifos, ...
+                }
+            }
+        }
+    }
+
+    private fun safeResolve(dest: File, name: String): File? {
+        val cleaned = name.removePrefix("./").trimStart('/')
+        if (cleaned.isEmpty()) return null
+        val parts = cleaned.split('/')
+        if (parts.any { it == ".." }) return null          // no traversal
+        return File(dest, cleaned)
+    }
+
+    private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
+        var off = 0
+        while (off < buf.size) {
+            val n = input.read(buf, off, buf.size - off)
+            if (n < 0) return false
+            off += n
+        }
+        return true
+    }
+
+    private fun transfer(input: java.io.InputStream, out: java.io.OutputStream, size: Long) {
+        val buf = ByteArray(64 * 1024)
+        var left = size
+        while (left > 0) {
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+            if (n < 0) break
+            out.write(buf, 0, n)
+            left -= n
+        }
+    }
+
+    private fun skipPadding(input: java.io.InputStream, size: Long) {
+        val pad = ((512 - (size % 512)) % 512).toInt()
+        if (pad > 0) input.skip(pad.toLong())
+    }
+
+    private fun skipPayload(input: java.io.InputStream, size: Long) {
+        var left = size + ((512 - (size % 512)) % 512)
+        while (left > 0) {
+            val n = input.skip(left)
+            if (n <= 0) break
+            left -= n
+        }
+    }
+
+    private fun readPayload(input: java.io.InputStream, size: Long): ByteArray {
+        val body = ByteArray(size.toInt())
+        readFully(input, body)
+        skipPadding(input, size)
+        return body
+    }
+
+    private fun cstr(b: ByteArray, off: Int, len: Int): String {
+        var end = off
+        val limit = off + len
+        while (end < limit && b[end] != 0.toByte()) end++
+        return String(b, off, end - off, Charsets.UTF_8)
+    }
+
+    private fun parseOctal(b: ByteArray, off: Int, len: Int): Long {
+        val s = cstr(b, off, len).trim()
+        if (s.isEmpty()) return 0
+        return s.toLongOrNull(8) ?: 0
+    }
+
+    /** PAX records are "LEN key=value\n" with LEN counting the whole record. */
+    private inline fun parsePax(body: ByteArray, onEntry: (String, String) -> Unit) {
+        var i = 0
+        while (i < body.size) {
+            var j = i
+            while (j < body.size && body[j] != ' '.code.toByte()) j++
+            val len = String(body, i, j - i, Charsets.UTF_8).trim().toIntOrNull() ?: break
+            if (len <= 0 || i + len > body.size) break
+            val record = String(body, i, len, Charsets.UTF_8).trimEnd('\n')
+            val eq = record.indexOf('=')
+            if (eq > 0) {
+                val key = record.substring(record.indexOf(' ') + 1, eq)
+                onEntry(key, record.substring(eq + 1))
+            }
+            i += len
+        }
+    }
+
+    private fun applyMode(f: File, mode: Long) {
+        // 0o100 = owner execute. Everything else is left at the default umask.
+        if (mode and 0x40L != 0L) f.setExecutable(true, true)
     }
 
     /** Runs [command] inside the rootfs. Returns combined stdout/stderr. */
@@ -256,21 +428,17 @@ class SandboxManager(private val context: Context) {
         if (!tarGz.exists()) return@withContext Result.failure(
             IllegalStateException("找不到檔案：${tarGz.absolutePath}")
         )
-        val tar = File("/system/bin/tar")
-        if (!tar.exists()) return@withContext Result.failure(
-            IllegalStateException("系統缺少 tar，無法解壓 rootfs。")
-        )
         rootfsDir.mkdirs()
         try {
-            val pb = ProcessBuilder(
-                tar.absolutePath, "-xzf", tarGz.absolutePath, "-C", rootfsDir.absolutePath,
-            )
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val out = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
-            if (code == 0 && File(rootfsDir, "bin/sh").exists()) Result.success(Unit)
-            else Result.failure(IllegalStateException("tar 失敗（exit $code）：${out.take(300)}"))
+            val magic = tarGz.inputStream().use { s -> val b = ByteArray(2); s.read(b); b }
+            val gzipped = magic.size == 2 && magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte()
+            extractTar(tarGz, rootfsDir, gzipped)
+            if (File(rootfsDir, "bin/sh").exists()) {
+                writeResolvConf()
+                Result.success(Unit)
+            } else {
+                Result.failure(IllegalStateException("解壓後找不到 bin/sh"))
+            }
         } catch (t: Throwable) {
             Result.failure(t)
         }

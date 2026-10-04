@@ -2756,6 +2756,7 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
     var newFact by remember { mutableStateOf("") }
     var voiceTestMsg by remember { mutableStateOf<String?>(null) }
     var mcpTestMsg by remember { mutableStateOf<String?>(null) }
+    var assistMsg by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { vm.refreshMemoryStore() }
 
@@ -2784,12 +2785,22 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 )
             }
             Text(
-                if (features.dotProd || features.fp16)
-                    "此裝置支援 FP16 / DotProd。以 POCKETLLM_ARM_ARCH=armv8.2-a+dotprod+fp16 重新建置原生庫即可啟用對應核心。"
-                else "未偵測到 FP16 / DotProd，維持基準核心。",
+                "目前原生庫以 ARMv8-A 基準建置（已驗證不含 sdot/udot 指令），" +
+                    "因此在 Cortex-A53（如 P20HD）到 A78 的所有 arm64 裝置上都能執行，不會 SIGILL。" +
+                    "這是刻意的取捨：穩定性優先於峰值速度。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (features.dotProd || features.fp16) {
+                Text(
+                    "此裝置硬體支援" +
+                        (if (features.fp16) " FP16" else "") +
+                        (if (features.dotProd) " DotProd" else "") +
+                        "；若要換取速度，可改用 armv8.2-a+dotprod+fp16 重建原生庫，但該二進位在 A53 等級裝置會崩潰。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // --- Strict JSON grammar ------------------------------------------
@@ -2970,10 +2981,20 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 val activity = LocalContext.current as? android.app.Activity
                 TextButton(
-                    onClick = { activity?.let { vm.requestAssistantRole(it) } },
-                    enabled = activity != null && !held && vm.assistantRoleAvailable(),
+                    onClick = { activity?.let { assistMsg = vm.openAssistantSettings(it) } },
+                    enabled = activity != null && !held,
                 ) { Text(if (held) "已啟用" else "取得助理權限") }
                 TextButton(onClick = { vm.refreshAssistContext() }) { Text("讀取快照") }
+            }
+            if (!vm.assistantRoleAvailable()) {
+                Text(
+                    "此裝置（MIUI / 部分 AOSP）沒有標準助理角色對話框，將改為開啟系統設定頁，請手動選擇 PocketLLM 為數位助理。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            assistMsg?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             if (assistCtx.isNotBlank()) {
                 HorizontalDivider()

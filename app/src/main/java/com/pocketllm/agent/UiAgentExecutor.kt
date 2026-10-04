@@ -90,22 +90,36 @@ class UiAgentExecutor(
     private fun openApp(query: String): Result {
         if (query.isBlank()) return Result.Err("open_app needs a 'package' (or app name)")
         val pm = context.packageManager
-        // Enumerate launchable apps once; match exact package, then by label.
+
+        // 1) Direct package hit. On Android 11+ the launcher enumeration below is
+        //    filtered by package visibility, but an explicit package declared in
+        //    <queries> (or otherwise visible) still resolves here. This is the
+        //    fallback the bug report asked for.
+        runCatching { pm.getLaunchIntentForPackage(query) }.getOrNull()?.let { intent ->
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return launch(intent, "launch $query")
+        }
+
+        // 2) Otherwise match the visible launcher entries by package or label.
         val launchables = runCatching {
             pm.queryIntentActivities(
                 Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
             )
         }.getOrElse { emptyList() }
 
-        val target = launchables.firstOrNull { it.activityInfo.packageName.equals(query, true) }
+        val pkg = launchables.firstOrNull { it.activityInfo.packageName.equals(query, true) }
+            ?.activityInfo?.packageName
             ?: launchables.firstOrNull {
                 it.loadLabel(pm).toString().lowercase().contains(query.lowercase())
-            }
-            ?: return Result.Err("No installed launchable app matches '$query'")
+            }?.activityInfo?.packageName
+            ?: return Result.Err(
+                "No launchable app matches '$query' " +
+                    "(Android 11+ hides apps unless their package is declared in <queries>)."
+            )
 
-        val intent = pm.getLaunchIntentForPackage(target.activityInfo.packageName)
-            ?: return Result.Err("No launcher intent for ${target.activityInfo.packageName}")
-        return launch(intent, "launch ${target.activityInfo.packageName}")
+        val intent = pm.getLaunchIntentForPackage(pkg)
+            ?: return Result.Err("No launcher intent for $pkg")
+        return launch(intent, "launch $pkg")
     }
 
     private fun dial(number: String): Result {
