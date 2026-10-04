@@ -2947,7 +2947,8 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                "將 Alpine minirootfs 解壓到 files/alpine，並把 proot 二進位放到 files/bin/proot 或打包為 jniLibs/libproot.so，即可在 App 內執行真正的 python3 / pip。終端機不再輸出模擬結果。",
+                "已隨 APK 內建 PRoot（aarch64）與 Alpine minirootfs，首次使用自動解壓，並以 apk 安裝 python3/pip。" +
+                    "不需要自行提供任何二進位檔。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

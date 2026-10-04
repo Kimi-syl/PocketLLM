@@ -473,19 +473,14 @@ fun EnvironmentDetailScreen(
                             onClick = {
                                 if (!settings.sandboxInstalled) {
                                     isInstalling = true
-                                    scope.launch {
-                                        delay(1500)
-                                        vm.updateSandboxInstalled(true)
-                                        toolStatuses = mapOf(
-                                            "python" to "已就緒 (3.11)",
-                                            "node" to "已就緒 (v20)",
-                                            "git" to "已就緒 (2.43)",
-                                            "ssh" to "已就緒 (OpenSSH)",
-                                            "net" to "已就緒 (curl/wget)",
-                                            "zip" to "已就緒",
-                                        )
+                                    vm.provisionSandbox { ok, statuses, msg ->
                                         isInstalling = false
-                                        Toast.makeText(context, "Alpine Linux 沙盒環境已成功初始化！", Toast.LENGTH_SHORT).show()
+                                        if (ok) {
+                                            toolStatuses = statuses
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        }
                                     }
                                 } else {
                                     // Toggle reset

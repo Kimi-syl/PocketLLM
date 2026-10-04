@@ -1524,6 +1524,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(sandboxInstalled = installed) }
     }
 
+    /**
+     * Real sandbox provisioning: extract the bundled Alpine rootfs, then install
+     * python3/pip inside it with apk. Statuses come from actually running the
+     * commands, not from a lookup table.
+     */
+    fun provisionSandbox(
+        onDone: (success: Boolean, statuses: Map<String, String>, message: String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val sandbox = com.pocketllm.util.SandboxManager(context)
+            val install = sandbox.ensureInstalled()
+            if (install.isFailure) {
+                updateSandboxInstalled(false)
+                onDone(false, emptyMap(), "解壓 rootfs 失敗：${install.exceptionOrNull()?.message}")
+                return@launch
+            }
+            // The Alpine minirootfs ships no interpreter; add one.
+            val apkRes = sandbox.run("apk add --no-cache python3 py3-pip", timeoutSec = 240)
+            val statuses = linkedMapOf<String, String>()
+            statuses["python"] = sandbox.run("python3 -V").getOrElse { "未安裝" }.trim()
+            statuses["pip"] = sandbox.run("python3 -m pip --version").getOrElse { "未安裝" }.trim().take(60)
+            statuses["node"] = "可用 apk add nodejs 安裝"
+            statuses["git"] = "可用 apk add git 安裝"
+            statuses["ssh"] = "可用 apk add openssh 安裝"
+            statuses["net"] = if (apkRes.isSuccess) "已就緒（apk 聯網成功）" else "apk 失敗：${apkRes.exceptionOrNull()?.message?.take(60)}"
+            updateSandboxInstalled(true)
+            onDone(true, statuses, "沙盒環境已就緒")
+        }
+    }
+
     fun addSandboxWorkspace(name: String) {
         updateSettings { current ->
             val list = current.sandboxWorkspaces.toMutableList()
