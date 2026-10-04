@@ -147,8 +147,10 @@ private fun LocalModelsList(vm: AppViewModel) {
     val engineState by vm.engine.state.collectAsState()
     val loadedFile = vm.loadedFileName()
     val stModels by vm.safetensors.collectAsState()
+    val convertDirs by vm.convertDirs.collectAsState()
     val scope = rememberCoroutineScope()
     var stInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var convLines by remember { mutableStateOf<List<String>>(emptyList()) }
 
     LaunchedEffect(engineState) {
         if (engineState is EngineState.Ready || engineState is EngineState.Empty) vm.refreshModels()
@@ -234,6 +236,38 @@ private fun LocalModelsList(vm: AppViewModel) {
                 }
             }
         }
+        items(convertDirs, key = { "cv_$it" }) { d ->
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(d, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        Text(
+                            "HF checkpoint · 可轉換為 GGUF（Llama 系列 ≤1B）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = {
+                        val lines = mutableListOf<String>()
+                        convLines = lines.toList()
+                        vm.convertModelToGguf(
+                            dirName = d,
+                            onLine = { line ->
+                                lines += line
+                                convLines = lines.toList()
+                            },
+                            onDone = { msg ->
+                                lines += msg
+                                convLines = lines.toList()
+                            },
+                        )
+                    }) { Text("轉換") }
+                }
+            }
+        }
     }
 
     stInfo?.let { (name, info) ->
@@ -242,6 +276,21 @@ private fun LocalModelsList(vm: AppViewModel) {
             title = { Text(name, maxLines = 2, style = MaterialTheme.typography.titleSmall) },
             text = { Text(info, style = MaterialTheme.typography.bodySmall) },
             confirmButton = { TextButton(onClick = { stInfo = null }) { Text("關閉") } },
+        )
+    }
+
+    if (convLines.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("轉換為 GGUF", style = MaterialTheme.typography.titleSmall) },
+            text = {
+                Text(
+                    convLines.takeLast(14).joinToString("\n"),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                )
+            },
+            confirmButton = { TextButton(onClick = { convLines = emptyList() }) { Text("關閉") } },
         )
     }
 }

@@ -75,6 +75,20 @@ class ModelRepository(
         return SafetensorsReader.read(f)
     }
 
+    /**
+     * Sub-directories holding a complete HF checkpoint that can be converted to
+     * GGUF on device: config.json + at least one *.safetensors.
+     */
+    fun listConvertibleDirs(): List<String> =
+        dir.listFiles { f -> f.isDirectory }
+            ?.filter { d ->
+                File(d, "config.json").exists() &&
+                    d.listFiles { f -> f.isFile && f.name.endsWith(".safetensors") }?.isNotEmpty() == true
+            }
+            ?.map { it.name }
+            ?.sorted()
+            ?: emptyList()
+
     private fun safeName(name: String): String? =
         name.takeIf {
             it.isNotEmpty() && !it.contains('/') && !it.contains('\\') && !it.contains("..") && it.endsWith(".gguf")

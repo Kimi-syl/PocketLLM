@@ -141,7 +141,11 @@ class SandboxManager(private val context: Context) {
     }
 
     /** Runs [command] inside the rootfs. Returns combined stdout/stderr. */
-    suspend fun run(command: String, timeoutSec: Int = 30): Result<String> =
+    suspend fun run(
+        command: String,
+        timeoutSec: Int = 30,
+        extraBinds: List<Pair<String, String>> = emptyList(),
+    ): Result<String> =
         withContext(Dispatchers.IO) {
             if (command.isBlank()) return@withContext Result.failure(IllegalArgumentException("empty command"))
             val proot = prootBinary() ?: return@withContext Result.failure(
@@ -161,6 +165,9 @@ class SandboxManager(private val context: Context) {
                 add("-b"); add("/proc")
                 add("-b"); add("/sys")
                 add("-b"); add("${workspace.absolutePath}:/workspace")
+                for ((host, guest) in extraBinds) {
+                    add("-b"); add("$host:$guest")
+                }
                 add("/bin/sh"); add("-lc"); add(command)
             }
 
@@ -198,6 +205,51 @@ class SandboxManager(private val context: Context) {
                 Result.failure(t)
             }
         }
+
+    /**
+     * Converts a HuggingFace checkpoint directory (config.json + tokenizer.json
+     * + *.safetensors) into a GGUF file, on device, using the bundled torch-free
+     * converter. The models directory is bind-mounted at /models.
+     *
+     * @return the absolute path of the produced GGUF on success.
+     */
+    suspend fun convertToGguf(
+        modelsDir: File,
+        modelDirName: String,
+        outName: String,
+        onLine: (String) -> Unit,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        workspace.mkdirs()
+        val script = File(workspace, "convert_llama.py")
+        runCatching {
+            context.assets.open("convert/convert_llama.py").use { input ->
+                script.outputStream().use { out -> input.copyTo(out) }
+            }
+        }.onFailure { return@withContext Result.failure(it) }
+
+        val cmd = buildString {
+            append("apk add --no-cache py3-numpy >/dev/null 2>&1 || true; ")
+            append("python3 /workspace/convert_llama.py ")
+            append("/models/").append(shellQuote(modelDirName)).append(' ')
+            append("/models/").append(shellQuote(outName))
+        }
+        val r = run(
+            command = cmd,
+            timeoutSec = 1800,
+            extraBinds = listOf(modelsDir.absolutePath to "/models"),
+        )
+        r.onSuccess { onLine(it) }
+        val outFile = File(modelsDir, outName)
+        if (r.isSuccess && outFile.length() > 0) {
+            Result.success(outFile.absolutePath)
+        } else {
+            Result.failure(
+                IllegalStateException(r.exceptionOrNull()?.message ?: "轉換未產生輸出檔")
+            )
+        }
+    }
+
+    private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
     /** Extracts a user-supplied rootfs tarball into [rootfsDir]. */
     suspend fun installFromTarball(tarGz: File): Result<Unit> = withContext(Dispatchers.IO) {

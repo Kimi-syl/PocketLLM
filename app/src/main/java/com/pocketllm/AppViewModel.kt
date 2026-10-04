@@ -156,6 +156,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _safetensors = MutableStateFlow<List<GgufModel>>(emptyList())
     val safetensors: StateFlow<List<GgufModel>> = _safetensors
 
+    /** HF checkpoint folders that can be converted to GGUF on device. */
+    private val _convertDirs = MutableStateFlow<List<String>>(emptyList())
+    val convertDirs: StateFlow<List<String>> = _convertDirs
+
     private val _downloadProgress = MutableStateFlow<Float?>(null)
     val downloadProgress: StateFlow<Float?> = _downloadProgress
 
@@ -467,6 +471,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshModels() {
         _models.value = modelRepo.list()
         _safetensors.value = modelRepo.listSafetensors()
+        _convertDirs.value = modelRepo.listConvertibleDirs()
+    }
+
+    /**
+     * On-device safetensors -> GGUF conversion for Llama-family checkpoints
+     * (<= 1B). Runs the bundled torch-free converter inside the Alpine sandbox.
+     */
+    fun convertModelToGguf(
+        dirName: String,
+        onLine: (String) -> Unit,
+        onDone: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val sandbox = com.pocketllm.util.SandboxManager(context)
+            val outName = "$dirName-f16.gguf"
+            val r = sandbox.convertToGguf(modelRepo.dir, dirName, outName) { line ->
+                // convertToGguf logs from an IO thread; hop to Main for Compose state.
+                viewModelScope.launch { onLine(line) }
+            }
+            refreshModels()
+            onDone(r.fold(
+                onSuccess = { "已產生 $outName" },
+                onFailure = { "轉換失敗：${it.message}" },
+            ))
+        }
     }
 
     /**
