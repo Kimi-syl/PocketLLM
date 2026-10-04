@@ -19,11 +19,41 @@ object LlamaBridge {
                 runCatching { System.loadLibrary("OpenCLshim") }
                 runCatching { System.loadLibrary("vkshim") }
                 runCatching { System.loadLibrary("vulkan_freedreno") }
-                System.loadLibrary("pocketllm")
+                loadPocketLlm()
             }
         } catch (t: Throwable) {
             loadError = t
         }
+    }
+
+    /** True when the DotProd/FP16 kernel build is the one that got loaded. */
+    @Volatile
+    var optimizedKernels: Boolean = false
+        private set
+
+    /**
+     * Loads the CPU-optimised kernel build only when the device really has both
+     * DotProd and FP16, otherwise the ARMv8-A baseline. Both ship in the APK:
+     *
+     *   libpocketllm.so      baseline, runs on every arm64 device
+     *   libpocketllm_v82.so  -march=armv8.2-a+dotprod+fp16 (SDOT/UDOT, fp16)
+     *
+     * The optimised build emits SDOT/UDOT unconditionally, so loading it on a
+     * Cortex-A53-class core (no DotProd) would raise SIGILL. Two guards prevent
+     * that: the /proc/cpuinfo feature gate, and the try/catch around the actual
+     * dlopen (covers a missing or ABI-mismatched library too). Only ever one of
+     * the two is loaded per process.
+     */
+    private fun loadPocketLlm() {
+        val f = CpuInfo.features()
+        if (f.dotProd && f.fp16) {
+            if (runCatching { System.loadLibrary("pocketllm_v82") }.isSuccess) {
+                optimizedKernels = true
+                return
+            }
+            // fall through to the baseline on any load failure
+        }
+        System.loadLibrary("pocketllm")
     }
 
     val isAvailable: Boolean
