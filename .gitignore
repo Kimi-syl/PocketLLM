@@ -54,3 +54,7 @@ assets/tts/**
 **/tts_models/**
 **/piper/**
 **/sherpa/**
+
+# Stable-diffusion.cpp is fetched by build-sd.sh, not vendored (~300MB)
+third_party/sd/
+build-sd/

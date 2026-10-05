@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Insights
+import androidx.compose.material.icons.outlined.Image as ImageIcon
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Public
@@ -64,6 +65,7 @@ enum class Tab(val label: String, val icon: ImageVector, val inBottomBar: Boolea
     CHAT("Chat", Icons.AutoMirrored.Outlined.Chat, true),
     MODELS("Models", Icons.Outlined.Folder, true),
     USAGE("Usage", Icons.Outlined.Insights, true),
+    IMAGE("圖片", Icons.Outlined.ImageIcon, true),
     SANDBOX("沙盒環境", Icons.Outlined.Terminal, false),
     SERVER("Server", Icons.Outlined.Public, false),
     KEYS("API keys", Icons.Outlined.Key, false),
@@ -86,6 +88,7 @@ fun AppRoot(vm: AppViewModel) {
             Tab.CHAT -> I18n.t("tab_chat", lang)
             Tab.MODELS -> I18n.t("tab_models", lang)
             Tab.USAGE -> I18n.t("tab_usage", lang)
+            Tab.IMAGE -> if (I18n.isEnglish(lang)) "Images" else "圖片"
             Tab.SANDBOX -> I18n.t("tab_sandbox", lang)
             Tab.SERVER -> I18n.t("tab_server", lang)
             Tab.KEYS -> I18n.t("tab_keys", lang)
@@ -193,6 +196,7 @@ fun AppRoot(vm: AppViewModel) {
                 when (current) {
                     Tab.MODELS -> ModelsScreen(vm, openDrawer)
                     Tab.CHAT -> ChatScreen(vm, openDrawer)
+                    Tab.IMAGE -> ImageScreen(vm, openDrawer)
                     Tab.SANDBOX -> WorkspaceAndEnvironmentScreen(vm, onBack = { selected = Tab.CHAT.name })
                     Tab.SERVER -> ServerScreen(vm, openDrawer)
                     Tab.USAGE -> UsageScreen(vm, openDrawer)

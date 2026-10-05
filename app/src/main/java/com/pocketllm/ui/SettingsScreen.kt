@@ -2809,6 +2809,122 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
             )
         }
 
+        // --- Image generation (Stable Diffusion) -------------------------
+        SectionCard("圖片生成 (Stable Diffusion)") {
+            val img by vm.imageGenSettings.collectAsState()
+
+            Text(
+                if (vm.imageGenAvailable) "圖片引擎已載入（libsdcpp）"
+                else "圖片引擎未載入：" + (vm.imageGenError ?: "libsdcpp.so 不存在"),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (vm.imageGenAvailable) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.error,
+            )
+
+            OutlinedTextField(
+                value = img.modelPath,
+                onValueChange = { v -> vm.updateImageGenSettings { it.copy(modelPath = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("模型檔 (.safetensors / .gguf)") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = img.diffusion,
+                onValueChange = { v -> vm.updateImageGenSettings { it.copy(diffusion = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Diffusion 模型（SD3 / Flux 分離式，選填）") },
+                singleLine = true,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = img.clipL,
+                    onValueChange = { v -> vm.updateImageGenSettings { it.copy(clipL = v) } },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("clip_l") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = img.t5xxl,
+                    onValueChange = { v -> vm.updateImageGenSettings { it.copy(t5xxl = v) } },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("t5xxl") },
+                    singleLine = true,
+                )
+            }
+            OutlinedTextField(
+                value = img.vae,
+                onValueChange = { v -> vm.updateImageGenSettings { it.copy(vae = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("VAE（選填）") },
+                singleLine = true,
+            )
+
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = img.width.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(width = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("寬") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = img.height.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(height = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("高") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = img.steps.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(steps = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("步數") },
+                    singleLine = true,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = img.cfg.toString(),
+                    onValueChange = { v ->
+                        v.toFloatOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(cfg = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("CFG") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = img.seed.toString(),
+                    onValueChange = { v ->
+                        v.toLongOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(seed = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("種子 (-1 隨機)") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = img.batch.toString(),
+                    onValueChange = { v ->
+                        v.toIntOrNull()?.let { n -> vm.updateImageGenSettings { it.copy(batch = n) } }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("張數") },
+                    singleLine = true,
+                )
+            }
+            Text(
+                "生成結果儲存於 Android/data/…/files/generated/，並顯示在「圖片」分頁。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         // --- Strict JSON grammar ------------------------------------------
         SectionCard("嚴格 JSON 語法約束 (GBNF)") {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

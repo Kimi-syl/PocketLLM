@@ -100,6 +100,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val cpuKernelsOptimized: Boolean
         get() = com.pocketllm.llm.LlamaBridge.optimizedKernels
 
+    // --- On-device image generation (Stable Diffusion) ---------------------
+    val imageGen = com.pocketllm.img.ImageGenManager(context)
+
+    val imageGenState: kotlinx.coroutines.flow.StateFlow<com.pocketllm.img.ImageGenState>
+        get() = imageGen.state
+
+    val imageGenSettings: kotlinx.coroutines.flow.StateFlow<com.pocketllm.img.ImageGenSettings>
+        get() = imageGen.settings
+
+    val imageGenAvailable: Boolean
+        get() = imageGen.isAvailable
+
+    val imageGenError: String?
+        get() = com.pocketllm.img.SdBridge.loadError?.message
+
+    fun generateImage(prompt: String, negative: String) {
+        imageGen.generate(imageGen.settings.value, prompt, negative)
+    }
+
+    fun cancelImageGeneration() = imageGen.cancel()
+
+    fun updateImageGenSettings(transform: (com.pocketllm.img.ImageGenSettings) -> com.pocketllm.img.ImageGenSettings) {
+        imageGen.updateSettings(transform)
+    }
+
     // --- MCP ---------------------------------------------------------------
     private val _mcpTools = MutableStateFlow<List<com.pocketllm.mcp.McpClient.Tool>>(emptyList())
     val mcpTools: StateFlow<List<com.pocketllm.mcp.McpClient.Tool>> = _mcpTools
