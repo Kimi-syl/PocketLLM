@@ -93,6 +93,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Cached: /proc/cpuinfo is read once, not on every recomposition. */
     val cpuFeatures: CpuInfo.Features by lazy { CpuInfo.features() }
 
+    /**
+     * True when the DotProd/FP16 kernel build (libpocketllm_v82) is the one that
+     * actually got dlopen()ed - not merely that the hardware could run it.
+     */
+    val cpuKernelsOptimized: Boolean
+        get() = com.pocketllm.llm.LlamaBridge.optimizedKernels
+
     // --- MCP ---------------------------------------------------------------
     private val _mcpTools = MutableStateFlow<List<com.pocketllm.mcp.McpClient.Tool>>(emptyList())
     val mcpTools: StateFlow<List<com.pocketllm.mcp.McpClient.Tool>> = _mcpTools

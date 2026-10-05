@@ -428,8 +428,10 @@ return
                     SettingsRow(
                         title = "進階設定",
                         subtitle = if (I18n.isEnglish(lang))
-                            "CPU features, strict JSON grammar, memory, voice cloning, MCP"
-                        else "CPU 指令集、嚴格 JSON 語法約束、記憶庫、聲音克隆、MCP",
+                            "Kernels: " + (if (vm.cpuKernelsOptimized) "DotProd+FP16" else "ARMv8-A baseline") +
+                                " · strict JSON grammar, memory, voice cloning, MCP"
+                        else "核心：" + (if (vm.cpuKernelsOptimized) "DotProd+FP16" else "ARMv8-A 基準") +
+                            " · 嚴格 JSON 語法、記憶庫、聲音克隆、MCP",
                         icon = Icons.Outlined.Tune,
                         onClick = { subPage = SettingsCategory.Advanced },
                     )
@@ -2764,43 +2766,47 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
 
         // --- CPU ---------------------------------------------------------
         SectionCard("CPU 指令集") {
+            val optimized = vm.cpuKernelsOptimized
+            val supported = features.dotProd && features.fp16
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "偵測到的 SIMD 能力",
+                        "已載入核心",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        features.label(),
+                        if (optimized) "DotProd + FP16（libpocketllm_v82）"
+                        else "ARMv8-A 基準（libpocketllm）",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = if (optimized) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Medium,
                     )
                 }
                 Text(
-                    "${vm.cpuFeatures.let { com.pocketllm.llm.CpuInfo.recommendedThreads() }} 執行緒",
+                    "${com.pocketllm.llm.CpuInfo.recommendedThreads()} 執行緒",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Text(
-                "目前原生庫以 ARMv8-A 基準建置（已驗證不含 sdot/udot 指令），" +
-                    "因此在 Cortex-A53（如 P20HD）到 A78 的所有 arm64 裝置上都能執行，不會 SIGILL。" +
-                    "這是刻意的取捨：穩定性優先於峰值速度。",
+                "偵測到的 SIMD 能力：${features.label()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (features.dotProd || features.fp16) {
-                Text(
-                    "此裝置硬體支援" +
-                        (if (features.fp16) " FP16" else "") +
-                        (if (features.dotProd) " DotProd" else "") +
-                        "；若要換取速度，可改用 armv8.2-a+dotprod+fp16 重建原生庫，但該二進位在 A53 等級裝置會崩潰。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                when {
+                    optimized ->
+                        "此裝置支援 DotProd 與 FP16，已載入 armv8.2-a+dotprod+fp16 核心（含 SDOT/UDOT），推論較快。"
+                    supported ->
+                        "硬體支援 DotProd 與 FP16，但優化核心未能載入，已自動回退基準版以確保穩定。"
+                    else ->
+                        "此裝置未回報 DotProd/FP16，使用 ARMv8-A 基準核心：相容所有 arm64 裝置（A53 至 A78），不會 SIGILL。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // --- Strict JSON grammar ------------------------------------------
