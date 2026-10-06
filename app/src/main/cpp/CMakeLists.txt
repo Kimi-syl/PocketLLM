@@ -33,10 +33,14 @@ add_library(${CMAKE_PROJECT_NAME} SHARED llama_jni.cpp)
 # here for reference; the shim is built by build_shim.sh and vendored into
 # jniLibs). llama_jni.cpp imports its entry points via DT_NEEDED.
 
-target_link_libraries(${CMAKE_PROJECT_NAME}
-    PRIVATE
-    llama
-    ${Vulkan_LIBRARY})
+set(_pocketllm_libs llama)
+if(NOT ANDROID_ABI STREQUAL "x86_64")
+    # libvkshim.so is an arm64 binary; linking it on x86_64 fails with
+    # "libvkshim.so is incompatible with elf_x86_64".
+    list(APPEND _pocketllm_libs ${Vulkan_LIBRARY})
+endif()
+
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${_pocketllm_libs})
 
 if(NOT ANDROID)
     if(DEFINED ENV{JAVA_HOME})
