@@ -47,6 +47,16 @@ jobs:
           git clone --depth 1 --recurse-submodules --shallow-submodules \
             https://github.com/leejet/stable-diffusion.cpp third_party/sd
 
+      # app/src/main/cpp/llama.cpp is gitignored - it is a nested clone of
+      # roughly 200MB, so it is not in the repository and must be fetched here.
+      # Pinned to the revision the app was developed against.
+      - name: Fetch llama.cpp
+        run: |
+          git init app/src/main/cpp/llama.cpp
+          git -C app/src/main/cpp/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp
+          git -C app/src/main/cpp/llama.cpp fetch --depth 1 origin f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+          git -C app/src/main/cpp/llama.cpp checkout FETCH_HEAD
+
       # Both native stacks build with the NDK toolchain here rather than the
       # device's /opt/tusr sysroot, so the same scripts work on a runner.
       - name: Build native (x86_64)
