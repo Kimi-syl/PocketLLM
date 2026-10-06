@@ -1,9 +1,12 @@
 name: android-prerelease
 
-# Builds the Android APK for arm64-v8a and x86_64 and attaches them to a GitHub
-# pre-release. x86_64 cannot be produced in the dev container (no x86_64 Android
-# sysroot, and the NDK's host toolchain will not execute under proot on the
-# device), so it is built here where the NDK toolchain genuinely runs.
+# Builds one APK per ABI and attaches them to a GitHub pre-release.
+#
+# Each ABI is a SEPARATE matrix job with its own runner workspace. Building both
+# in one job is what previously shipped two byte-identical APKs: every gradle
+# build overwrites app-release-unsigned.apk, so the second ABI clobbered the
+# first and both signed files were the same x86_64-only package - which then
+# failed with an incompatible-ABI error when installed on arm64.
 #
 # x86_64 ships without the Python sandbox: libproot/libtalloc/libandroid-shmem
 # are arm64-only prebuilts with no source in-tree, and the bundled Alpine rootfs
@@ -20,7 +23,18 @@ permissions:
 
 jobs:
   build:
+    name: build (${{ matrix.prefix }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            prefix: arm64
+          - abi: x86_64
+            prefix: x86_64
+    env:
+      APK_NAME: pocketllm-v0.6.0-beta
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,13 +48,22 @@ jobs:
       # ubuntu-latest already ships the Android SDK and cmdline-tools. The
       # android-actions/setup-android action is deliberately not used: it tries
       # to install the long-removed 'tools' package and dies with
-      # "Failed to find package 'tools'". sdkmanager from the preinstalled SDK
-      # is all this needs.
+      # "Failed to find package 'tools'".
       - name: Install NDK and CMake
         run: |
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMGR" --licenses >/dev/null
           "$SDKMGR" --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      # arm64 keeps the Vulkan backend, and ggml-vulkan needs glslc, the C++
+      # Vulkan bindings and the SPIR-V headers - none of which the NDK ships.
+      - name: Install Vulkan tooling
+        if: matrix.abi == 'arm64-v8a'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslc libvulkan-dev spirv-headers || \
+            sudo apt-get install -y shaderc libvulkan-dev spirv-headers
+          ls /usr/include/vulkan/vulkan.hpp /usr/include/spirv/unified1/spirv.hpp
 
       - name: Fetch stable-diffusion.cpp
         run: |
@@ -49,7 +72,6 @@ jobs:
 
       # app/src/main/cpp/llama.cpp is gitignored - it is a nested clone of
       # roughly 200MB, so it is not in the repository and must be fetched here.
-      # Pinned to the revision the app was developed against.
       - name: Fetch llama.cpp
         run: |
           git init app/src/main/cpp/llama.cpp
@@ -57,11 +79,9 @@ jobs:
           git -C app/src/main/cpp/llama.cpp fetch --depth 1 origin f280b26983ad0fdb705a0d9ebf0503e76f2899b0
           git -C app/src/main/cpp/llama.cpp checkout FETCH_HEAD
 
-      # Both native stacks build with the NDK toolchain here rather than the
-      # device's /opt/tusr sysroot, so the same scripts work on a runner.
-      - name: Build native (x86_64)
+      - name: Build native
         env:
-          POCKETLLM_ABI: x86_64
+          POCKETLLM_ABI: ${{ matrix.abi }}
           POCKETLLM_BUILD_JOBS: 4
         run: |
           export ANDROID_NDK="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
@@ -69,41 +89,10 @@ jobs:
           ./build-native.sh
           ./build-sd.sh
 
-      # arm64 keeps the Vulkan backend, and ggml-vulkan compiles its shaders with
-      # glslc. The dev container supplies that tooling; a runner does not, so
-      # CMake aborts with "Could NOT find Vulkan (missing: glslc)".
-      - name: Install Vulkan shader tooling
+      - name: Build and sign APK
         run: |
-          sudo apt-get update -qq
-          # glslc compiles the SPIR-V shaders; libvulkan-dev supplies the C++
-          # bindings (vulkan/vulkan.hpp) that the NDK does not ship - without it
-          # ggml-vulkan.cpp dies on 'vulkan/vulkan.hpp' file not found.
-          sudo apt-get install -y glslc libvulkan-dev spirv-headers || \
-            sudo apt-get install -y shaderc libvulkan-dev spirv-headers
-          command -v glslc && glslc --version | head -2
-          ls /usr/include/vulkan/vulkan.hpp
-
-      - name: Build native (arm64-v8a)
-        env:
-          POCKETLLM_ABI: arm64-v8a
-          POCKETLLM_BUILD_JOBS: 4
-        run: |
-          # Same NDK toolchain as x86_64. The default is the dev container's
-          # /opt/native-toolchain.cmake, which names /opt/tusr/bin/clang - a path
-          # that does not exist on a runner, leaving CMAKE_C_COMPILER unset.
-          export ANDROID_NDK="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
-          export POCKETLLM_TOOLCHAIN="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
-          ./build-native.sh
-
-      # Shared by both per-ABI steps: sign the freshly built APK under its
-      # ABI-prefixed name, then PROVE it contains that ABI before shipping it.
-      # The assertion exists because a clobbered output file signs just fine and
-      # only fails at install time on the user's device.
-      - name: Prepare signing helper
-        run: |
-          cat > /tmp/sign_one.sh <<'EOF'
           set -euo pipefail
-          prefix="$1"; abi="$2"
+          ./gradlew :app:assembleRelease -PpocketllmAbi=${{ matrix.abi }}
           BT="$ANDROID_HOME/build-tools/34.0.0"
           mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
@@ -113,56 +102,55 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
           src="app/build/outputs/apk/release/app-release-unsigned.apk"
-          [ -f "$src" ] || { echo "missing $src"; exit 1; }
           echo "--- native libs in $src:"
           unzip -l "$src" | grep "lib/" || true
-          unzip -l "$src" | grep -q "lib/$abi/libpocketllm.so" \
-            || { echo "ABORT: $src does not contain lib/$abi/libpocketllm.so"; exit 1; }
+          # A clobbered or wrong-ABI output signs fine and only fails on the
+          # user's device, so assert the contents before shipping.
+          unzip -l "$src" | grep -q "lib/${{ matrix.abi }}/libpocketllm.so" \
+            || { echo "ABORT: $src lacks lib/${{ matrix.abi }}/libpocketllm.so"; exit 1; }
           for other in arm64-v8a x86_64 armeabi-v7a x86; do
-            [ "$other" = "$abi" ] && continue
-            if unzip -l "$src" | grep -q "lib/$other/"; then
-              echo "ABORT: $src also contains lib/$other/ - not a single-ABI APK"
-              exit 1
-            fi
+            [ "$other" = "${{ matrix.abi }}" ] && continue
+            unzip -l "$src" | grep -q "lib/$other/" \
+              && { echo "ABORT: $src also contains lib/$other/"; exit 1; }
           done
-          out="$prefix-$APK_NAME.apk"
+          out="${{ matrix.prefix }}-$APK_NAME.apk"
           "$BT/apksigner" sign \
             --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
             --out "$out" "$src"
           "$BT/apksigner" verify "$out"
           sha256sum "$out" | tee "$out.sha256"
-          EOF
-          chmod +x /tmp/sign_one.sh
 
-      # Each ABI is built AND signed in the same step. Signing after both builds
-      # is wrong: every build overwrites app-release-unsigned.apk, so the second
-      # one clobbers the first and both signed files end up identical.
-      - name: Build and sign arm64-v8a
-        env:
-          APK_NAME: pocketllm-v0.6.0-beta
-        run: |
-          set -euo pipefail
-          ./gradlew :app:assembleRelease -PpocketllmAbi=arm64-v8a
-          /tmp/sign_one.sh arm64 arm64-v8a
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.prefix }}
+          path: |
+            ${{ matrix.prefix }}-pocketllm-v0.6.0-beta.apk
+            ${{ matrix.prefix }}-pocketllm-v0.6.0-beta.apk.sha256
+          if-no-files-found: error
 
-      - name: Build and sign x86_64
-        env:
-          APK_NAME: pocketllm-v0.6.0-beta
-        run: |
-          set -euo pipefail
-          ./gradlew :app:assembleRelease -PpocketllmAbi=x86_64
-          /tmp/sign_one.sh x86_64 x86_64
+  release:
+    name: create pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
-      - name: Create pre-release
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          APK_NAME: pocketllm-v0.6.0-beta
         run: |
+          set -euo pipefail
+          ls -la *.apk *.sha256
+          # Last guard: the two APKs must genuinely differ.
+          a=$(sha256sum arm64-*.apk | cut -d' ' -f1)
+          b=$(sha256sum x86_64-*.apk | cut -d' ' -f1)
+          [ "$a" != "$b" ] || { echo "ABORT: arm64 and x86_64 APKs are identical"; exit 1; }
           TAG="prerelease-$(date +%Y%m%d-%H%M)"
-          gh release create "$TAG" \
-            arm64-$APK_NAME.apk arm64-$APK_NAME.apk.sha256 \
-            x86_64-$APK_NAME.apk x86_64-$APK_NAME.apk.sha256 \
+          gh release create "$TAG" *.apk *.sha256 \
             --prerelease --title "PocketLLM pre-release $TAG" \
             --notes "Separate arm64 and x86_64 APKs. x86_64 has no Python sandbox (arm64-only proot prebuilts)." \
             --latest=false
