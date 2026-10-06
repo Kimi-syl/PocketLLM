@@ -153,7 +153,14 @@ for f in _g.glob('app/src/main/jniLibs/arm64-v8a/lib*.so'):
 PYEOF
 
 echo "=== Building APK ==="
-JAVA_HOME=${JAVA_HOME:-/opt/jdk17} ./gradlew --no-daemon :app:assembleDebug
+AAPT2_ARGS=()
+if [ -x /opt/aapt2arm/build-tools/aapt2 ]; then
+    # Dev container: the stock aapt2 in build-tools is not runnable here, so an
+    # ARM-built one is supplied. On a CI runner this file does not exist and
+    # Gradle must use the SDK's own aapt2.
+    AAPT2_ARGS+=("-Pandroid.aapt2FromMavenOverride=/opt/aapt2arm/build-tools/aapt2")
+fi
+JAVA_HOME=${JAVA_HOME:-/opt/jdk17} ./gradlew --no-daemon "${AAPT2_ARGS[@]}" :app:assembleDebug
 
 APK="app/build/outputs/apk/debug/app-debug.apk"
 if [ -f "$APK" ]; then
