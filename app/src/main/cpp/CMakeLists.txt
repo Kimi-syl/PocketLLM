@@ -44,6 +44,11 @@ else()
     # shim sources directly so those resolve; GGML_VULKAN is off here so the
     # symbols are only used for the probe verdicts.
     target_sources(${CMAKE_PROJECT_NAME} PRIVATE vulkan_shim.c opencl_shim.c)
+    # opencl_shim.c includes CL/cl.h from the in-tree Khronos headers. The arm64
+    # build passes these via -DOpenCL_INCLUDE_DIR; compiling the shim directly
+    # needs the path spelled out.
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../../opencl-host/include)
 endif()
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${_pocketllm_libs})
