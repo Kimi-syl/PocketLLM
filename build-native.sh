@@ -41,6 +41,15 @@ case "$TOOLCHAIN" in
         ABI_ARGS+=("-DANDROID_ABI=${POCKETLLM_ABI}" "-DANDROID_PLATFORM=android-26") ;;
 esac
 
+# Vulkan headers live in the dev container's /opt/tusr sysroot. On a runner that
+# path does not exist and CMake rejects the imported target outright ("includes
+# non-existent path"), so only pass it when present and otherwise let FindVulkan
+# resolve the headers from the Vulkan SDK / NDK.
+VULKAN_INCLUDE_ARGS=()
+if [ -d /opt/tusr/usr/include ]; then
+    VULKAN_INCLUDE_ARGS+=("-DVulkan_INCLUDE_DIR=/opt/tusr/usr/include")
+fi
+
 echo "=== Building native libraries (${NPROCS} jobs) ==="
 cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
@@ -53,7 +62,7 @@ cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DOpenCL_LIBRARY="$SCRIPT_DIR/opencl-host/lib/libOpenCLshim.so" \
     -DOpenCL_INCLUDE_DIR="$SCRIPT_DIR/opencl-host/include" \
     -DVulkan_LIBRARY="$SCRIPT_DIR/vk-host/lib/libvkshim.so" \
-    -DVulkan_INCLUDE_DIR="/opt/tusr/usr/include" \
+    "${VULKAN_INCLUDE_ARGS[@]}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
