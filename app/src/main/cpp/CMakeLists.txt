@@ -38,6 +38,12 @@ if(NOT ANDROID_ABI STREQUAL "x86_64")
     # libvkshim.so is an arm64 binary; linking it on x86_64 fails with
     # "libvkshim.so is incompatible with elf_x86_64".
     list(APPEND _pocketllm_libs ${Vulkan_LIBRARY})
+else()
+    # x86_64 has no prebuilt shim to link, but llama_jni.cpp still calls into
+    # it (vulkan_shim_gpu_usable, vulkan_shim_driver_broken, ...). Compile the
+    # shim sources directly so those resolve; GGML_VULKAN is off here so the
+    # symbols are only used for the probe verdicts.
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE vulkan_shim.c opencl_shim.c)
 endif()
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${_pocketllm_libs})
