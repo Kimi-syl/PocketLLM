@@ -73,7 +73,19 @@ echo "=== Copying .so files to jniLibs ==="
 JNI_DIR="app/src/main/jniLibs/${POCKETLLM_ABI}"
 mkdir -p "$JNI_DIR"
 
-for lib in "$BUILD_DIR"/lib*.so "$SCRIPT_DIR"/opencl-host/lib/libOpenCLshim.so "$SCRIPT_DIR"/vk-host/lib/libvkshim.so "$SCRIPT_DIR"/third_party/turnip/libvulkan_freedreno.so; do
+PREBUILT_SHIMS=()
+if [ "$POCKETLLM_ABI" = "arm64-v8a" ]; then
+    # These prebuilts are arm64 binaries. For other ABIs the shim is compiled
+    # from source by the CMake build, and dropping an arm64 .so into
+    # jniLibs/<abi>/ would produce an APK that cannot be loaded.
+    PREBUILT_SHIMS=(
+        "$SCRIPT_DIR"/opencl-host/lib/libOpenCLshim.so
+        "$SCRIPT_DIR"/vk-host/lib/libvkshim.so
+        "$SCRIPT_DIR"/third_party/turnip/libvulkan_freedreno.so
+    )
+fi
+
+for lib in "$BUILD_DIR"/lib*.so "${PREBUILT_SHIMS[@]}"; do
     [ -f "$lib" ] || continue
     base=$(basename "$lib")
     cp "$lib" "$JNI_DIR/$base"
