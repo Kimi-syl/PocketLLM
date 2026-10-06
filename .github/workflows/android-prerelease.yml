@@ -101,6 +101,17 @@ jobs:
       - name: Sign APK
         run: |
           BT="$ANDROID_HOME/build-tools/34.0.0"
+          # ~/.android/debug.keystore is a dev-container artifact a runner does
+          # not have. Generate the standard Android debug key when it is absent
+          # so signing does not depend on local state.
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
           "$BT/apksigner" sign \
             --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
             --out pocketllm-prerelease.apk \
