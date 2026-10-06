@@ -1,0 +1,89 @@
+name: android-prerelease
+
+# Builds the Android APK for arm64-v8a and x86_64 and attaches them to a GitHub
+# pre-release. x86_64 cannot be produced in the dev container (no x86_64 Android
+# sysroot, and the NDK's host toolchain will not execute under proot on the
+# device), so it is built here where the NDK toolchain genuinely runs.
+#
+# x86_64 ships without the Python sandbox: libproot/libtalloc/libandroid-shmem
+# are arm64-only prebuilts with no source in-tree, and the bundled Alpine rootfs
+# is aarch64. Everything else (LLM, image generation, memory, voice, MCP) works.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*-pre*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses >/dev/null
+
+      - name: Fetch stable-diffusion.cpp
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/leejet/stable-diffusion.cpp third_party/sd
+
+      # Both native stacks build with the NDK toolchain here rather than the
+      # device's /opt/tusr sysroot, so the same scripts work on a runner.
+      - name: Build native (x86_64)
+        env:
+          POCKETLLM_ABI: x86_64
+          POCKETLLM_TOOLCHAIN: ${{ env.ANDROID_NDK }}/build/cmake/android.toolchain.cmake
+          POCKETLLM_BUILD_JOBS: 4
+        run: |
+          export ANDROID_NDK="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
+          export POCKETLLM_TOOLCHAIN="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
+          ./build-native.sh
+          ./build-sd.sh
+
+      - name: Build native (arm64-v8a)
+        env:
+          POCKETLLM_ABI: arm64-v8a
+          POCKETLLM_BUILD_JOBS: 4
+        run: ./build-native.sh
+
+      - name: Build APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Sign APK
+        run: |
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          "$BT/apksigner" sign \
+            --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
+            --out pocketllm-prerelease.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          "$BT/apksigner" verify pocketllm-prerelease.apk
+          sha256sum pocketllm-prerelease.apk | tee pocketllm-prerelease.apk.sha256
+
+      - name: Create pre-release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="prerelease-$(date +%Y%m%d-%H%M)"
+          gh release create "$TAG" \
+            pocketllm-prerelease.apk \
+            pocketllm-prerelease.apk.sha256 \
+            --prerelease --title "PocketLLM pre-release $TAG" \
+            --notes "arm64-v8a + x86_64. x86_64 has no Python sandbox (arm64-only proot prebuilts)." \
+            --latest=false

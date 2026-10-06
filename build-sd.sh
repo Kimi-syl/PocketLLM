@@ -13,6 +13,14 @@ fi
 
 BUILD_DIR="build-sd"
 NPROCS="${POCKETLLM_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+POCKETLLM_ABI="${POCKETLLM_ABI:-arm64-v8a}"
+TOOLCHAIN="${POCKETLLM_TOOLCHAIN:-/opt/native-toolchain.cmake}"
+BUILD_DIR="build-sd-${POCKETLLM_ABI}"
+ABI_ARGS=()
+case "$TOOLCHAIN" in
+    *android.toolchain.cmake)
+        ABI_ARGS+=("-DANDROID_ABI=${POCKETLLM_ABI}" "-DANDROID_PLATFORM=android-26") ;;
+esac
 
 # stable-diffusion.cpp is fetched on demand rather than vendored: the tree is
 # ~300 MB of source + assets, which does not belong in the repository. Pin the
@@ -27,7 +35,8 @@ fi
 
 echo "=== Configuring libsdcpp (${NPROCS} jobs) ==="
 cmake -S app/src/main/cpp/sd-jni -B "$BUILD_DIR" \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+    "${ABI_ARGS[@]}" \
     -DCMAKE_FIND_ROOT_PATH="/opt/tusr;/usr" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_BUILD_TYPE=Release \
@@ -37,7 +46,7 @@ cmake -S app/src/main/cpp/sd-jni -B "$BUILD_DIR" \
 echo "=== Building ==="
 cmake --build "$BUILD_DIR" -j"$NPROCS"
 
-JNI_DIR="app/src/main/jniLibs/arm64-v8a"
+JNI_DIR="app/src/main/jniLibs/${POCKETLLM_ABI}"
 mkdir -p "$JNI_DIR"
 cp "$BUILD_DIR/libsdcpp.so" "$JNI_DIR/libsdcpp.so"
 echo "=== Copied libsdcpp.so ==="

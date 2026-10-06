@@ -6,7 +6,17 @@ set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+
+# The Vulkan/OpenCL shims are built for arm64 only (vkshim is loaded through the
+# same libvkshim.so that ships for aarch64). On x86_64 - which is an
+# emulator/desktop target where the sandbox stack is unavailable anyway - keep
+# the CPU path only rather than dragging in a shim we cannot build.
+if(ANDROID_ABI STREQUAL "x86_64")
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+else()
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()
 
 add_subdirectory(llama.cpp)
 

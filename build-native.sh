@@ -28,9 +28,23 @@ if [ -n "${POCKETLLM_ARM_ARCH:-}" ]; then
     ARM_ARCH_ARGS+=("-DGGML_CPU_ARM_ARCH=${POCKETLLM_ARM_ARCH}")
 fi
 
+# Target selection. The dev container uses a hand-rolled toolchain
+# (/opt/native-toolchain.cmake against the aarch64 sysroot in /opt/tusr); a CI
+# runner has no such sysroot and uses the NDK's android.toolchain.cmake instead.
+# Each ABI gets its own build directory so the two do not clobber each other.
+POCKETLLM_ABI="${POCKETLLM_ABI:-arm64-v8a}"
+TOOLCHAIN="${POCKETLLM_TOOLCHAIN:-/opt/native-toolchain.cmake}"
+BUILD_DIR="build-native-${POCKETLLM_ABI}"
+ABI_ARGS=()
+case "$TOOLCHAIN" in
+    *android.toolchain.cmake)
+        ABI_ARGS+=("-DANDROID_ABI=${POCKETLLM_ABI}" "-DANDROID_PLATFORM=android-26") ;;
+esac
+
 echo "=== Building native libraries (${NPROCS} jobs) ==="
 cmake -S app/src/main/cpp -B "$BUILD_DIR" \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/native-toolchain.cmake \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+    "${ABI_ARGS[@]}" \
     -DCMAKE_FIND_ROOT_PATH="/opt/tusr;/usr" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_PREFIX_PATH="$SCRIPT_DIR/vulkan-host" \
@@ -56,7 +70,7 @@ cmake -S app/src/main/cpp -B "$BUILD_DIR" \
 cmake --build "$BUILD_DIR" -j"$NPROCS"
 
 echo "=== Copying .so files to jniLibs ==="
-JNI_DIR="app/src/main/jniLibs/arm64-v8a"
+JNI_DIR="app/src/main/jniLibs/${POCKETLLM_ABI}"
 mkdir -p "$JNI_DIR"
 
 for lib in "$BUILD_DIR"/lib*.so "$SCRIPT_DIR"/opencl-host/lib/libOpenCLshim.so "$SCRIPT_DIR"/vk-host/lib/libvkshim.so "$SCRIPT_DIR"/third_party/turnip/libvulkan_freedreno.so; do
