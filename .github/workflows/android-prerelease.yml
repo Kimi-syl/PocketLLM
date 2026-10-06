@@ -95,22 +95,16 @@ jobs:
           export POCKETLLM_TOOLCHAIN="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
           ./build-native.sh
 
-      # One APK per ABI so each device gets a package it can actually run, and
-      # the filename says which. x86_64 has no Python sandbox (the proot stack is
-      # arm64-only prebuilts); everything else is identical.
-      - name: Build APK (arm64-v8a)
-        run: ./gradlew :app:assembleRelease -PpocketllmAbi=arm64-v8a
-
-      - name: Build APK (x86_64)
-        run: ./gradlew :app:assembleRelease -PpocketllmAbi=x86_64
-
-      - name: Sign APKs
-        env:
-          APK_NAME: pocketllm-v0.6.0-beta
+      # Shared by both per-ABI steps: sign the freshly built APK under its
+      # ABI-prefixed name, then PROVE it contains that ABI before shipping it.
+      # The assertion exists because a clobbered output file signs just fine and
+      # only fails at install time on the user's device.
+      - name: Prepare signing helper
         run: |
+          cat > /tmp/sign_one.sh <<'EOF'
+          set -euo pipefail
+          prefix="$1"; abi="$2"
           BT="$ANDROID_HOME/build-tools/34.0.0"
-          # ~/.android/debug.keystore is a dev-container artifact a runner does
-          # not have. Generate the standard Android debug key when absent.
           mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
             keytool -genkeypair -v -keystore ~/.android/debug.keystore \
@@ -118,19 +112,46 @@ jobs:
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
-          for abi in arm64-v8a x86_64; do
-            case "$abi" in
-              arm64-v8a) prefix=arm64 ;;
-              *)         prefix=x86_64 ;;
-            esac
-            out="$prefix-$APK_NAME.apk"
-            "$BT/apksigner" sign \
-              --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
-              --out "$out" app/build/outputs/apk/release/app-release-unsigned.apk
-            "$BT/apksigner" verify "$out"
-            sha256sum "$out" | tee "$out.sha256"
+          src="app/build/outputs/apk/release/app-release-unsigned.apk"
+          [ -f "$src" ] || { echo "missing $src"; exit 1; }
+          echo "--- native libs in $src:"
+          unzip -l "$src" | grep "lib/" || true
+          unzip -l "$src" | grep -q "lib/$abi/libpocketllm.so" \
+            || { echo "ABORT: $src does not contain lib/$abi/libpocketllm.so"; exit 1; }
+          for other in arm64-v8a x86_64 armeabi-v7a x86; do
+            [ "$other" = "$abi" ] && continue
+            if unzip -l "$src" | grep -q "lib/$other/"; then
+              echo "ABORT: $src also contains lib/$other/ - not a single-ABI APK"
+              exit 1
+            fi
           done
-          ls -la *.apk *.sha256
+          out="$prefix-$APK_NAME.apk"
+          "$BT/apksigner" sign \
+            --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
+            --out "$out" "$src"
+          "$BT/apksigner" verify "$out"
+          sha256sum "$out" | tee "$out.sha256"
+          EOF
+          chmod +x /tmp/sign_one.sh
+
+      # Each ABI is built AND signed in the same step. Signing after both builds
+      # is wrong: every build overwrites app-release-unsigned.apk, so the second
+      # one clobbers the first and both signed files end up identical.
+      - name: Build and sign arm64-v8a
+        env:
+          APK_NAME: pocketllm-v0.6.0-beta
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease -PpocketllmAbi=arm64-v8a
+          /tmp/sign_one.sh arm64 arm64-v8a
+
+      - name: Build and sign x86_64
+        env:
+          APK_NAME: pocketllm-v0.6.0-beta
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease -PpocketllmAbi=x86_64
+          /tmp/sign_one.sh x86_64 x86_64
 
       - name: Create pre-release
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
