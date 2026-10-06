@@ -57,6 +57,11 @@ elif [ -f /usr/include/vulkan/vulkan.hpp ]; then
     STAGE="$BUILD_DIR/vulkan-headers"
     mkdir -p "$STAGE"
     cp -r /usr/include/vulkan "$STAGE/"
+    # ggml-vulkan.cpp also pulls the SPIR-V C++ headers (spirv/unified1/
+    # spirv.hpp) from spirv-headers; stage those next to the vulkan ones.
+    if [ -d /usr/include/spirv ]; then
+        cp -r /usr/include/spirv "$STAGE/"
+    fi
     VULKAN_INCLUDE_ARGS+=(
         "-DVulkan_INCLUDE_DIR=$STAGE"
         "-DCMAKE_CXX_FLAGS=-isystem $STAGE"

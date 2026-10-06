@@ -78,8 +78,8 @@ jobs:
           # glslc compiles the SPIR-V shaders; libvulkan-dev supplies the C++
           # bindings (vulkan/vulkan.hpp) that the NDK does not ship - without it
           # ggml-vulkan.cpp dies on 'vulkan/vulkan.hpp' file not found.
-          sudo apt-get install -y glslc libvulkan-dev || \
-            sudo apt-get install -y shaderc libvulkan-dev
+          sudo apt-get install -y glslc libvulkan-dev spirv-headers || \
+            sudo apt-get install -y shaderc libvulkan-dev spirv-headers
           command -v glslc && glslc --version | head -2
           ls /usr/include/vulkan/vulkan.hpp
 
