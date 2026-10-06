@@ -1,10 +1,21 @@
 name: ios
 
+# Only build iOS when something it actually consumes changes. It was running on
+# every push to main including Android-only work, which is wasted compute.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    paths:
+      - "ios/**"
+      - "core/**"
+      - "app/src/main/cpp/**"
+      - ".github/workflows/ios.yml"
   pull_request:
+    paths:
+      - "ios/**"
+      - "core/**"
+      - "app/src/main/cpp/**"
+      - ".github/workflows/ios.yml"
   workflow_dispatch:
 
 # A superseded run on the same ref is wasted compute; cancel it rather than let

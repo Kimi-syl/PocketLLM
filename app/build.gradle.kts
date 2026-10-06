@@ -17,8 +17,11 @@ android {
         versionName = "0.4.0"
 
         ndk {
-            abiFilters += "arm64-v8a"
-            abiFilters += "x86_64"
+            // CI builds one APK per ABI via -PpocketllmAbi=...; a local build
+            // without the property packages both.
+            val abis = (findProperty("pocketllmAbi") as String?)
+                ?.split(",") ?: listOf("arm64-v8a", "x86_64")
+            abis.forEach { abiFilters += it }
         }
     }
 
