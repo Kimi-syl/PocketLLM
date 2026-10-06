@@ -29,8 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - abi: arm64-v8a
-            prefix: arm64
+          # SEALED - arm64 no longer runs on CI. The arm64 APK is built locally
+          # (build-native.sh + build-sd.sh in the dev container) instead; CI kept
+          # producing a package that failed on device. Commented rather than
+          # deleted so this can be re-enabled if the runner is ever fixed.
+          # - abi: arm64-v8a
+          #   prefix: arm64
           - abi: x86_64
             prefix: x86_64
     env:
@@ -145,10 +149,15 @@ jobs:
         run: |
           set -euo pipefail
           ls -la *.apk *.sha256
-          # Last guard: the two APKs must genuinely differ.
-          a=$(sha256sum arm64-*.apk | cut -d' ' -f1)
-          b=$(sha256sum x86_64-*.apk | cut -d' ' -f1)
-          [ "$a" != "$b" ] || { echo "ABORT: arm64 and x86_64 APKs are identical"; exit 1; }
+          # When both ABIs are built here they must genuinely differ. arm64 is
+          # currently sealed (built locally), so only compare if both exist.
+          af=$(ls arm64-*.apk 2>/dev/null | head -1 || true)
+          xf=$(ls x86_64-*.apk 2>/dev/null | head -1 || true)
+          if [ -n "$af" ] && [ -n "$xf" ]; then
+            a=$(sha256sum "$af" | cut -d' ' -f1)
+            b=$(sha256sum "$xf" | cut -d' ' -f1)
+            [ "$a" != "$b" ] || { echo "ABORT: arm64 and x86_64 APKs are identical"; exit 1; }
+          fi
           TAG="prerelease-$(date +%Y%m%d-%H%M)"
           gh release create "$TAG" *.apk *.sha256 \
             --prerelease --title "PocketLLM pre-release $TAG" \
