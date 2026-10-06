@@ -31,12 +31,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
+      # ubuntu-latest already ships the Android SDK and cmdline-tools. The
+      # android-actions/setup-android action is deliberately not used: it tries
+      # to install the long-removed 'tools' package and dies with
+      # "Failed to find package 'tools'". sdkmanager from the preinstalled SDK
+      # is all this needs.
       - name: Install NDK and CMake
         run: |
-          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
-          yes | sdkmanager --licenses >/dev/null
+          SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses >/dev/null
+          "$SDKMGR" --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Fetch stable-diffusion.cpp
         run: |
@@ -48,7 +52,6 @@ jobs:
       - name: Build native (x86_64)
         env:
           POCKETLLM_ABI: x86_64
-          POCKETLLM_TOOLCHAIN: ${{ env.ANDROID_NDK }}/build/cmake/android.toolchain.cmake
           POCKETLLM_BUILD_JOBS: 4
         run: |
           export ANDROID_NDK="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
