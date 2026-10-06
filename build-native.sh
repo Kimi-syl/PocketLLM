@@ -48,6 +48,12 @@ esac
 VULKAN_INCLUDE_ARGS=()
 if [ -d /opt/tusr/usr/include ]; then
     VULKAN_INCLUDE_ARGS+=("-DVulkan_INCLUDE_DIR=/opt/tusr/usr/include")
+elif [ -f /usr/include/vulkan/vulkan.hpp ]; then
+    # Runner: the NDK toolchain restricts find_* to the NDK sysroot, whose
+    # Vulkan headers are C-only. FindVulkan therefore resolves there and
+    # ggml-vulkan.cpp cannot see vulkan/vulkan.hpp even though libvulkan-dev
+    # put it in /usr/include. Point it there explicitly.
+    VULKAN_INCLUDE_ARGS+=("-DVulkan_INCLUDE_DIR=/usr/include")
 fi
 
 echo "=== Building native libraries (${NPROCS} jobs) ==="
