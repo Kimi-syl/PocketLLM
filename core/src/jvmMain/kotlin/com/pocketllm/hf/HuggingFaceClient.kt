@@ -44,10 +44,11 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * [pipelineTag] selects the category: "text-generation" for LLMs (which are
-     * then additionally restricted to GGUF, the only format llama.cpp loads) or
-     * "text-to-image" for image models (diffusers checkpoints, which ship as
-     * safetensors and are not GGUF-filtered).
+     * [pipelineTag] selects the category: "text-generation" for LLMs or
+     * "text-to-image" for image models. Repos of any format are listed here -
+     * an LLM may be published as safetensors and an image model as GGUF - but
+     * downloads stay GGUF-only (see [listGgufFiles]), because other formats may
+     * need converting before they will load.
      */
     suspend fun search(
         query: String,
@@ -60,9 +61,6 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
             .addQueryParameter("sort", "downloads")
             .addQueryParameter("direction", "-1")
             .addQueryParameter("limit", limit.toString())
-        if (pipelineTag == "text-generation") {
-            builder.addQueryParameter("filter", "gguf")
-        }
         val request = authorize(Request.Builder().url(builder.build())).build()
         client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "Search failed: HTTP ${response.code}" }
