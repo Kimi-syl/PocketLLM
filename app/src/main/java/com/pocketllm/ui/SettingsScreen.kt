@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.pocketllm.ui
 
 import android.content.Intent
@@ -78,6 +80,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -2821,11 +2826,58 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 else MaterialTheme.colorScheme.error,
             )
 
+            // Model picker: the models already downloaded, not a path the user
+            // has to type. A custom-path field stays for files the app did not
+            // download.
+            val localModels = (vm.models.collectAsState().value +
+                vm.safetensors.collectAsState().value).map { it.name }.distinct().sorted()
+            var modelMenuOpen by remember { mutableStateOf(false) }
+            val currentName = localModels.firstOrNull {
+                vm.imageModelPathFor(it) == img.modelPath
+            } ?: if (img.modelPath.isBlank()) "（未選擇）" else img.modelPath
+
+            ExposedDropdownMenuBox(
+                expanded = modelMenuOpen,
+                onExpandedChange = { modelMenuOpen = it },
+            ) {
+                OutlinedTextField(
+                    value = currentName,
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().menuAnchor(),
+                    label = { Text("圖片模型（已下載）") },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelMenuOpen)
+                    },
+                )
+                ExposedDropdownMenu(
+                    expanded = modelMenuOpen,
+                    onDismissRequest = { modelMenuOpen = false },
+                ) {
+                    if (localModels.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("尚無已下載的模型") },
+                            onClick = { modelMenuOpen = false },
+                        )
+                    }
+                    localModels.forEach { name ->
+                        DropdownMenuItem(
+                            text = { Text(name) },
+                            onClick = {
+                                vm.updateImageGenSettings {
+                                    it.copy(modelPath = vm.imageModelPathFor(name))
+                                }
+                                modelMenuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
             OutlinedTextField(
                 value = img.modelPath,
                 onValueChange = { v -> vm.updateImageGenSettings { it.copy(modelPath = v) } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("模型檔 (.safetensors / .gguf)") },
+                label = { Text("自訂路徑（選填，覆蓋上方選擇）") },
                 singleLine = true,
             )
             OutlinedTextField(

@@ -139,7 +139,10 @@ class ModelRepository(
 
                 val head = headInfo(url)
                 val total = head.contentLength
-                require(total > 0) { "Server did not report file size; cannot download reliably" }
+                require(total > 0) {
+                    "Server did not report file size after following redirects " +
+                        "(last hop: ${url}); cannot download reliably"
+                }
 
                 val segments = resumeOrPlan(metaFile, url, head, total, part)
 
@@ -293,16 +296,61 @@ class ModelRepository(
         }
     }
 
+    /**
+     * Resolves the real size of a download.
+     *
+     * Hugging Face /resolve/ URLs 302-redirect to a CDN, and the authoritative
+     * size lives in `x-linked-size` on the huggingface.co redirect response.
+     * Following the redirect automatically loses that header, and the CDN's own
+     * response is often chunked with no Content-Length - which is why the
+     * progress bar sat at 0%: the total was unknown. So follow the hops by hand
+     * and harvest the size from each one.
+     */
     private fun headInfo(url: String): HeadInfo {
-        val request = authorize(Request.Builder().url(url)).head().build()
-        client.newCall(request).execute().use { response ->
-            check(response.isSuccessful) { "Could not reach $url (HTTP ${response.code})" }
-            val length = response.header("Content-Length")?.toLongOrNull()
-                ?: response.header("x-linked-size")?.toLongOrNull()
-                ?: -1L
-            val acceptRanges = response.header("Accept-Ranges")?.equals("bytes", ignoreCase = true) == true
-            return HeadInfo(length, acceptRanges, response.header("ETag"))
+        // Never forward the API token off-host: only github/huggingface may see it.
+        val bare = client.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+
+        var current = url
+        var linkedSize = -1L
+        var linkedEtag: String? = null
+        var contentLength = -1L
+        var acceptRanges = false
+        var etag: String? = null
+
+        repeat(8) {
+            val request = authorize(Request.Builder().url(current)).head().build()
+            bare.newCall(request).execute().use { response ->
+                if (response.isRedirect) {
+                    val location = response.header("Location")
+                    linkedSize = response.header("x-linked-size")?.toLongOrNull() ?: linkedSize
+                    linkedEtag = response.header("x-linked-etag") ?: linkedEtag
+                    if (location != null) {
+                        current = response.request.url.resolve(location).toString()
+                    }
+                    return@use
+                }
+                check(response.isSuccessful) {
+                    "Could not reach $url (HTTP ${response.code})"
+                }
+                contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+                acceptRanges = response.header("Accept-Ranges")
+                    ?.equals("bytes", ignoreCase = true) == true
+                etag = response.header("ETag")
+            }
+            if (contentLength > 0 && linkedSize > 0) return@repeat
         }
+
+        // Prefer the size huggingface.co reported; the CDN's Content-Length is
+        // only a fallback and can legitimately be absent.
+        val length = when {
+            linkedSize > 0 -> linkedSize
+            contentLength > 0 -> contentLength
+            else -> -1L
+        }
+        return HeadInfo(length, acceptRanges, linkedEtag ?: etag)
     }
 
     private fun authorize(builder: Request.Builder): Request.Builder {

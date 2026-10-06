@@ -61,6 +61,8 @@ import kotlinx.serialization.json.JsonPrimitive
  * from killing the process — which also keeps the loaded GGUF model resident,
  * so the companion can answer locally with no reload.
  */
+private const val RAIL_WIDTH_DP = 56
+
 class CompanionOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
@@ -159,7 +161,10 @@ class CompanionOverlayService : Service() {
         ui.onDrag = { dx, dy -> moveBy(dx, dy) }
         ui.onDragEnd = { persistPosition() }
         // --- Collapsible shell ----------------------------------------------
-        ui.onLongPressCharacter = { openShell() }
+        // A long press is meant to surface the toolbar. openShell() also popped
+        // the message box, which covered the character the user had just
+        // pressed; openToolbar() shows the rail alone.
+        ui.onLongPressCharacter = { openToolbar() }
         ui.onSelectTool = { tool -> selectTool(tool) }
         ui.onDismissShell = { closeShell() }
         ui.onOpenSettings = {
@@ -850,13 +855,14 @@ class CompanionOverlayService : Service() {
         val width: Int
         val height: Int
         if (expanded) {
-            // A band exactly as tall as she is, spanning the screen so the rail
-            // can sit at one edge and the panel at the other with her between
-            // them. Height is the point: a full-screen window would leave the
-            // page underneath untouchable, because an overlay cannot pass a
-            // touch through a transparent pixel. Only the band is ours, so
-            // everything above and below it stays live.
-            width = metrics.widthPixels
+            // Only as wide as she is plus the rail. It used to span the whole
+            // screen so the rail and panel could sit at opposite edges, but that
+            // made a screen-wide overlay that covered the character and blocked
+            // the page - a long press is meant to surface a toolbar, nothing
+            // more. Height stays the band height for the same reason as before:
+            // an overlay cannot pass a touch through a transparent pixel, so
+            // only what is actually drawn should be ours.
+            width = collapsedWindowWidth() + dp(RAIL_WIDTH_DP)
             height = collapsedWindowHeight()
         } else {
             width = collapsedWindowWidth()
@@ -1033,6 +1039,27 @@ class CompanionOverlayService : Service() {
      * window would leave everything behind it untouchable. Above and below the
      * band the device stays live.
      */
+    /**
+     * Shows the tool rail without the message box. This is what a long press on
+     * the character does: the user asked for a toolbar, and getting a chat panel
+     * (and a screen-wide window) on top of the character was the bug.
+     */
+    private fun openToolbar() {
+        if (ui.shellOpen) return
+        ui.shellOpen = true
+        ui.expanded = true
+        // Deliberately NOT ui.inputOpen: the message box is opt-in from the rail.
+        ui.inputOpen = false
+        ui.status = brain.backendLabel()
+        refreshShellData()
+        val view = rootView ?: return
+        ui.characterOffsetX = bubbleX
+        ui.characterOffsetY = 0
+        ui.collapsedWidthDp = (collapsedWindowWidth() / density).toInt()
+        ui.collapsedHeightDp = (collapsedWindowHeight() / density).toInt()
+        runCatching { windowManager.updateViewLayout(view, layoutParams(expanded = true)) }
+    }
+
     private fun openShell() {
         if (ui.shellOpen) return
         ui.shellOpen = true

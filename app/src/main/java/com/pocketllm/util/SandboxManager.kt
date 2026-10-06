@@ -204,9 +204,31 @@ class SandboxManager(private val context: Context) {
                         target.delete()
                         runCatching { Os.symlink(link, target.absolutePath) }
                             .onFailure {
-                                // Unprivileged fallback: a regular copy of the target.
-                                val src = safeResolve(dest, link)
-                                if (src != null && src.exists()) src.copyTo(target, overwrite = true)
+                                // Symlinks can be refused on scoped storage, so fall
+                                // back to a regular copy. Relative targets - Alpine's
+                                // bin/sh -> busybox is one - are relative to the LINK's
+                                // own directory, not the archive root; resolving them
+                                // against dest looked for <rootfs>/busybox and left
+                                // bin/sh missing entirely.
+                                val src = if (link.startsWith("/")) {
+                                    safeResolve(dest, link)
+                                } else {
+                                    val joined = File(target.parentFile ?: dest, link)
+                                        .canonicalFile
+                                    if (joined.path.startsWith(dest.canonicalPath + File.separator)) {
+                                        joined
+                                    } else {
+                                        null
+                                    }
+                                }
+                                if (src != null && src.exists()) {
+                                    src.copyTo(target, overwrite = true)
+                                } else {
+                                    // Last resort: recreate the symlink target's
+                                    // absence explicitly so the caller reports a real
+                                    // missing file rather than a silent no-op.
+                                    target.delete()
+                                }
                             }
                     }
                     '1' -> {                            // hardlink

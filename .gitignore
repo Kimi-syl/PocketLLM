@@ -58,3 +58,12 @@ assets/tts/**
 # Stable-diffusion.cpp is fetched by build-sd.sh, not vendored (~300MB)
 third_party/sd/
 build-sd/
+
+# Per-ABI native build trees (never committed; rebuilt locally)
+build-native-arm64-v8a/
+build-native-x86_64/
+build-sd-arm64-v8a/
+build-sd-x86_64/
+build-x64/
+*.apk
+*.apk.sha256
