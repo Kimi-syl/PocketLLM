@@ -125,6 +125,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         imageGen.updateSettings(transform)
     }
 
+    /**
+     * Absolute path of a file in the models directory, so the image model can be
+     * picked from the Models page. Mirrors ModelRepository.dir, which is where
+     * every downloaded/imported model already lives.
+     */
+    fun imageModelPathFor(name: String): String =
+        java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
+            .resolve(name).absolutePath
+
     // --- MCP ---------------------------------------------------------------
     private val _mcpTools = MutableStateFlow<List<com.pocketllm.mcp.McpClient.Tool>>(emptyList())
     val mcpTools: StateFlow<List<com.pocketllm.mcp.McpClient.Tool>> = _mcpTools
@@ -543,11 +552,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun searchHuggingFace(query: String) {
+    fun searchHuggingFace(query: String, category: String = "llm") {
         if (query.isBlank() || _searchLoading.value) return
         viewModelScope.launch {
             _searchLoading.value = true
-            runCatching { hfClient.search(query.trim()) }
+            val tag = if (category == "image") "text-to-image" else "text-generation"
+            runCatching { hfClient.search(query.trim(), pipelineTag = tag) }
                 .onSuccess { _searchResults.value = it }
                 .onFailure { ServerLog.log("HF search failed: ${it.message}") }
             _searchLoading.value = false

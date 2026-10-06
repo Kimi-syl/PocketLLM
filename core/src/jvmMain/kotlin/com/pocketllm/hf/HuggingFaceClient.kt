@@ -43,15 +43,27 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun search(query: String, limit: Int = 25): List<HfSearchResult> = withContext(Dispatchers.IO) {
-        val url = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
+    /**
+     * [pipelineTag] selects the category: "text-generation" for LLMs (which are
+     * then additionally restricted to GGUF, the only format llama.cpp loads) or
+     * "text-to-image" for image models (diffusers checkpoints, which ship as
+     * safetensors and are not GGUF-filtered).
+     */
+    suspend fun search(
+        query: String,
+        limit: Int = 25,
+        pipelineTag: String = "text-generation",
+    ): List<HfSearchResult> = withContext(Dispatchers.IO) {
+        val builder = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
             .addQueryParameter("search", query)
-            .addQueryParameter("filter", "gguf")
+            .addQueryParameter("pipeline_tag", pipelineTag)
             .addQueryParameter("sort", "downloads")
             .addQueryParameter("direction", "-1")
             .addQueryParameter("limit", limit.toString())
-            .build()
-        val request = authorize(Request.Builder().url(url)).build()
+        if (pipelineTag == "text-generation") {
+            builder.addQueryParameter("filter", "gguf")
+        }
+        val request = authorize(Request.Builder().url(builder.build())).build()
         client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "Search failed: HTTP ${response.code}" }
             val body = response.body?.string() ?: error("Empty search response")

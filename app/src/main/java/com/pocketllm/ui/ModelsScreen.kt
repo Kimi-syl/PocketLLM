@@ -28,6 +28,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -169,6 +170,60 @@ private fun LocalModelsList(vm: AppViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item {
+            // Image model selection lives here, on the Models page, not buried in
+            // Settings - it is just another model file in the same directory.
+            val imgSettings by vm.imageGenSettings.collectAsState()
+            val imageFiles = stModels + models
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "圖片生成模型",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        imgSettings.modelPath.ifBlank { "尚未指定圖片模型" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                    )
+                    if (imageFiles.isEmpty()) {
+                        Text(
+                            "下載或匯入模型後可在此指定為圖片模型。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        imageFiles.forEach { m ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    m.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                )
+                                TextButton(onClick = {
+                                    vm.updateImageGenSettings {
+                                        it.copy(modelPath = vm.imageModelPathFor(m.name))
+                                    }
+                                }) {
+                                    Text(
+                                        if (imgSettings.modelPath == vm.imageModelPathFor(m.name)) "使用中"
+                                        else "設為圖片模型",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -346,6 +401,7 @@ private fun HfSearchSection(vm: AppViewModel) {
     // True while a download started from the Direct URL field is running, so
     // its progress can render under that field (it has no file row).
     var directDownloadActive by remember { mutableStateOf(false) }
+    var hfCategory by remember { mutableStateOf("llm") }
 
     LaunchedEffect(downloadProgress) {
         if (downloadProgress == null) directDownloadActive = false
@@ -357,15 +413,38 @@ private fun HfSearchSection(vm: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
+            // Category split: LLMs are GGUF-only (what llama.cpp loads), image
+            // models are text-to-image checkpoints that ship as safetensors.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = hfCategory == "llm",
+                    onClick = { hfCategory = "llm" },
+                    label = { Text("LLM") },
+                )
+                FilterChip(
+                    selected = hfCategory == "image",
+                    onClick = { hfCategory = "image" },
+                    label = { Text("圖片生成") },
+                )
+            }
+        }
+        item {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Search GGUF models") },
-                placeholder = { Text("e.g. Qwen2.5 3B instruct") },
+                label = {
+                    Text(if (hfCategory == "image") "Search image models" else "Search GGUF models")
+                },
+                placeholder = {
+                    Text(if (hfCategory == "image") "e.g. stable diffusion 1.5" else "e.g. Qwen2.5 3B instruct")
+                },
                 singleLine = true,
                 trailingIcon = {
-                    IconButton(onClick = { vm.searchHuggingFace(query) }, enabled = query.isNotBlank() && !searchLoading) {
+                    IconButton(
+                        onClick = { vm.searchHuggingFace(query, hfCategory) },
+                        enabled = query.isNotBlank() && !searchLoading,
+                    ) {
                         Icon(Icons.Outlined.Search, contentDescription = "Search")
                     }
                 },
