@@ -6,13 +6,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "ios/**"
+      - "ios-app/**"
       - "core/**"
       - "app/src/main/cpp/**"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
-      - "ios/**"
+      - "ios-app/**"
       - "core/**"
       - "app/src/main/cpp/**"
       - ".github/workflows/ios.yml"

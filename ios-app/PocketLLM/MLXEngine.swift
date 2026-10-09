@@ -19,6 +19,15 @@ final class MLXEngine: ObservableObject {
 
     @Published var state: String = "no model loaded"
 
+    /// Time to first token of the last generation, in seconds. 0 until one runs.
+    @Published var lastTTFT: Double = 0
+
+    /// Decode rate of the last generation, in tokens per second.
+    @Published var lastTokensPerSecond: Double = 0
+
+    /// Tokens emitted by the last generation.
+    @Published var lastTokenCount: Int = 0
+
     private var container: ModelContainer?
     private let stopFlag = StopFlag()
 
@@ -26,6 +35,50 @@ final class MLXEngine: ObservableObject {
 
     /// Loads an MLX model directory. Weights already on disk make this a load,
     /// not a download; the progress handler still reports the weight read.
+    /// Qwen3.5 checkpoints whose `model_type` is newer than the vendored
+    /// MLX-LM registry still share the Qwen3 architecture. Rewrite the config in
+    /// a sibling directory and load that, so the model works instead of failing
+    /// on a name the registry does not know yet.
+    private func normalizedFallback(for directory: URL) -> URL? {
+        let configURL = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let modelType = json["model_type"] as? String
+        else { return nil }
+
+        let lower = modelType.lowercased()
+        guard lower.contains("qwen") else { return nil }
+
+        // Qwen3.5 -> qwen3, qwen4 -> qwen3, etc. Only ever downwards to a known
+        // ancestor, never to an unrelated family.
+        let ancestor: String
+        if lower.contains("qwen3_5") || lower.contains("qwen3.5") || lower.contains("qwen4") {
+            ancestor = "qwen3"
+        } else {
+            return nil
+        }
+
+        let work = directory.appendingPathComponent(".mlx-normalized", isDirectory: true)
+        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+
+        // Symlink the weights and tokenizer so we only duplicate the small files.
+        let fm = FileManager.default
+        for item in (try? fm.contentsOfDirectory(atPath: directory.path)) ?? [] {
+            guard item != ".mlx-normalized", item != "config.json" else { continue }
+            let src = directory.appendingPathComponent(item)
+            let dst = work.appendingPathComponent(item)
+            try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
+        }
+
+        var mutable = json
+        mutable["model_type"] = ancestor
+        guard let out = try? JSONSerialization.data(
+            withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]
+        ) else { return nil }
+        try? out.write(to: work.appendingPathComponent("config.json"))
+        return work
+    }
+
     func load(directory: URL) async {
         setState("loading \(directory.lastPathComponent)…")
         do {
@@ -43,6 +96,24 @@ final class MLXEngine: ObservableObject {
             setState("\(directory.lastPathComponent) · MLX")
         } catch {
             container = nil
+            // A Qwen3.5 model_type the registry does not know is not fatal:
+            // retry through a normalized config with the ancestor model_type.
+            if let fallback = normalizedFallback(for: directory) {
+                setState("retrying as Qwen3-family config…")
+                do {
+                    let retry = try await LLMModelFactory.shared.loadContainer(
+                        configuration: ModelConfiguration(directory: fallback)
+                    ) { progress in
+                        let percent = Int(progress.fractionCompleted * 100)
+                        self.setState("loading \(directory.lastPathComponent)… \(percent)%")
+                    }
+                    container = retry
+                    setState("ready (\(directory.lastPathComponent))")
+                    return
+                } catch {
+                    // fall through to the reported failure below
+                }
+            }
             setState("load failed: \(error.localizedDescription)")
         }
     }
@@ -91,17 +162,46 @@ final class MLXEngine: ObservableObject {
                     // segment and hands back only what is newly decodable.
                     var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
 
+                    // TTFT is measured to the first DECODED token, which is what
+                    // a person perceives as "it started answering". Decode rate
+                    // is measured from there so prompt processing does not drag
+                    // the number down.
+                    let started = DispatchTime.now()
+                    var firstTokenAt: DispatchTime?
+                    var tokenCount = 0
+
                     // Qualified: this class has its own `generate`, which would
                     // otherwise win the unqualified name lookup.
                     _ = try MLXLMCommon.generate(
                         input: input, parameters: parameters, context: context
                     ) { token in
                         guard !flag.isStopped else { return .stop }
+                        tokenCount += 1
+                        let now = DispatchTime.now()
+                        if firstTokenAt == nil { firstTokenAt = now }
                         detokenizer.append(token: token)
                         if let piece = detokenizer.next(), !piece.isEmpty {
                             DispatchQueue.main.async { onToken(piece) }
                         }
                         return .more
+                    }
+
+                    // Publish the numbers once the stream ends.
+                    let ended = DispatchTime.now()
+                    let ttft = firstTokenAt.map {
+                        Double($0.uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000_000
+                    } ?? 0
+                    let decodeWindow = firstTokenAt.map {
+                        Double(ended.uptimeNanoseconds - $0.uptimeNanoseconds) / 1_000_000_000
+                    } ?? 0
+                    let rate = decodeWindow > 0 ? Double(tokenCount) / decodeWindow : 0
+                    DispatchQueue.main.async {
+                        self.lastTTFT = ttft
+                        self.lastTokensPerSecond = rate
+                        self.lastTokenCount = tokenCount
+                        self.state = String(
+                            format: "done · %.2fs TTFT · %.1f tok/s · %d tokens",
+                            ttft, rate, tokenCount)
                     }
                 }
                 try await container.perform(action)
