@@ -83,6 +83,21 @@ struct ChatView: View {
         HStack {
             Text(currentMode == .mlx ? mlx.state : engine.state)
                 .font(.footnote)
+            // Throughput for the last MLX generation. Shown only when a run has
+            // produced numbers, so the empty state stays clean.
+            if currentMode == .mlx, mlx.lastTokenCount > 0 {
+                HStack(spacing: 10) {
+                    Label(
+                        String(format: "%.2fs TTFT", mlx.lastTTFT),
+                        systemImage: "bolt.badge.clock")
+                    Label(
+                        String(format: "%.1f tok/s", mlx.lastTokensPerSecond),
+                        systemImage: "speedometer")
+                    Label("\(mlx.lastTokenCount) tok", systemImage: "number")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)

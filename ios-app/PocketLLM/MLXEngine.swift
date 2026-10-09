@@ -81,9 +81,20 @@ final class MLXEngine: ObservableObject {
 
     func load(directory: URL) async {
         setState("loading \(directory.lastPathComponent)…")
+
+        // Normalize a Qwen3.5-style config BEFORE asking MLX-LM to load it.
+        // Waiting for the load to fail meant the user still saw
+        // "unknown model type: qwen3_5" even though we could retry, because the
+        // failure is raised from the registry lookup. Going straight to the
+        // ancestor config never raises it.
+        let effective = normalizedFallback(for: directory) ?? directory
+        if effective != directory {
+            setState("loading \(directory.lastPathComponent)… (Qwen3-family config)")
+        }
+
         do {
             let loaded = try await LLMModelFactory.shared.loadContainer(
-                configuration: ModelConfiguration(directory: directory)
+                configuration: ModelConfiguration(directory: effective)
             ) { progress in
                 // Called on a background queue by the Hub downloader.
                 let percent = Int(progress.fractionCompleted * 100)
