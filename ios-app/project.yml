@@ -18,10 +18,10 @@ packages:
   # swift-tools 6.3); the examples package resolves mlx-swift 0.25.x itself.
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    exactVersion: 0.25.6
+    minorVersion: 0.32.3
   mlx-swift-examples:
     url: https://github.com/ml-explore/mlx-swift-examples
-    exactVersion: 2.25.9
+    minorVersion: 2.29.1
   # Declared directly even though it arrives transitively: MLXLMCommon's public
   # signatures name HubApi and Tokenizer, and calling them without the modules
   # imported fails with "missing required module". The range intersects the
