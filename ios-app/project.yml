@@ -18,14 +18,14 @@ packages:
   # swift-tools 6.3); the examples package resolves mlx-swift 0.25.x itself.
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    minorVersion: 0.32.3
+    from: 0.29.1
   # ml-explore moved the LLM layer out of mlx-swift-lm into mlx-swift-lm,
   # which is actively maintained and tracks mlx-swift 0.32.x. The old package
   # pinned mlx-swift 0.29.1..<0.30.0 and had not moved in about a year, which
   # capped the whole toolchain and blocked newer model architectures.
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    minorVersion: 3.32.3
+    minorVersion: 2.31.3
   # Declared directly even though it arrives transitively: MLXLMCommon's public
   # signatures name HubApi and Tokenizer, and calling them without the modules
   # imported fails with "missing required module". The range intersects the
