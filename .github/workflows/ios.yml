@@ -114,7 +114,7 @@ jobs:
             build-ios-dev
           key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}-xcode${{ hashFiles('.github/workflows/ios.yml') }}
           restore-keys: |
-            ${{ runner.os }}-llama-
+            ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}-xcode${{ hashFiles('.github/workflows/ios.yml') }}
 
       # Gradle: dependency cache, wrapper, and the Kotlin/Native toolchain that
       # konan downloads. The restore-key fallback (no trailing hash) keeps the
