@@ -4,7 +4,6 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import Tokenizers
-import MLXLMTokenizers
 
 /// On-device inference through Apple's MLX framework.
 ///
@@ -16,6 +15,17 @@ import MLXLMTokenizers
 ///
 /// Deliberately the same shape as `LocalEngine` so the chat view can drive either
 /// one without branching on the backend.
+/// Loads a tokenizer from a model directory already on disk.
+///
+/// mlx-swift-lm 3.x takes a TokenizerLoader rather than building one itself.
+/// MLXHuggingFace offers one via a macro, but it is not an exported library
+/// product, so this is the same two lines the macro expands to.
+private struct LocalTokenizerLoader: MLXLMCommon.TokenizerLoader {
+    func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+        try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    }
+}
+
 final class MLXEngine: ObservableObject {
 
     @Published var state: String = "no model loaded"
@@ -131,7 +141,7 @@ final class MLXEngine: ObservableObject {
         do {
             let loaded = try await LLMModelFactory.shared.loadContainer(
                 from: effective,
-                using: TokenizersLoader()
+                using: LocalTokenizerLoader()
             )
             container = loaded
             // MLX keeps a buffer cache for reuse between runs; a phone has far
@@ -147,7 +157,7 @@ final class MLXEngine: ObservableObject {
                 do {
                     let retry = try await LLMModelFactory.shared.loadContainer(
                         from: fallback,
-                        using: TokenizersLoader()
+                        using: LocalTokenizerLoader()
                     )
                     container = retry
                     setState("ready (\(directory.lastPathComponent))")
