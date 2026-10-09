@@ -18,7 +18,7 @@ packages:
   # swift-tools 6.3); the examples package resolves mlx-swift 0.25.x itself.
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    minorVersion: 0.32.3
+    minorVersion: 0.29.1
   mlx-swift-examples:
     url: https://github.com/ml-explore/mlx-swift-examples
     minorVersion: 2.29.1
