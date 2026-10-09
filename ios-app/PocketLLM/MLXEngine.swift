@@ -3,6 +3,7 @@ import Hub
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXHuggingFace
 import Tokenizers
 
 /// On-device inference through Apple's MLX framework.
@@ -22,7 +23,8 @@ import Tokenizers
 /// product, so this is the same two lines the macro expands to.
 private struct LocalTokenizerLoader: MLXLMCommon.TokenizerLoader {
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+        let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+        return #adaptHuggingFaceTokenizer(upstream)
     }
 }
 
