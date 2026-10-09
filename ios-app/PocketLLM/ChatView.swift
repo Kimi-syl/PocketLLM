@@ -155,6 +155,7 @@ struct ChatView: View {
     @ViewBuilder
     private func messageRow(_ message: OpenAIClient.Message) -> some View {
         let isUser = message.role == "user"
+        VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
         HStack(alignment: .top) {
             if isUser { Spacer(minLength: 40) }
             Group {
@@ -172,6 +173,22 @@ struct ChatView: View {
             if !isUser { Spacer(minLength: 40) }
         }
         .padding(.horizontal)
+        // Throughput belongs under the reply, not in the status bar. Only the
+        // most recent assistant message shows it, so history stays clean.
+        if !isUser,
+           let last = messages.last(where: { $0.role != "user" }),
+           last.id == message.id,
+           mlx.lastTokenCount > 0 {
+            Text(
+                String(
+                    format: "%.2fs TTFT  .  %.1f tok/s  .  %d tok",
+                    mlx.lastTTFT, mlx.lastTokensPerSecond, mlx.lastTokenCount)
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+        }
+        }
     }
 
     /// MarkdownUI re-parses the entire document on every update, so rendering

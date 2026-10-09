@@ -72,6 +72,16 @@ final class MLXEngine: ObservableObject {
 
         var mutable = json
         mutable["model_type"] = ancestor
+
+        // Qwen-VL / Qwen3.5 nest the language model under `text_config`, so
+        // `hidden_size` and friends are not at the top level where a qwen3
+        // config is expected to find them. Flatten it, keeping any existing
+        // top-level key authoritative.
+        if let textConfig = json["text_config"] as? [String: Any] {
+            for (key, value) in textConfig where mutable[key] == nil {
+                mutable[key] = value
+            }
+        }
         guard let out = try? JSONSerialization.data(
             withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]
         ) else { return nil }
