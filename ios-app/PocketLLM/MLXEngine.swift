@@ -51,8 +51,14 @@ final class MLXEngine: ObservableObject {
 
         // Qwen3.5 -> qwen3, qwen4 -> qwen3, etc. Only ever downwards to a known
         // ancestor, never to an unrelated family.
+        // Map to a known ancestor. Qwen3.5/4 are Qwen3-family; any other
+        // unrecognized type is mapped to "qwen3" only when the config actually
+        // carries a Qwen-shaped text_config, otherwise we leave it alone rather
+        // than guessing at an unrelated architecture.
         let ancestor: String
         if lower.contains("qwen3_5") || lower.contains("qwen3.5") || lower.contains("qwen4") {
+            ancestor = "qwen3"
+        } else if lower.contains("qwen") {
             ancestor = "qwen3"
         } else {
             return nil
@@ -86,6 +92,25 @@ final class MLXEngine: ObservableObject {
             withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]
         ) else { return nil }
         try? out.write(to: work.appendingPathComponent("config.json"))
+
+        // swift-transformers raises "TokenizersBackend is not supported" for a
+        // tokenizer_class it does not implement (MiniCPM5 is one). Falling back
+        // to the generic class lets the pure-Swift tokenizer load instead of
+        // failing the entire model.
+        let tokURL = work.appendingPathComponent("tokenizer_config.json")
+        if let tokData = try? Data(contentsOf: tokURL),
+           var tok = try? JSONSerialization.jsonObject(with: tokData) as? [String: Any],
+           let tokClass = tok["tokenizer_class"] as? String {
+            let known = ["PreTrainedTokenizer", "GPT2Tokenizer", "LlamaTokenizer",
+                         "BertTokenizer", "Qwen2Tokenizer", "CodeGenTokenizer"]
+            if !known.contains(tokClass) {
+                tok["tokenizer_class"] = "PreTrainedTokenizer"
+                if let rewritten = try? JSONSerialization.data(
+                    withJSONObject: tok, options: [.prettyPrinted, .sortedKeys]) {
+                    try? rewritten.write(to: tokURL)
+                }
+            }
+        }
         return work
     }
 

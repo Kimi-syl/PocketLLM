@@ -152,6 +152,19 @@ struct ChatView: View {
             gpuLayers: settings.gpuOffload ? LocalEngine.allLayers : 0)
     }
 
+    /// Throughput line for whichever backend produced the reply, so llama.cpp
+    /// and MLX report identically and neither can be forgotten.
+    private var metricsLine: String {
+        let ttft: Double, rate: Double, count: Int
+        if currentMode == .mlx {
+            (ttft, rate, count) = (mlx.lastTTFT, mlx.lastTokensPerSecond, mlx.lastTokenCount)
+        } else {
+            (ttft, rate, count) = (engine.lastTTFT, engine.lastTokensPerSecond, engine.lastTokenCount)
+        }
+        guard count > 0 else { return "" }
+        return String(format: "%.2fs TTFT  .  %.1f tok/s  .  %d tok", ttft, rate, count)
+    }
+
     @ViewBuilder
     private func messageRow(_ message: OpenAIClient.Message) -> some View {
         let isUser = message.role == "user"
@@ -176,14 +189,10 @@ struct ChatView: View {
         // Throughput belongs under the reply, not in the status bar. Only the
         // most recent assistant message shows it, so history stays clean.
         if !isUser,
+           !metricsLine.isEmpty,
            let last = messages.last(where: { $0.role != "user" }),
-           last.id == message.id,
-           mlx.lastTokenCount > 0 {
-            Text(
-                String(
-                    format: "%.2fs TTFT  .  %.1f tok/s  .  %d tok",
-                    mlx.lastTTFT, mlx.lastTokensPerSecond, mlx.lastTokenCount)
-            )
+           last.id == message.id {
+            Text(metricsLine)
             .font(.caption2)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
