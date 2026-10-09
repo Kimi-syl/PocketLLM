@@ -4,6 +4,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import Tokenizers
+import MLXLMTokenizers
 
 /// On-device inference through Apple's MLX framework.
 ///
@@ -129,12 +130,9 @@ final class MLXEngine: ObservableObject {
 
         do {
             let loaded = try await LLMModelFactory.shared.loadContainer(
-                configuration: ModelConfiguration(directory: effective)
-            ) { progress in
-                // Called on a background queue by the Hub downloader.
-                let percent = Int(progress.fractionCompleted * 100)
-                self.setState("loading \(directory.lastPathComponent)… \(percent)%")
-            }
+                from: effective,
+                using: TokenizersLoader()
+            )
             container = loaded
             // MLX keeps a buffer cache for reuse between runs; a phone has far
             // less headroom than a Mac, so cap it rather than let it grow.
@@ -148,11 +146,9 @@ final class MLXEngine: ObservableObject {
                 setState("retrying as Qwen3-family config…")
                 do {
                     let retry = try await LLMModelFactory.shared.loadContainer(
-                        configuration: ModelConfiguration(directory: fallback)
-                    ) { progress in
-                        let percent = Int(progress.fractionCompleted * 100)
-                        self.setState("loading \(directory.lastPathComponent)… \(percent)%")
-                    }
+                        from: fallback,
+                        using: TokenizersLoader()
+                    )
                     container = retry
                     setState("ready (\(directory.lastPathComponent))")
                     return
