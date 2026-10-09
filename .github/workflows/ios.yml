@@ -112,7 +112,7 @@ jobs:
             ci-llama
             build-ios-sim
             build-ios-dev
-          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}
+          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}-xcode${{ hashFiles('.github/workflows/ios.yml') }}
           restore-keys: |
             ${{ runner.os }}-llama-
 
@@ -289,7 +289,7 @@ jobs:
             ci-llama
             build-ios-sim
             build-ios-dev
-          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}
+          key: ${{ runner.os }}-llama-${{ env.LLAMA_COMMIT }}-xcode${{ hashFiles('.github/workflows/ios.yml') }}
 
       - name: Save Gradle and Kotlin/Native
         if: always()
