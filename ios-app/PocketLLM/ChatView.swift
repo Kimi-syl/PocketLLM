@@ -83,24 +83,21 @@ struct ChatView: View {
         HStack {
             Text(currentMode == .mlx ? mlx.state : engine.state)
                 .font(.footnote)
-            // Throughput for the last MLX generation. One Text rather than an
-            // HStack of Labels: the Label form failed type inference here
-            // ("type 'Any' has no member 'foregroundStyle'").
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            // Throughput for the last MLX generation. A single Text rather
+            // than an HStack of Labels: the Label form failed type inference
+            // here ('type Any has no member foregroundStyle').
             if currentMode == .mlx && mlx.lastTokenCount > 0 {
                 Text(
                     String(
-                        format: "%.2fs TTFT  ·  %.1f tok/s  ·  %d tok",
+                        format: "%.2fs TTFT  .  %.1f tok/s  .  %d tok",
                         mlx.lastTTFT, mlx.lastTokensPerSecond, mlx.lastTokenCount)
                 )
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
             Spacer()
             modelMenu
         }
