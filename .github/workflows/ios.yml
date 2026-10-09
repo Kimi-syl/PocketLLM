@@ -34,7 +34,7 @@ env:
 
 jobs:
   ios:
-    runs-on: macos-14
+    runs-on: macos-26
     # MLX and its Metal shaders add enough compile time to both app builds that
     # 40 minutes stopped being comfortable headroom.
     timeout-minutes: 70
