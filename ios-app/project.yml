@@ -25,7 +25,7 @@ packages:
   # capped the whole toolchain and blocked newer model architectures.
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    minorVersion: 2.31.3
+    minorVersion: 3.32.3
   # Declared directly even though it arrives transitively: MLXLMCommon's public
   # signatures name HubApi and Tokenizer, and calling them without the modules
   # imported fails with "missing required module". The range intersects the

@@ -203,7 +203,7 @@ jobs:
           brew install xcodegen
           cd ios-app && xcodegen generate
 
-      # NOTE: xcode-version stays latest-stable deliberately — the iOS artifact
+      # NOTE: Xcode 26 is required — mlx-swift-lm 3.x declares swift-tools-version 6.2.
       # is a simulator-only developer build (not a release), and hard-pinning a
       # major version eventually breaks CI when GitHub prunes runner images.
       - name: Build iOS app (simulator)
