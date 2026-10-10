@@ -88,6 +88,7 @@ final class MLXEngine: ObservableObject {
     /// is a load rather than a download. mlx-swift-lm resolves the architecture
     /// from config.json itself, qwen3_5 included.
     func load(directory: URL) async {
+        appLogMemory("pre-load", source: "mlx")
         setState("loading \(directory.lastPathComponent)…")
 
         do {

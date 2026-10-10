@@ -67,6 +67,8 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+    entitlements:
+      path: PocketLLM/PocketLLM.entitlements
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"

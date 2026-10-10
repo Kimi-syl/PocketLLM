@@ -34,6 +34,7 @@ final class LocalEngine: ObservableObject {
     /// (which has no Metal backend) silently yields a CPU load rather than a
     /// failure — the reported backend below is the truth.
     func load(url: URL, contextSize: Int32, threads: Int, gpuLayers: Int) {
+        appLogMemory("pre-load", source: "llama")
         state = "loading…"
         appLog("loading…", source: "llama")
         LlamaGlobalInit()

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Raises the per-process memory ceiling on devices that support it.
+	     MLX and llama.cpp both map multi-GB weights, and the default jetsam
+	     limit is what produces an opaque MLXError 0 under pressure. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+	<!-- Larger virtual address space, needed to mmap very large models.
+	     NOTE: Apple gates this one behind a request; a profile that does not
+	     include it will fail to sign. Remove this key if signing rejects it. -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+</dict>
+</plist>
