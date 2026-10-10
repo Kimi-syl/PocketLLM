@@ -84,13 +84,10 @@ final class MLXEngine: ObservableObject {
 
     var isReady: Bool { container != nil }
 
-    /// Loads an MLX model directory. Weights already on disk make this a load,
-    /// not a download; the progress handler still reports the weight read.
-    /// Qwen3.5 checkpoints whose `model_type` is newer than the vendored
-    /// MLX-LM registry still share the Qwen3 architecture. Rewrite the config in
-    /// a sibling directory and load that, so the model works instead of failing
-    /// on a name the registry does not know yet.
-        func load(directory: URL) async {
+    /// Loads an MLX model directory. The weights are already on disk, so this
+    /// is a load rather than a download. mlx-swift-lm resolves the architecture
+    /// from config.json itself, qwen3_5 included.
+    func load(directory: URL) async {
         setState("loading \(directory.lastPathComponent)…")
 
         do {
