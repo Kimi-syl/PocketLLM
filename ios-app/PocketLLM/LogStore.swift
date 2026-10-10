@@ -52,14 +52,14 @@ final class LogStore: ObservableObject {
 
     /// Convenience: current resident memory plus device headroom, which is the
     /// pair that matters when something dies under load.
-    static func memoryDescription() -> String {
+    nonisolated static func memoryDescription() -> String {
         let resident = currentFootprintMB()
         let physical = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
         return "resident \(resident)MB / physical \(physical)MB"
     }
 
     /// Resident memory footprint in MB via mach task info.
-    static func currentFootprintMB() -> Int {
+    nonisolated static func currentFootprintMB() -> Int {
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(
             MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
