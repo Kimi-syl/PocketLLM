@@ -210,6 +210,7 @@ final class MLXEngine: ObservableObject {
     /// `@Published` mutations have to reach SwiftUI on the main thread, and this
     /// class is driven from whichever queue MLX or the caller happens to use.
     private func setState(_ value: String) {
+        appLog(value, source: "mlx")
         if Thread.isMainThread {
             state = value
         } else {

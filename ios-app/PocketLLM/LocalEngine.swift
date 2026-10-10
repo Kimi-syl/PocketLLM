@@ -35,6 +35,7 @@ final class LocalEngine: ObservableObject {
     /// failure — the reported backend below is the truth.
     func load(url: URL, contextSize: Int32, threads: Int, gpuLayers: Int) {
         state = "loading…"
+        appLog("loading…", source: "llama")
         LlamaGlobalInit()
         releaseSecurityScope() // drop the previous model's scope, if any
         let securityScoped = url.startAccessingSecurityScopedResource()
@@ -51,10 +52,12 @@ final class LocalEngine: ObservableObject {
             // contextLength is an ObjC method, not a property: without the call
             // Swift interpolates the function value itself.
             state = "\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength())"
+            appLog("\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength())", source: "llama")
         } catch {
             releaseSecurityScope()
             // Surface the real reason — "load failed" gave users nothing.
             state = "load failed: \(error.localizedDescription)"
+            appLog("load failed: \(error.localizedDescription)", source: "llama")
         }
     }
 
