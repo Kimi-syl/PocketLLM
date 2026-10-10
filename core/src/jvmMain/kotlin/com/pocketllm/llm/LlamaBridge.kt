@@ -77,6 +77,13 @@ object LlamaBridge {
         }
     }
 
+    /**
+     * Quantizes [input] GGUF to [output] using llama.cpp's own quantizer.
+     * [ftype] is a llama_ftype value (0 = F32, 7 = Q8_0, 15 = Q4_K_M,
+     * 17 = Q5_K_M). Returns 0 on success.
+     */
+    external fun quantizeFile(input: String, output: String, ftype: Int): Int
+
     external fun backendInit()
 
     external fun backendInfo(): String

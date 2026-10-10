@@ -543,7 +543,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _convertStatus.value = _convertStatus.value + (dirName to "準備中…")
         viewModelScope.launch {
             val sandbox = com.pocketllm.util.SandboxManager(context)
-            val r = sandbox.convertToGguf(modelRepo.dir, dirName, outName) { line ->
+            val quant = _currentSettings.value.convertQuant
+            val r = sandbox.convertToGguf(modelRepo.dir, dirName, outName, quant) { line ->
                 val last = line.trim().lineSequence().lastOrNull().orEmpty()
                 if (last.isNotEmpty()) {
                     _convertStatus.value =
@@ -1731,7 +1732,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopSpeaking() = tts.stop()
 
-    private fun updateSettings(transform: (AppSettings) -> AppSettings) {
+    /** Applies a settings change and republishes [currentSettings]. */
+    fun updateSettings(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             settings.update(transform)
             _currentSettings.value = settings.current()

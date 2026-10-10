@@ -412,3 +412,19 @@ Java_com_pocketllm_llm_LlamaBridge_generate(JNIEnv* env, jobject, jlong id, jstr
     env->SetIntArrayRegion(result, 0, 2, counts);
     return result;
 }
+
+// Quantizes a GGUF in place-ish: llama.cpp's own quantizer, so the K-quant
+// block formats come from the reference implementation rather than a rewrite.
+// Returns 0 on success, matching llama_model_quantize.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_pocketllm_llm_LlamaBridge_quantizeFile(JNIEnv* env, jobject, jstring jIn,
+                                                jstring jOut, jint ftype) {
+    const char* in = env->GetStringUTFChars(jIn, nullptr);
+    const char* out = env->GetStringUTFChars(jOut, nullptr);
+    llama_model_quantize_params params = llama_model_quantize_default_params();
+    params.ftype = (enum llama_ftype)ftype;
+    const uint32_t rc = llama_model_quantize(in, out, &params);
+    env->ReleaseStringUTFChars(jIn, in);
+    env->ReleaseStringUTFChars(jOut, out);
+    return (jint)rc;
+}

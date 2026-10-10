@@ -2770,6 +2770,85 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
         // --- CPU ---------------------------------------------------------
+        // --- Model conversion ---------------------------------------------
+        SectionCard("模型轉換") {
+            val st by vm.currentSettings.collectAsState()
+            val quants = listOf("Q4_K_M", "Q5_K_M", "Q8_0", "F16")
+            var quantOpen by remember { mutableStateOf(false) }
+            Text(
+                "量化格式", style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            ExposedDropdownMenuBox(
+                expanded = quantOpen, onExpandedChange = { quantOpen = it },
+            ) {
+                OutlinedTextField(
+                    value = st.convertQuant, onValueChange = {}, readOnly = true,
+                    label = { Text("轉換後量化") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(quantOpen) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth(),
+                )
+                ExposedDropdownMenu(
+                    expanded = quantOpen, onDismissRequest = { quantOpen = false },
+                ) {
+                    quants.forEach { q ->
+                        DropdownMenuItem(text = { Text(q) }, onClick = {
+                            vm.updateSettings { it.copy(convertQuant = q) }
+                            quantOpen = false
+                        })
+                    }
+                }
+            }
+            Text(
+                "套用於 safetensors checkpoint 的首次轉換，之後直接使用快取。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Text(
+                "效能預設", style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                com.pocketllm.settings.SpeedPreset.entries.forEach { preset ->
+                    FilterChip(
+                        selected = st.speedPreset == preset,
+                        onClick = { vm.updateSettings { it.copy(speedPreset = preset) } },
+                        label = { Text(preset.name) },
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("GPU 卸載")
+                    Text(
+                        "關閉時全部在 CPU 執行；僅在自訂預設下單獨生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = st.gpuOffload,
+                    onCheckedChange = { v -> vm.updateSettings { it.copy(gpuOffload = v) } },
+                )
+            }
+            var turnipState by remember { mutableStateOf(vm.isTurnipEnabled()) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Turnip 驅動")
+                    Text(
+                        "開源 Adreno Vulkan 驅動，重啟後生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = turnipState,
+                    onCheckedChange = { vm.updateTurnipEnabled(it); turnipState = it },
+                )
+            }
+        }
+
         SectionCard("CPU 指令集") {
             val optimized = vm.cpuKernelsOptimized
             val supported = features.dotProd && features.fp16
@@ -2864,9 +2943,9 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                         DropdownMenuItem(
                             text = { Text(name) },
                             onClick = {
-                                vm.updateImageGenSettings {
-                                    it.copy(modelPath = vm.imageModelPathFor(name))
-                                }
+                                val abs = vm.imageModelPathFor(name)
+                                val routed = vm.imageGen.pickModelPath(name, abs)
+                                vm.updateImageGenSettings { routed }
                                 modelMenuOpen = false
                             },
                         )
@@ -2904,10 +2983,24 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 )
             }
             OutlinedTextField(
+                value = img.llmPath,
+                onValueChange = { v -> vm.updateImageGenSettings { it.copy(llmPath = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("文字編碼器（Qwen-Image 的 Qwen2.5-VL LLM）") },
+                singleLine = true,
+            )
+            OutlinedTextField(
                 value = img.vae,
                 onValueChange = { v -> vm.updateImageGenSettings { it.copy(vae = v) } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("VAE（選填）") },
+                label = { Text("VAE") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = img.loras,
+                onValueChange = { v -> vm.updateImageGenSettings { it.copy(loras = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("LoRA（選填，格式 路徑|強度;路徑|強度）") },
                 singleLine = true,
             )
 

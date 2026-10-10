@@ -87,6 +87,8 @@ data class AppSettings(
     /** Offline (Piper/sherpa) speaker index; only multi-speaker models use it. */
     val ttsSpeakerId: Int = 0,
     val gpuOffload: Boolean = true,
+    /** Target GGUF quantization for checkpoint conversion. "F16" skips it. */
+    val convertQuant: String = "Q4_K_M",
     val agentEnabled: Boolean = false,
     val uiAgentEnabled: Boolean = false,
     val uiAgentMaxSteps: Int = 8,

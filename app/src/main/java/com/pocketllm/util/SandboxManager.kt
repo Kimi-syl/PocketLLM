@@ -411,6 +411,7 @@ class SandboxManager(private val context: Context) {
         modelsDir: File,
         modelDirName: String,
         outName: String,
+        quant: String = "Q4_K_M",
         onLine: (String) -> Unit,
     ): Result<String> = withContext(Dispatchers.IO) {
         // Transparency: conversion already done stays done. Re-running it on
@@ -447,11 +448,44 @@ class SandboxManager(private val context: Context) {
         r.onSuccess { onLine(it) }
         val outFile = File(modelsDir, outName)
         if (r.isSuccess && outFile.length() > 0) {
+            quantizeIfRequested(outFile, quant, onLine)
             Result.success(outFile.absolutePath)
         } else {
             Result.failure(
                 IllegalStateException(r.exceptionOrNull()?.message ?: "轉換未產生輸出檔")
             )
+        }
+    }
+
+
+    /** llama_ftype values. F16 means "leave the converter's output as-is". */
+    private val ftypeFor = mapOf(
+        "F16" to -1, "Q8_0" to 7, "Q5_K_M" to 17, "Q4_K_M" to 15,
+    )
+
+    /**
+     * Re-quantizes the converted GGUF with llama.cpp's quantizer. Doing it here
+     * rather than in the Python converter keeps K-quant block formats on the
+     * reference implementation.
+     */
+    private suspend fun quantizeIfRequested(outFile: File, quant: String, onLine: (String) -> Unit) {
+        val ftype = ftypeFor[quant] ?: return
+        if (ftype < 0) {
+            onLine("保持 F16，未量化")
+            return
+        }
+        onLine("量化為 $quant…")
+        val tmp = File(outFile.parentFile, outFile.name + ".tmp")
+        val rc = runCatching {
+            com.pocketllm.llm.LlamaBridge.quantizeFile(outFile.absolutePath, tmp.absolutePath, ftype)
+        }.getOrDefault(-1)
+        if (rc == 0 && tmp.length() > 0) {
+            outFile.delete()
+            tmp.renameTo(outFile)
+            onLine("量化完成：$quant（${tmp.length() / 1_048_576} MB）")
+        } else {
+            tmp.delete()
+            onLine("量化失敗（rc=$rc），保留 F16 版本")
         }
     }
 
