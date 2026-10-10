@@ -90,97 +90,12 @@ final class MLXEngine: ObservableObject {
     /// MLX-LM registry still share the Qwen3 architecture. Rewrite the config in
     /// a sibling directory and load that, so the model works instead of failing
     /// on a name the registry does not know yet.
-    private func normalizedFallback(for directory: URL) -> URL? {
-        let configURL = directory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let modelType = json["model_type"] as? String
-        else { return nil }
-
-        let lower = modelType.lowercased()
-        guard lower.contains("qwen") else { return nil }
-
-        // Qwen3.5 -> qwen3, qwen4 -> qwen3, etc. Only ever downwards to a known
-        // ancestor, never to an unrelated family.
-        // Map to a known ancestor. Qwen3.5/4 are Qwen3-family; any other
-        // unrecognized type is mapped to "qwen3" only when the config actually
-        // carries a Qwen-shaped text_config, otherwise we leave it alone rather
-        // than guessing at an unrelated architecture.
-        let ancestor: String
-        if lower.contains("qwen3_5") || lower.contains("qwen3.5") || lower.contains("qwen4") {
-            ancestor = "qwen3"
-        } else if lower.contains("qwen") {
-            ancestor = "qwen3"
-        } else {
-            return nil
-        }
-
-        let work = directory.appendingPathComponent(".mlx-normalized", isDirectory: true)
-        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-
-        // Symlink the weights and tokenizer so we only duplicate the small files.
-        let fm = FileManager.default
-        for item in (try? fm.contentsOfDirectory(atPath: directory.path)) ?? [] {
-            guard item != ".mlx-normalized", item != "config.json" else { continue }
-            let src = directory.appendingPathComponent(item)
-            let dst = work.appendingPathComponent(item)
-            try? fm.createSymbolicLink(at: dst, withDestinationURL: src)
-        }
-
-        var mutable = json
-        mutable["model_type"] = ancestor
-
-        // Qwen-VL / Qwen3.5 nest the language model under `text_config`, so
-        // `hidden_size` and friends are not at the top level where a qwen3
-        // config is expected to find them. Flatten it, keeping any existing
-        // top-level key authoritative.
-        if let textConfig = json["text_config"] as? [String: Any] {
-            for (key, value) in textConfig where mutable[key] == nil {
-                mutable[key] = value
-            }
-        }
-        guard let out = try? JSONSerialization.data(
-            withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]
-        ) else { return nil }
-        try? out.write(to: work.appendingPathComponent("config.json"))
-
-        // swift-transformers raises "TokenizersBackend is not supported" for a
-        // tokenizer_class it does not implement (MiniCPM5 is one). Falling back
-        // to the generic class lets the pure-Swift tokenizer load instead of
-        // failing the entire model.
-        let tokURL = work.appendingPathComponent("tokenizer_config.json")
-        if let tokData = try? Data(contentsOf: tokURL),
-           var tok = try? JSONSerialization.jsonObject(with: tokData) as? [String: Any],
-           let tokClass = tok["tokenizer_class"] as? String {
-            let known = ["PreTrainedTokenizer", "GPT2Tokenizer", "LlamaTokenizer",
-                         "BertTokenizer", "Qwen2Tokenizer", "CodeGenTokenizer"]
-            if !known.contains(tokClass) {
-                tok["tokenizer_class"] = "PreTrainedTokenizer"
-                if let rewritten = try? JSONSerialization.data(
-                    withJSONObject: tok, options: [.prettyPrinted, .sortedKeys]) {
-                    try? rewritten.write(to: tokURL)
-                }
-            }
-        }
-        return work
-    }
-
-    func load(directory: URL) async {
+        func load(directory: URL) async {
         setState("loading \(directory.lastPathComponent)…")
-
-        // Normalize a Qwen3.5-style config BEFORE asking MLX-LM to load it.
-        // Waiting for the load to fail meant the user still saw
-        // "unknown model type: qwen3_5" even though we could retry, because the
-        // failure is raised from the registry lookup. Going straight to the
-        // ancestor config never raises it.
-        let effective = normalizedFallback(for: directory) ?? directory
-        if effective != directory {
-            setState("loading \(directory.lastPathComponent)… (Qwen3-family config)")
-        }
 
         do {
             let loaded = try await LLMModelFactory.shared.loadContainer(
-                from: effective,
+                from: directory,
                 using: LocalTokenizerLoader()
             )
             container = loaded
@@ -190,22 +105,6 @@ final class MLXEngine: ObservableObject {
             setState("\(directory.lastPathComponent) · MLX")
         } catch {
             container = nil
-            // A Qwen3.5 model_type the registry does not know is not fatal:
-            // retry through a normalized config with the ancestor model_type.
-            if let fallback = normalizedFallback(for: directory) {
-                setState("retrying as Qwen3-family config…")
-                do {
-                    let retry = try await LLMModelFactory.shared.loadContainer(
-                        from: fallback,
-                        using: LocalTokenizerLoader()
-                    )
-                    container = retry
-                    setState("ready (\(directory.lastPathComponent))")
-                    return
-                } catch {
-                    // fall through to the reported failure below
-                }
-            }
             setState("load failed: \(error.localizedDescription)")
         }
     }
