@@ -512,7 +512,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshModels() {
         _models.value = modelRepo.list()
         _safetensors.value = modelRepo.listSafetensors()
-        _convertDirs.value = modelRepo.listConvertibleDirs()
+        val dirs = modelRepo.listConvertibleDirs()
+        _convertDirs.value = dirs
+        // Transparent path: a checkpoint that appears is converted without the
+        // user asking. convertToGguf caches, so this is free after the first run.
+        dirs.forEach { autoConvert(it) }
+    }
+
+    /** dirName -> latest status line for its conversion. */
+    private val _convertStatus = MutableStateFlow<Map<String, String>>(emptyMap())
+    val convertStatus: StateFlow<Map<String, String>> = _convertStatus
+
+    /** Guards against re-entering conversion when refreshModels() recurses. */
+    private val autoConvertStarted = mutableSetOf<String>()
+
+    /**
+     * Converts a checkpoint the first time it is seen.
+     *
+     * Idempotent on two levels: [autoConvertStarted] stops repeat triggers within
+     * a session, and the timestamp check in convertToGguf makes an already
+     * converted directory a no-op across launches.
+     */
+    private fun autoConvert(dirName: String) {
+        val outName = "$dirName-f16.gguf"
+        if (modelRepo.file(outName) != null) {
+            _convertStatus.value = _convertStatus.value + (dirName to "已就緒")
+            return
+        }
+        if (!autoConvertStarted.add(dirName)) return
+        _convertStatus.value = _convertStatus.value + (dirName to "準備中…")
+        viewModelScope.launch {
+            val sandbox = com.pocketllm.util.SandboxManager(context)
+            val r = sandbox.convertToGguf(modelRepo.dir, dirName, outName) { line ->
+                val last = line.trim().lineSequence().lastOrNull().orEmpty()
+                if (last.isNotEmpty()) {
+                    _convertStatus.value =
+                        _convertStatus.value + (dirName to last.take(80))
+                }
+            }
+            r.onSuccess { refreshModels() }
+            _convertStatus.value = _convertStatus.value + (dirName to r.fold(
+                onSuccess = { "轉換完成" },
+                onFailure = { "轉換失敗，可手動重試" },
+            ))
+        }
     }
 
     /**

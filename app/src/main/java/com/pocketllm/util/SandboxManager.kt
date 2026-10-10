@@ -413,6 +413,18 @@ class SandboxManager(private val context: Context) {
         outName: String,
         onLine: (String) -> Unit,
     ): Result<String> = withContext(Dispatchers.IO) {
+        // Transparency: conversion already done stays done. Re-running it on
+        // every load would be the one visible cost the user notices, and the
+        // result only depends on the source files, so compare timestamps and
+        // short-circuit before the sandbox is even started.
+        val cached = File(modelsDir, outName)
+        val newestSource = File(modelsDir, modelDirName).walkTopDown()
+            .filter { it.isFile }.maxOfOrNull { it.lastModified() } ?: 0L
+        if (cached.length() > 0 && cached.lastModified() >= newestSource) {
+            onLine("使用既有轉換結果：$outName（略過轉換）")
+            return@withContext Result.success(cached.absolutePath)
+        }
+
         workspace.mkdirs()
         val script = File(workspace, "convert_llama.py")
         runCatching {

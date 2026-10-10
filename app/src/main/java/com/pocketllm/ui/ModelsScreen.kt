@@ -149,6 +149,7 @@ private fun LocalModelsList(vm: AppViewModel) {
     val loadedFile = vm.loadedFileName()
     val stModels by vm.safetensors.collectAsState()
     val convertDirs by vm.convertDirs.collectAsState()
+    val convertStatus by vm.convertStatus.collectAsState()
     val scope = rememberCoroutineScope()
     var stInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
     var convLines by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -300,7 +301,8 @@ private fun LocalModelsList(vm: AppViewModel) {
                     Column(Modifier.weight(1f)) {
                         Text(d, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                         Text(
-                            "HF checkpoint · 可轉換為 GGUF（Llama 系列 ≤1B）",
+                            convertStatus[d]?.let { "轉換中：$it" }
+                                ?: "HF checkpoint · 自動轉換為 GGUF（Llama 系列 ≤1B）",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
