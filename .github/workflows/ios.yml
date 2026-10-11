@@ -31,7 +31,7 @@ env:
   LLAMA_COMMIT: f280b26983ad0fdb705a0d9ebf0503e76f2899b0
   # Image generation engine. Pinned like llama.cpp so both platforms
   # build the same code.
-  SD_COMMIT: 
+  SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
