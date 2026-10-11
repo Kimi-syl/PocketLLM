@@ -11,6 +11,8 @@ struct ContentView: View {
                 .tabItem { Label("AgentKit", systemImage: "brain") }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+            ImageGenView()
+                .tabItem { Label("Images", systemImage: "photo") }
             LogView()
                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
         }

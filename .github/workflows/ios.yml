@@ -29,6 +29,9 @@ env:
   # drift apart. Bumping this invalidates every llama.cpp cache entry at once,
   # which is the intent: a new commit means new objects.
   LLAMA_COMMIT: f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+  # Image generation engine. Pinned like llama.cpp so both platforms
+  # build the same code.
+  SD_COMMIT: 
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
@@ -197,6 +200,26 @@ jobs:
           cp ci-llama/ggml/include/*.h ios-app/llama-headers/
           find build-ios-sim -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
 
+      - name: Build stable-diffusion.cpp (simulator)
+        run: |
+          test -d ci-sd/.git || git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp ci-sd
+          git -C ci-sd fetch --depth 1 origin "$SD_COMMIT" || true
+          git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
+          git -C ci-sd submodule update --init --recursive --depth 1 || true
+          cmake -S ci-sd -B build-sd-sim \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
+            -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+          cmake --build build-sd-sim -j3
+          mkdir -p ios-app/sd-libs ios-app/sd-headers
+          libtool -static -o ios-app/sd-libs/libsdcpp_ios.a $(find build-sd-sim -name "*.a" | sort)
+          cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
+          cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
+
+
       - name: Generate Xcode project
         run: |
           # brew is a no-op when the formula is already present (cached bottles).
@@ -248,6 +271,26 @@ jobs:
           mkdir -p ios-app/llama-libs-device
           libtool -static -o ios-app/llama-libs-device/libpocketllm_ios.a $(find build-ios-dev -name "*.a" | sort)
 
+      - name: Build stable-diffusion.cpp (device)
+        run: |
+          test -d ci-sd/.git || git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp ci-sd
+          git -C ci-sd fetch --depth 1 origin "$SD_COMMIT" || true
+          git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
+          git -C ci-sd submodule update --init --recursive --depth 1 || true
+          cmake -S ci-sd -B build-sd-dev \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
+            -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+          cmake --build build-sd-dev -j3
+          mkdir -p ios-app/sd-libs-device ios-app/sd-headers
+          libtool -static -o ios-app/sd-libs/libsdcpp_ios.a $(find build-sd-dev -name "*.a" | sort)
+          cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
+          cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
+
+
       - name: Build iOS app (device, unsigned)
         run: |
           cd ios-app
@@ -259,7 +302,7 @@ jobs:
             -destination "generic/platform=iOS" \
             -configuration Release -derivedDataPath build-device \
             build CODE_SIGNING_ALLOWED=NO \
-            LIBRARY_SEARCH_PATHS="\$(SRCROOT)/llama-libs-device"
+            LIBRARY_SEARCH_PATHS="\$(SRCROOT)/llama-libs-device \$(SRCROOT)/sd-libs-device"
 
       - name: Package unsigned .ipa
         run: |
