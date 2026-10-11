@@ -21,10 +21,10 @@ final class SdEngine: ObservableObject {
     @Published private(set) var images: [UIImage] = []
 
     /// The four slots. Empty string means "not supplied".
-    @Published var textEncoder = ""   // llm_path  (Qwen2.5-VL for Qwen-Image)
+    @Published var textEncoder = ""   // llm_path (Qwen2.5-VL for Qwen-Image)
     @Published var mainModel   = ""   // diffusion_model_path
     @Published var vae         = ""   // vae_path
-    @Published var clipL       = ""   // clip_l_path  (SD1.5/SDXL text encoders)
+    @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
     @Published var t5          = ""   // t5xxl_path
     @Published var loras       = ""   // "path|multiplier;path|multiplier"
 
@@ -55,25 +55,27 @@ final class SdEngine: ObservableObject {
         phase = .loading
         appLogMemory("sd pre-load", source: "sd")
 
-        var err: NSError?
-        let ctx = SdContext(
-            model: nil,
-            clipL: clipL.isEmpty ? nil : clipL,
-            clipG: nil,
-            clipVision: nil,
-            t5: t5.isEmpty ? nil : t5,
-            llm: textEncoder.isEmpty ? nil : textEncoder,
-            diffusion: mainModel.isEmpty ? nil : mainModel,
-            vae: vae.isEmpty ? nil : vae,
-            taesd: nil,
-            threads: Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1)),
-            error: &err)
-
-        guard let ctx else {
-            phase = .failed(err?.localizedDescription ?? "載入失敗")
-            appLog("sd load failed: \(err?.localizedDescription ?? "unknown")", source: "sd")
+        // ObjC methods whose last parameter is NSError** import into Swift as
+        // throwing, so there is no `error:` argument to pass.
+        let ctx: SdContext
+        do {
+            ctx = try SdContext(
+                model: nil,
+                clipL: clipL.isEmpty ? nil : clipL,
+                clipG: nil,
+                clipVision: nil,
+                t5: t5.isEmpty ? nil : t5,
+                llm: textEncoder.isEmpty ? nil : textEncoder,
+                diffusion: mainModel.isEmpty ? nil : mainModel,
+                vae: vae.isEmpty ? nil : vae,
+                taesd: nil,
+                threads: Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1)))
+        } catch {
+            phase = .failed(error.localizedDescription)
+            appLog("sd load failed: \(error.localizedDescription)", source: "sd")
             return
         }
+
         context = ctx
         phase = .idle
         appLog("sd loaded · \(URL(fileURLWithPath: mainModel).lastPathComponent)", source: "sd")
@@ -110,22 +112,29 @@ final class SdEngine: ObservableObject {
         }
 
         let start = Date()
-        var err: NSError?
-        let result = ctx.generatePrompt(
-            prompt, negative: negative.isEmpty ? nil : negative,
-            width: Int32(width), height: Int32(height), steps: Int32(steps),
-            cfg: cfg, distilledGuidance: 0, seed: seed, batch: Int32(batch),
-            sampleMethod: Int32(sampleMethod), scheduler: Int32(scheduler),
-            clipSkip: Int32(clipSkip),
-            loras: loras.isEmpty ? nil : loras,
-            error: &err)
+        let result: [SdImage]?
+        do {
+            result = try ctx.generatePrompt(
+                prompt, negative: negative.isEmpty ? nil : negative,
+                width: Int32(width), height: Int32(height), steps: Int32(steps),
+                cfg: cfg, distilledGuidance: 0, seed: seed, batch: Int32(batch),
+                sampleMethod: Int32(sampleMethod), scheduler: Int32(scheduler),
+                clipSkip: Int32(clipSkip),
+                loras: loras.isEmpty ? nil : loras)
+        } catch {
+            pollTask?.cancel()
+            pollTask = nil
+            phase = .failed(error.localizedDescription)
+            appLog("sd generate failed: \(error.localizedDescription)", source: "sd")
+            return
+        }
 
         pollTask?.cancel()
         pollTask = nil
 
         guard let result, !result.isEmpty else {
-            phase = .failed(err?.localizedDescription ?? "未產生影像")
-            appLog("sd generate failed: \(err?.localizedDescription ?? "unknown")", source: "sd")
+            phase = .failed("未產生影像")
+            appLog("sd generate failed: no output", source: "sd")
             return
         }
 
