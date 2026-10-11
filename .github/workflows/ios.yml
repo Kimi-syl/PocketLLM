@@ -286,7 +286,7 @@ jobs:
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-dev -j3
           mkdir -p ios-app/sd-libs-device ios-app/sd-headers
-          libtool -static -o ios-app/sd-libs/libsdcpp_ios.a $(find build-sd-dev -name "*.a" | sort)
+          libtool -static -o ios-app/sd-libs-device/libsdcpp_ios.a $(find build-sd-dev -name "*.a" | sort)
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
