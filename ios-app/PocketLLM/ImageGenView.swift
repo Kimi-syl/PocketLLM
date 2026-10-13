@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 struct ImageGenView: View {
     @StateObject private var engine = SdEngine()
     @State private var picking: Slot?
+    @State private var isPickerPresented = false
+    @State private var importNote: String?
 
     private enum Slot: String, Identifiable {
         case textEncoder, mainModel, vae, lora
@@ -44,21 +46,53 @@ struct ImageGenView: View {
                 .padding()
             }
             .navigationTitle("圖片生成")
+            // isPresented is its own state, NOT derived from `picking`. Deriving
+            // it meant SwiftUI cleared `picking` as the sheet dismissed, so the
+            // completion below read nil and silently assigned nothing.
             .fileImporter(
-                isPresented: Binding(get: { picking != nil },
-                                     set: { if !$0 { picking = nil } }),
-                allowedContentTypes: [.data],
+                isPresented: $isPickerPresented,
+                allowedContentTypes: [.data, .folder],
                 allowsMultipleSelection: false
             ) { result in
-                defer { picking = nil }
-                guard let slot = picking,
-                      case .success(let urls) = result,
-                      let url = urls.first else { return }
-                // The picker hands back a security-scoped URL; the model is read
-                // later, so the scope has to stay open rather than be dropped here.
-                _ = url.startAccessingSecurityScopedResource()
-                assign(url.path, to: slot)
+                // Read the slot BEFORE clearing it.
+                let slot = picking
+                picking = nil
+                importNote = nil
+                guard let slot, case .success(let urls) = result, let url = urls.first else { return }
+                switch importIntoContainer(url) {
+                case .success(let local):
+                    assign(local.path, to: slot)
+                    importNote = "已匯入：\(local.lastPathComponent)"
+                case .failure(let err):
+                    importNote = "匯入失敗：\(err.localizedDescription)"
+                }
             }
+        }
+    }
+
+    /// Copies a picked file (or diffusers folder) into the app container.
+    ///
+    /// A `.fileImporter` URL is security-scoped and only readable while that
+    /// scope is held, but the engine reads the model much later, at load time.
+    /// Copying gives a path that is permanently readable. A path already inside
+    /// our own container is used as-is, so re-picking a model never duplicates it.
+    private func importIntoContainer(_ url: URL) -> Result<URL, Error> {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if url.path.hasPrefix(docs.path) { return .success(url) }
+
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        let dir = docs.appendingPathComponent("Models", isDirectory: true)
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent(url.lastPathComponent)
+            if fm.fileExists(atPath: dest.path) { return .success(dest) }
+            try fm.copyItem(at: url, to: dest)
+            return .success(dest)
+        } catch {
+            return .failure(error)
         }
     }
 
@@ -77,10 +111,17 @@ struct ImageGenView: View {
     private var slotsCard: some View {
         GroupBox("模型元件") {
             VStack(alignment: .leading, spacing: 10) {
+                Text("支援 .gguf 與 .safetensors（也接受 diffusers 資料夾）")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 slotRow(.textEncoder, value: engine.textEncoder, editable: true)
                 slotRow(.mainModel, value: engine.mainModel, editable: true)
                 slotRow(.vae, value: engine.vae, editable: true)
                 slotRow(.lora, value: engine.loras, editable: true)
+                if let note = importNote {
+                    Text(note).font(.caption2)
+                        .foregroundStyle(note.hasPrefix("已匯入") ? .green : .red)
+                }
                 HStack {
                     Button("載入模型") { engine.load() }
                         .buttonStyle(.borderedProminent)
@@ -96,20 +137,29 @@ struct ImageGenView: View {
     }
 
     private func slotRow(_ slot: Slot, value: String, editable: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let firstPath = value.split(separator: "|").first.map(String.init) ?? value
+        let readable = !value.isEmpty && FileManager.default.isReadableFile(atPath: firstPath)
+        return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(slot.title).font(.callout)
                 Spacer()
-                Button("選擇…") { picking = slot }
+                Button("選擇…") { picking = slot; isPickerPresented = true }
                     .font(.callout)
             }
-            Text(value.isEmpty ? slot.hint
-                               : URL(fileURLWithPath: value.split(separator: "|").first.map(String.init) ?? value)
-                                    .lastPathComponent)
-                .font(.caption)
-                .foregroundStyle(value.isEmpty ? .secondary : .primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack(spacing: 4) {
+                if !value.isEmpty {
+                    Image(systemName: readable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(readable ? .green : .orange)
+                }
+                Text(value.isEmpty
+                     ? slot.hint
+                     : URL(fileURLWithPath: firstPath).lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(value.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
     }
 
