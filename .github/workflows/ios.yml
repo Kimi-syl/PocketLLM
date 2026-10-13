@@ -162,6 +162,8 @@ jobs:
             ~/Library/Caches/Homebrew/downloads
           key: ${{ runner.os }}-brew-xcodegen-v1
           restore-keys: |
+            ${{ runner.os }}-brew-xcodegen-v1-
+          restore-keys: |
             ${{ runner.os }}-brew-
 
       # ----------------------------------------------------------------- build
@@ -363,4 +365,4 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew
             ~/Library/Caches/Homebrew/downloads
-          key: ${{ runner.os }}-brew-xcodegen-v1
+          key: ${{ runner.os }}-brew-xcodegen-v1-${{ github.run_id }}
