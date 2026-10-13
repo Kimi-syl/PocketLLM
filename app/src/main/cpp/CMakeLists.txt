@@ -54,6 +54,15 @@ else()
 endif()
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${_pocketllm_libs})
+# bionic keeps the pthread API inside libc, but libmtmd's Threads::Threads
+# resolves to -lpthreads under this toolchain. An empty archive satisfies the
+# linker; nothing calls into it.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/pthread_stub.c "int pocketllm_pthread_stub;
+")
+add_library(pthreads_stub STATIC ${CMAKE_CURRENT_BINARY_DIR}/pthread_stub.c)
+set_target_properties(pthreads_stub PROPERTIES OUTPUT_NAME pthreads)
+target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
 
 if(NOT ANDROID)
     if(DEFINED ENV{JAVA_HOME})
