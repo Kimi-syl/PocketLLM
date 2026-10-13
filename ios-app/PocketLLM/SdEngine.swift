@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 
+// The bridge context is an opaque C++ handle. It is never used by two
+// tasks at once, so conforming it lets loading and generation run off the
+// main actor without the compiler rejecting the capture.
+extension SdContext: @unchecked Sendable {}
+
 /// On-device image generation via stable-diffusion.cpp.
 ///
 /// Deliberately the same engine and the same model layout as Android: a text
@@ -55,30 +60,41 @@ final class SdEngine: ObservableObject {
         phase = .loading
         appLogMemory("sd pre-load", source: "sd")
 
-        // ObjC methods whose last parameter is NSError** import into Swift as
-        // throwing, so there is no `error:` argument to pass.
-        let ctx: SdContext
-        do {
-            ctx = try SdContext(
-                model: nil,
-                clipL: clipL.isEmpty ? nil : clipL,
-                clipG: nil,
-                clipVision: nil,
-                t5: t5.isEmpty ? nil : t5,
-                llm: textEncoder.isEmpty ? nil : textEncoder,
-                diffusion: mainModel.isEmpty ? nil : mainModel,
-                vae: vae.isEmpty ? nil : vae,
-                taesd: nil,
-                threads: Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1)))
-        } catch {
-            phase = .failed(error.localizedDescription)
-            appLog("sd load failed: \(error.localizedDescription)", source: "sd")
-            return
-        }
+        // Weight loading reads gigabytes. On the main actor that alone is enough
+        // to trip the watchdog, so the whole call happens off-main.
+        let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae, clipLPath = clipL
+        let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
 
-        context = ctx
-        phase = .idle
-        appLog("sd loaded · \(URL(fileURLWithPath: mainModel).lastPathComponent)", source: "sd")
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let ctx: SdContext
+            do {
+                // ObjC methods whose last parameter is NSError** import into
+                // Swift as throwing, so there is no `error:` argument to pass.
+                ctx = try SdContext(
+                    model: nil,
+                    clipL: clipLPath.isEmpty ? nil : clipLPath,
+                    clipG: nil,
+                    clipVision: nil,
+                    t5: t5v.isEmpty ? nil : t5v,
+                    llm: encoder.isEmpty ? nil : encoder,
+                    diffusion: model.isEmpty ? nil : model,
+                    vae: vaePath.isEmpty ? nil : vaePath,
+                    taesd: nil,
+                    threads: threadCount)
+            } catch {
+                await MainActor.run {
+                    self?.phase = .failed(error.localizedDescription)
+                    appLog("sd load failed: \(error.localizedDescription)", source: "sd")
+                }
+                return
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.context = ctx
+                self.phase = .idle
+                appLog("sd loaded · \(URL(fileURLWithPath: model).lastPathComponent)", source: "sd")
+            }
+        }
     }
 
     func unload() {
@@ -111,46 +127,65 @@ final class SdEngine: ObservableObject {
             }
         }
 
-        let start = Date()
-        let result: [SdImage]?
-        do {
-            result = try ctx.generatePrompt(
-                prompt, negative: negative.isEmpty ? nil : negative,
-                width: Int32(width), height: Int32(height), steps: Int32(steps),
-                cfg: cfg, distilledGuidance: 0, seed: seed, batch: Int32(batch),
-                sampleMethod: Int32(sampleMethod), scheduler: Int32(scheduler),
-                clipSkip: Int32(clipSkip),
-                loras: loras.isEmpty ? nil : loras)
-        } catch {
-            pollTask?.cancel()
-            pollTask = nil
-            phase = .failed(error.localizedDescription)
-            appLog("sd generate failed: \(error.localizedDescription)", source: "sd")
-            return
-        }
+        // A 20-step run takes minutes. Blocking the main actor for that long is
+        // what the watchdog kills, so the call and the pixel conversion both
+        // happen off-main and only the finished images are handed back.
+        let promptText = prompt
+        let negativeText = negative
+        let (w, h) = (width, height)
+        let (n, c) = (steps, cfg)
+        let (s0, b) = (seed, batch)
+        let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
+        let loraSpec = loras
 
-        pollTask?.cancel()
-        pollTask = nil
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let started = Date()
+            let result: [SdImage]?
+            do {
+                result = try ctx.generatePrompt(
+                    promptText, negative: negativeText.isEmpty ? nil : negativeText,
+                    width: Int32(w), height: Int32(h), steps: Int32(n),
+                    cfg: c, distilledGuidance: 0, seed: s0, batch: Int32(b),
+                    sampleMethod: Int32(sm), scheduler: Int32(sc),
+                    clipSkip: Int32(cs2),
+                    loras: loraSpec.isEmpty ? nil : loraSpec)
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.pollTask?.cancel()
+                    self.pollTask = nil
+                    self.phase = .failed(error.localizedDescription)
+                    appLog("sd generate failed: \(error.localizedDescription)", source: "sd")
+                }
+                return
+            }
 
-        guard let result, !result.isEmpty else {
-            phase = .failed("未產生影像")
-            appLog("sd generate failed: no output", source: "sd")
-            return
-        }
+            var decoded: [UIImage] = []
+            for img in result ?? [] {
+                if let ui = SdEngine.bitmap(from: img) { decoded.append(ui) }
+            }
+            let secs = Date().timeIntervalSince(started)
 
-        var decoded: [UIImage] = []
-        for img in result {
-            if let ui = Self.bitmap(from: img) { decoded.append(ui) }
+            await MainActor.run {
+                guard let self else { return }
+                self.pollTask?.cancel()
+                self.pollTask = nil
+                if decoded.isEmpty {
+                    self.phase = .failed("未產生影像")
+                    appLog("sd generate failed: no output", source: "sd")
+                } else {
+                    self.images = decoded
+                    self.phase = .idle
+                    appLog(String(format: "sd generated %d image(s) · %.1fs · %@",
+                                  decoded.count, secs, LogStore.memoryDescription()), source: "sd")
+                }
+            }
         }
-        images = decoded
-        phase = .idle
-        let secs = Date().timeIntervalSince(start)
-        appLog(String(format: "sd generated %d image(s) · %.1fs · %@",
-                      decoded.count, secs, LogStore.memoryDescription()), source: "sd")
     }
 
     /// sd_image_t carries interleaved RGB(A) bytes; UIImage wants a CGImage.
-    private static func bitmap(from img: SdImage) -> UIImage? {
+    /// nonisolated so the detached generation task can convert off-main.
+    nonisolated static func bitmap(from img: SdImage) -> UIImage? {
         let w = Int(img.width), h = Int(img.height), c = Int(img.channel)
         guard w > 0, h > 0, c >= 3 else { return nil }
         let bytes = [UInt8](img.pixels as Data)

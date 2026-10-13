@@ -48,34 +48,6 @@ struct ChatView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
-            if currentMode == .mlx {
-                HStack(spacing: 8) {
-                    Button("視覺模型…") { pickingVLM = true }
-                    Text(vlm.isReady
-                         ? (vlm.directory?.lastPathComponent ?? "已載入")
-                         : "未載入 VLM")
-                        .font(.caption2).lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(vlm.isReady ? .green : .secondary)
-                    Spacer()
-                }
-                .fileImporter(isPresented: $pickingVLM,
-                              allowedContentTypes: [.folder],
-                              allowsMultipleSelection: false) { result in
-                    guard case .success(let urls) = result, let u = urls.first else { return }
-                    let local = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                        .appendingPathComponent("Models", isDirectory: true)
-                    try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
-                    var dest = u
-                    if !u.path.hasPrefix(local.path) {
-                        let scoped = u.startAccessingSecurityScopedResource()
-                        defer { if scoped { u.stopAccessingSecurityScopedResource() } }
-                        let target = local.appendingPathComponent(u.lastPathComponent)
-                        dest = (try? FileManager.default.copyItem(at: u, to: target)) != nil ? target : u
-                    }
-                    let url = dest
-                    Task { await vlm.load(directory: url) }
-                }
-            }
             if currentMode == .remote {
                 TextField("Server URL", text: $settings.serverURL)
                     .textFieldStyle(.roundedBorder)
