@@ -163,7 +163,6 @@ jobs:
           key: ${{ runner.os }}-brew-xcodegen-v1
           restore-keys: |
             ${{ runner.os }}-brew-xcodegen-v1-
-          restore-keys: |
             ${{ runner.os }}-brew-
 
       # ----------------------------------------------------------------- build
