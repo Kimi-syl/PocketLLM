@@ -15,17 +15,9 @@ import Tokenizers
 ///
 /// Deliberately the same shape as `LocalEngine` so the chat view can drive either
 /// one without branching on the backend.
-/// Adapts swift-transformers' `Tokenizer` to `MLXLMCommon.Tokenizer`.
-///
-/// This is the expansion of mlx-swift-lm's `#adaptHuggingFaceTokenizer`, written
-/// out because that macro lives in `MLXHuggingFaceMacros` (a target, not a
-/// linkable product) and dependency macros must be explicitly enabled.
-private s
 
-/// Loads a tokenizer from a model directory already on disk.
-///
-/// mlx-swift-lm 3.x takes a TokenizerLoader rather than building one itself.
-private s
+// TokenizerBridge and LocalTokenizerLoader live in LocalTokenizerLoader.swift:
+// both engines need them, and declaring them twice would not compile.
 
 final class MLXEngine: ObservableObject {
 
