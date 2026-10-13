@@ -487,8 +487,7 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
 
     // The marker must be present for the bitmap to be spliced into the prompt.
     if (prompt.find(mtmd_default_marker()) == std::string::npos) {
-        prompt = std::string(mtmd_default_marker()) + "
-" + prompt;
+        prompt = std::string(mtmd_default_marker()) + "\n" + prompt;
     }
 
     mtmd_helper_bitmap_wrapper wrap = mtmd_helper_bitmap_init_from_file(s->vision, image.c_str(), false);

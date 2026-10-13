@@ -183,6 +183,9 @@ struct ChatView: View {
             }
             Task { await mlx.load(directory: model.url) }
         } else {
+            // Recorded for both backends: the details panel is about the model,
+            // and a GGUF with no vision still has settings worth showing.
+            loadedModel = model
             loadGGUF(model.url)
         }
     }
