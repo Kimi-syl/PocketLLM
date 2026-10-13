@@ -16,6 +16,8 @@ struct ChatView: View {
     // --- photo attachment -------------------------------------------------
     @StateObject private var vlm = VLMEngine()
     @State private var attachItem: PhotosPickerItem?
+    @State private var showDetails = false
+    @State private var loadedModel: ModelStore.InstalledModel?
     @State private var attachedImage: URL?
     @State private var attachedPreview: UIImage?
     @State private var pickingVLM = false
@@ -91,6 +93,11 @@ struct ChatView: View {
                 Task { await attachPhoto(item) }
             }
         .navigationTitle("PocketLLM")
+        .sheet(isPresented: $showDetails) {
+            ModelDetailsView(modelName: loadedModel?.name ?? "未載入",
+                             modelURL: loadedModel?.url,
+                             isMLX: currentMode == .mlx)
+        }
         .fileImporter(isPresented: $showModelPicker, allowedContentTypes: [.data]) { result in
             if case .success(let url) = result {
                 loadGGUF(url)
@@ -120,6 +127,11 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
+            Button { showDetails = true } label: {
+                Image(systemName: 'info.circle').font(.footnote)
+            }
+            .buttonStyle(.plain)
+            .disabled(loadedModel == nil)
             modelMenu
         }
         .padding(.horizontal)
@@ -159,6 +171,7 @@ struct ChatView: View {
     private func load(_ model: ModelStore.InstalledModel) {
         if currentMode == .mlx {
             // An MLX model is a directory of weights, config and tokenizer.
+            loadedModel = model
             Task { await mlx.load(directory: model.url) }
         } else {
             loadGGUF(model.url)
