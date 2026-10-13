@@ -1,4 +1,5 @@
 import MarkdownUI
+import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -12,6 +13,12 @@ struct ChatView: View {
     @EnvironmentObject var store: ModelStore
     @EnvironmentObject var settings: AppSettings
     @State private var input = ""
+    // --- photo attachment -------------------------------------------------
+    @StateObject private var vlm = VLMEngine()
+    @State private var attachItem: PhotosPickerItem?
+    @State private var attachedImage: URL?
+    @State private var attachedPreview: UIImage?
+    @State private var pickingVLM = false
     @State private var messages: [OpenAIClient.Message] = []
     @State private var busy = false
     @State private var error: String?
@@ -41,6 +48,34 @@ struct ChatView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
+            if currentMode == .mlx {
+                HStack(spacing: 8) {
+                    Button("視覺模型…") { pickingVLM = true }
+                    Text(vlm.isReady
+                         ? (vlm.directory?.lastPathComponent ?? "已載入")
+                         : "未載入 VLM")
+                        .font(.caption2).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(vlm.isReady ? .green : .secondary)
+                    Spacer()
+                }
+                .fileImporter(isPresented: $pickingVLM,
+                              allowedContentTypes: [.folder],
+                              allowsMultipleSelection: false) { result in
+                    guard case .success(let urls) = result, let u = urls.first else { return }
+                    let local = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("Models", isDirectory: true)
+                    try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+                    var dest = u
+                    if !u.path.hasPrefix(local.path) {
+                        let scoped = u.startAccessingSecurityScopedResource()
+                        defer { if scoped { u.stopAccessingSecurityScopedResource() } }
+                        let target = local.appendingPathComponent(u.lastPathComponent)
+                        dest = (try? FileManager.default.copyItem(at: u, to: target)) != nil ? target : u
+                    }
+                    let url = dest
+                    Task { await vlm.load(directory: url) }
+                }
+            }
             if currentMode == .remote {
                 TextField("Server URL", text: $settings.serverURL)
                     .textFieldStyle(.roundedBorder)
@@ -57,6 +92,16 @@ struct ChatView: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.footnote) }
             HStack {
+                PhotosPicker(selection: $attachItem, matching: .images) {
+                    Image(systemName: attachedImage == nil ? "photo" : "photo.fill")
+                        .foregroundStyle(attachedImage == nil ? Color.secondary : Color.accentColor)
+                }
+                if let attachedPreview {
+                    Image(uiImage: attachedPreview)
+                        .resizable().scaledToFill()
+                        .frame(width: 28, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
                 TextField("Message", text: $input)
                     .textFieldStyle(.roundedBorder)
                 if busy && currentMode != .remote {
@@ -69,6 +114,10 @@ struct ChatView: View {
             }
             .padding()
         }
+            .onChange(of: attachItem) { _, item in
+                guard let item else { return }
+                Task { await attachPhoto(item) }
+            }
         .navigationTitle("PocketLLM")
         .fileImporter(isPresented: $showModelPicker, allowedContentTypes: [.data]) { result in
             if case .success(let url) = result {
@@ -218,7 +267,38 @@ struct ChatView: View {
         return [OpenAIClient.Message(role: "system", content: prompt)] + history
     }
 
+    /// PhotosPicker yields an item, not a path, so persist the bytes before use.
+    private func attachPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let ui = UIImage(data: data) else { return }
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Photos", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("photo-\(Int(Date().timeIntervalSince1970)).png")
+        try? data.write(to: url)
+        attachedPreview = ui
+        attachedImage = url
+    }
+
     private func send() {
+        if let image = attachedImage, vlm.isReady {
+            messages.append(.init(role: "user", content: input.isEmpty ? "[照片]" : input))
+            let asked = input.isEmpty ? vlm.prompt : input
+            input = ""
+            attachedImage = nil
+            attachedPreview = nil
+            attachItem = nil
+            vlm.prompt = asked
+            vlm.analyze(image: image)
+            let waited = Task { @MainActor in
+                while vlm.isBusy { try? await Task.sleep(for: .milliseconds(250)) }
+                if !vlm.answer.isEmpty {
+                    messages.append(.init(role: "assistant", content: vlm.answer))
+                }
+            }
+            _ = waited
+            return
+        }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }
         input = ""
