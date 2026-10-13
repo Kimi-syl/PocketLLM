@@ -170,8 +170,8 @@ final class SdEngine: ObservableObject {
                 return
             }
 
-            pollTask?.cancel()
-            pollTask = nil
+            // pollTask lives on the main actor; it is cancelled in the
+            // MainActor.run block below, not from this detached context.
             appLog(String(format: "sd: generatePrompt returned %d image(s) in %.1fs · %@",
                           (result ?? []).count, Date().timeIntervalSince(started),
                           LogStore.memoryDescription()), source: "sd")
