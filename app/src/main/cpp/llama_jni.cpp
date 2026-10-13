@@ -508,6 +508,11 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
         return nullptr;
     }
 
+    // Clear the KV cache BEFORE evaluating, not after: the prompt and the image
+    // embeddings live in that cache, so clearing afterwards destroys the very
+    // state the decode loop samples from (and leaves logits undefined).
+    llama_memory_clear(llama_get_memory(s->ctx), false);
+
     llama_pos n_past = 0;
     if (mtmd_helper_eval_chunks(s->vision, s->ctx, chunks, n_past, 0, 512, true, &n_past) != 0) {
         mtmd_input_chunks_free(chunks);
@@ -519,9 +524,6 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
     std::string out;
     const int limit = maxTokens > 0 ? maxTokens : 256;
 
-    // Clear the decoder position tracking so the KV cache is reused cleanly.
-    llama_memory_clear(llama_get_memory(s->ctx), false);
-
     for (int i = 0; i < limit; i++) {
         float* logits = llama_get_logits_ith(s->ctx, -1);
         if (logits == nullptr) break;
@@ -532,7 +534,10 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
         char buf[256];
         const int n = llama_token_to_piece(vocab, best, buf, sizeof(buf), 0, true);
         if (n > 0) out.append(buf, n);
-        llama_batch batch = llama_batch_get_one(reinterpret_cast<llama_token*>(&best), 1);
+        // Feed the chosen token back so the next step has a position to decode
+        // into. A real llama_token, not a reinterpret_cast of the loop index.
+        llama_token tok = best;
+        llama_batch batch = llama_batch_get_one(&tok, 1);
         if (llama_decode(s->ctx, batch) != 0) break;
     }
     return env->NewStringUTF(out.c_str());
