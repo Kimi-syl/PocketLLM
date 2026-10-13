@@ -1,6 +1,7 @@
 #import "SdBridge.h"
 
 #include <atomic>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,18 @@ static std::atomic<int32_t> g_steps{0};
 static void progress_cb(int step, int steps, float /*time*/, void * /*data*/) {
     g_step.store(step);
     g_steps.store(steps);
+}
+
+/// ggml reports why it is aborting through the log callback, and then the
+/// process dies. Writing straight to the persistent log with an immediate flush
+/// is the only way that reason survives the crash - a buffered write, or one
+/// that only lands in an in-memory ring, is lost with the process.
+static FILE * g_log_file = nullptr;
+
+static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /*data*/) {
+    if (text == nullptr || g_log_file == nullptr) return;
+    fputs(text, g_log_file);
+    fflush(g_log_file);
 }
 
 // Read-write here, read-only in the header: the public surface cannot mutate an
@@ -30,6 +43,15 @@ static void progress_cb(int step, int steps, float /*time*/, void * /*data*/) {
 
 @implementation SdContext {
     sd_ctx_t *_ctx;
+}
+
+- (void)setLogFile:(NSString *)path {
+    if (g_log_file != nullptr) {
+        fclose(g_log_file);
+        g_log_file = nullptr;
+    }
+    if (path.length == 0) return;
+    g_log_file = fopen(path.UTF8String, "a");
 }
 
 - (nullable instancetype)initWithModel:(nullable NSString *)model
@@ -75,6 +97,9 @@ static void progress_cb(int step, int steps, float /*time*/, void * /*data*/) {
     // breaks quantized checkpoints, which is how these models usually ship.
 
     sd_set_progress_callback(progress_cb, nullptr);
+
+    // Before load, so any abort during new_sd_ctx is captured too.
+    sd_set_log_callback(sd_log_cb, nullptr);
 
     _ctx = new_sd_ctx(&p);
     if (_ctx == nullptr) {

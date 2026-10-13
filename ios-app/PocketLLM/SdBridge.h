@@ -49,6 +49,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)cancel;
 
+/// Routes the engine's own log (including ggml's abort reason) into `path`,
+/// appending. Called before load so the message survives a crash.
+- (void)setLogFile:(NSString *)path;
+
 /// Polled from Swift on a timer while generation runs.
 @property (nonatomic, readonly) int32_t progressStep;
 @property (nonatomic, readonly) int32_t progressSteps;

@@ -91,6 +91,11 @@ final class SdEngine: ObservableObject {
             }
             await MainActor.run {
                 guard let self else { return }
+                // Same file the app log uses, so a native abort lands next to
+                // the Swift lines that bracket it.
+                let logPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("pocketllm.log").path
+                ctx.setLogFile(logPath)
                 self.context = ctx
                 self.phase = .idle
                 appLog("sd loaded · \(URL(fileURLWithPath: model).lastPathComponent)", source: "sd")
