@@ -132,7 +132,7 @@ struct ChatView: View {
             }
             Spacer()
             Button { showDetails = true } label: {
-                Image(systemName: 'info.circle').font(.footnote)
+                Image(systemName: "info.circle").font(.footnote)
             }
             .buttonStyle(.plain)
             .disabled(loadedModel == nil)
