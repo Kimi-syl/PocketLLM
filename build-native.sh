@@ -69,6 +69,8 @@ elif [ -f /usr/include/vulkan/vulkan.hpp ]; then
 fi
 
 echo "=== Building native libraries (${NPROCS} jobs) ==="
+# Standalone libmtmd: llama.cpp gates tools/mtmd behind this option when
+# LLAMA_BUILD_TOOLS is off. It is what gives a text model mmproj vision.
 cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
     "${ABI_ARGS[@]}" \
@@ -90,8 +92,6 @@ cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DLLAMA_BUILD_TESTS=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
     -DLLAMA_BUILD_TOOLS=OFF \
-    # Standalone libmtmd: llama.cpp gates tools/mtmd behind this when
-    # LLAMA_BUILD_TOOLS is off. Needed for mmproj vision support.
     -DLLAMA_BUILD_MTMD=ON \
     -DGGML_NATIVE=OFF \
     -DLLAMA_CURL=OFF \
