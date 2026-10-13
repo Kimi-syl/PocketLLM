@@ -46,6 +46,9 @@ struct UtfHolder {
     }
 };
 
+// Keeps LoRA path strings alive for the duration of generate_image().
+static thread_local std::vector<std::string> storage_loras;
+
 const char* opt(const char* s) {
     return (s != nullptr && s[0] != '\0') ? s : nullptr;
 }
@@ -96,7 +99,7 @@ JNIEXPORT jlong JNICALL
 Java_com_pocketllm_img_SdBridge_nativeCreate(
     JNIEnv* env, jclass,
     jstring jModel, jstring jClipL, jstring jClipG, jstring jClipV,
-    jstring jT5, jstring jDiffusion, jstring jVae, jstring jTaesd,
+    jstring jT5, jstring jLlm, jstring jDiffusion, jstring jVae, jstring jTaesd,
     jstring jBackend, jint nThreads, jint wtype) {
     UtfHolder h{env, {}};
     const char* model     = opt(h.get(jModel));
@@ -104,6 +107,7 @@ Java_com_pocketllm_img_SdBridge_nativeCreate(
     const char* clip_g    = opt(h.get(jClipG));
     const char* clip_v    = opt(h.get(jClipV));
     const char* t5        = opt(h.get(jT5));
+    const char* llm       = opt(h.get(jLlm));
     const char* diffusion = opt(h.get(jDiffusion));
     const char* vae       = opt(h.get(jVae));
     const char* taesd     = opt(h.get(jTaesd));
@@ -111,16 +115,32 @@ Java_com_pocketllm_img_SdBridge_nativeCreate(
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
+    // Same configuration as the iOS bridge: the Anima conditioner is a 0.6B LLM
+    // whose graph failed to reserve on the GPU, so the text encoder runs on the
+    // CPU and weights stay in RAM until needed.
+    p.backend = "te=cpu";
+    p.params_backend = "*=cpu";
+    p.flash_attn = true;
+    p.diffusion_flash_attn = true;
+
     p.model_path               = model;
     p.clip_l_path              = clip_l;
     p.clip_g_path              = clip_g;
     p.clip_vision_path         = clip_v;
     p.t5xxl_path               = t5;
+    // Qwen-Image's text encoder is a Qwen2.5-VL LLM and lives in llm_path;
+    // t5xxl_path is only for T5-style encoders.
+    p.llm_path                 = llm;
     p.diffusion_model_path     = diffusion;
     p.vae_path                 = vae;
     p.taesd_path               = taesd;
     p.n_threads                = nThreads > 0 ? nThreads : 4;
-    p.wtype                    = static_cast<sd_type_t>(wtype);
+    // -1 means "leave the weight type alone": sd_ctx_params_init already picks
+    // a sensible default, and forcing SD_TYPE_F16 broke quantized checkpoints
+    // (Qwen-Image and friends) at load time.
+    if (wtype >= 0) {
+        p.wtype = static_cast<sd_type_t>(wtype);
+    }
     p.enable_mmap              = true;
     p.backend                  = backend;
 
@@ -149,13 +169,43 @@ Java_com_pocketllm_img_SdBridge_nativeGenerate(
     JNIEnv* env, jclass, jlong jctx,
     jstring jPrompt, jstring jNegative,
     jint width, jint height, jint steps, jfloat cfg, jfloat distilled,
-    jlong seed, jint batch, jint sampleMethod, jint scheduler, jint clipSkip) {
+    jlong seed, jint batch, jint sampleMethod, jint scheduler, jint clipSkip,
+    jstring jLoras) {
     auto* ctx = reinterpret_cast<sd_ctx_t*>(jctx);
     if (ctx == nullptr) return nullptr;
 
     UtfHolder h{env, {}};
     const char* prompt    = h.get(jPrompt);
     const char* negative  = opt(h.get(jNegative));
+    const char* loraSpec  = opt(h.get(jLoras));
+
+    // "path|multiplier;path|multiplier" -> sd_lora_t[]. The strings live in h,
+    // so the pointers stay valid for the whole call.
+    std::vector<sd_lora_t> loraVec;
+    if (loraSpec != nullptr) {
+        std::string spec(loraSpec);
+        size_t pos = 0;
+        while (pos < spec.size()) {
+            size_t end = spec.find(';', pos);
+            if (end == std::string::npos) end = spec.size();
+            std::string entry = spec.substr(pos, end - pos);
+            pos = end + 1;
+            if (entry.empty()) continue;
+            size_t bar = entry.find('|');
+            std::string path = (bar == std::string::npos) ? entry : entry.substr(0, bar);
+            float mult = 1.0f;
+            if (bar != std::string::npos) {
+                mult = std::strtof(entry.c_str() + bar + 1, nullptr);
+            }
+            if (path.empty()) continue;
+            storage_loras.push_back(path);
+            sd_lora_t l{};
+            l.path       = storage_loras.back().c_str();
+            l.multiplier = mult;
+            l.is_high_noise = false;
+            loraVec.push_back(l);
+        }
+    }
 
     if (prompt == nullptr) return nullptr;
 
@@ -168,6 +218,8 @@ Java_com_pocketllm_img_SdBridge_nativeGenerate(
     gp.seed            = seed;
     gp.batch_count     = batch > 0 ? batch : 1;
     gp.clip_skip       = clipSkip;
+    gp.loras           = loraVec.empty() ? nullptr : loraVec.data();
+    gp.lora_count      = static_cast<uint32_t>(loraVec.size());
 
     sd_sample_params_init(&gp.sample_params);
     gp.sample_params.sample_method      = static_cast<sample_method_t>(sampleMethod);

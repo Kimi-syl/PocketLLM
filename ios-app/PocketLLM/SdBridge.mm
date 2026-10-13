@@ -82,6 +82,16 @@ static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
+    // AnimaConditioner is the text encoder and a full 0.6B LLM. Reserving its
+    // graph on the GPU is what aborted inside ggml_backend_sched_reserve_size,
+    // so pin the text encoder to the CPU. The engine's CLI expresses exactly
+    // this as te=cpu and "*=cpu" backend assignments; --offload-to-cpu keeps the
+    // weights in RAM and loads them on demand.
+    p.backend = "te=cpu";
+    p.params_backend = "*=cpu";
+    p.flash_attn = true;
+    p.diffusion_flash_attn = true;
+
     if (!sModel.empty())     p.model_path = sModel.c_str();
     if (!sClipL.empty())     p.clip_l_path = sClipL.c_str();
     if (!sClipG.empty())     p.clip_g_path = sClipG.c_str();
