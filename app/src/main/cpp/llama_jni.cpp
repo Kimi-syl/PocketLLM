@@ -8,12 +8,16 @@
 #include <unordered_map>
 
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 
 namespace {
 
 struct Session {
     llama_model* model = nullptr;
     llama_context* ctx = nullptr;
+    // mmproj side of multimodal inference. Null unless loadVision() succeeded.
+    mtmd_context* vision = nullptr;
     std::atomic<bool> stopGen{false};
     std::mutex busy;
 };
@@ -175,6 +179,7 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
 
     auto session = std::shared_ptr<Session>(new Session(), [](Session* s) {
         if (s->ctx != nullptr) llama_free(s->ctx);
+        if (s->vision != nullptr) mtmd_free(s->vision);
         if (s->model != nullptr) llama_model_free(s->model);
         delete s;
     });
@@ -427,4 +432,108 @@ Java_com_pocketllm_llm_LlamaBridge_quantizeFile(JNIEnv* env, jobject, jstring jI
     env->ReleaseStringUTFChars(jIn, in);
     env->ReleaseStringUTFChars(jOut, out);
     return (jint)rc;
+}
+
+// Loads the projection (mmproj) file that gives a text model vision. Returns
+// true only when the projection actually reports vision support, so the caller
+// can trust the answer rather than the request.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_pocketllm_llm_LlamaBridge_loadVision(JNIEnv* env, jobject, jlong id, jstring jMmproj) {
+    Session* s = reinterpret_cast<Session*>(id);
+    if (s == nullptr || s->model == nullptr || jMmproj == nullptr) return JNI_FALSE;
+
+    const char* p = env->GetStringUTFChars(jMmproj, nullptr);
+    std::string mmproj(p == nullptr ? "" : p);
+    env->ReleaseStringUTFChars(jMmproj, p);
+    if (mmproj.empty()) return JNI_FALSE;
+
+    if (s->vision != nullptr) {
+        mtmd_free(s->vision);
+        s->vision = nullptr;
+    }
+
+    mtmd_context_params params = mtmd_context_params_default();
+    params.use_gpu = true;
+    params.print_timings = false;
+    params.n_threads = 4;
+
+    s->vision = mtmd_init_from_file(mmproj.c_str(), s->model, params);
+    if (s->vision == nullptr) return JNI_FALSE;
+    return mtmd_support_vision(s->vision) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_pocketllm_llm_LlamaBridge_hasVision(JNIEnv*, jobject, jlong id) {
+    Session* s = reinterpret_cast<Session*>(id);
+    return (s != nullptr && s->vision != nullptr && mtmd_support_vision(s->vision))
+        ? JNI_TRUE : JNI_FALSE;
+}
+
+// One-shot image description: tokenize prompt+image, evaluate the chunks, then
+// greedily decode. Returns null on any failure so the caller can fall back.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id,
+        jstring jPrompt, jstring jImage, jint maxTokens) {
+    Session* s = reinterpret_cast<Session*>(id);
+    if (s == nullptr || s->vision == nullptr || s->ctx == nullptr || jImage == nullptr) return nullptr;
+
+    const char* ip = env->GetStringUTFChars(jImage, nullptr);
+    std::string image(ip == nullptr ? "" : ip);
+    env->ReleaseStringUTFChars(jImage, ip);
+
+    const char* pp = jPrompt == nullptr ? nullptr : env->GetStringUTFChars(jPrompt, nullptr);
+    std::string prompt(pp == nullptr ? "" : pp);
+    if (pp != nullptr) env->ReleaseStringUTFChars(jPrompt, pp);
+
+    // The marker must be present for the bitmap to be spliced into the prompt.
+    if (prompt.find(mtmd_default_marker()) == std::string::npos) {
+        prompt = std::string(mtmd_default_marker()) + "
+" + prompt;
+    }
+
+    mtmd_helper_bitmap_wrapper wrap = mtmd_helper_bitmap_init_from_file(s->vision, image.c_str(), false);
+    if (wrap.bitmap == nullptr) return nullptr;
+
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    mtmd_input_text text;
+    text.text = prompt.c_str();
+    text.add_special = true;
+    text.parse_special = true;
+
+    const mtmd_bitmap* bitmaps[1] = { wrap.bitmap };
+    int32_t rc = mtmd_tokenize(s->vision, chunks, &text, bitmaps, 1);
+    mtmd_bitmap_free(wrap.bitmap);
+    if (rc != 0) {
+        mtmd_input_chunks_free(chunks);
+        return nullptr;
+    }
+
+    llama_pos n_past = 0;
+    if (mtmd_helper_eval_chunks(s->vision, s->ctx, chunks, n_past, 0, 512, true, &n_past) != 0) {
+        mtmd_input_chunks_free(chunks);
+        return nullptr;
+    }
+    mtmd_input_chunks_free(chunks);
+
+    const llama_vocab* vocab = llama_model_get_vocab(s->model);
+    std::string out;
+    const int limit = maxTokens > 0 ? maxTokens : 256;
+
+    // Clear the decoder position tracking so the KV cache is reused cleanly.
+    llama_memory_clear(llama_get_memory(s->ctx), false);
+
+    for (int i = 0; i < limit; i++) {
+        float* logits = llama_get_logits_ith(s->ctx, -1);
+        if (logits == nullptr) break;
+        const int n_vocab = llama_vocab_n_tokens(vocab);
+        int best = 0;
+        for (int t = 1; t < n_vocab; t++) if (logits[t] > logits[best]) best = t;
+        if (llama_vocab_is_eog(vocab, best)) break;
+        char buf[256];
+        const int n = llama_token_to_piece(vocab, best, buf, sizeof(buf), 0, true);
+        if (n > 0) out.append(buf, n);
+        llama_batch batch = llama_batch_get_one(reinterpret_cast<llama_token*>(&best), 1);
+        if (llama_decode(s->ctx, batch) != 0) break;
+    }
+    return env->NewStringUTF(out.c_str());
 }

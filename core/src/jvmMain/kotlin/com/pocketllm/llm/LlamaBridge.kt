@@ -105,4 +105,16 @@ object LlamaBridge {
     ): IntArray?
 
     external fun stopGeneration(handle: Long)
+
+    // --- multimodal (mmproj) ---------------------------------------------
+    // Loads the projection file that adds vision to a text model. Returns true
+    // only when the projection reports vision support itself.
+    external fun loadVision(handle: Long, mmprojPath: String): Boolean
+    external fun hasVision(handle: Long): Boolean
+    external fun visionDescribe(
+        handle: Long,
+        prompt: String,
+        imagePath: String,
+        maxTokens: Int,
+    ): String?
 }

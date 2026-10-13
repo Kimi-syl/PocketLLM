@@ -90,6 +90,9 @@ cmake -S app/src/main/cpp -B "$BUILD_DIR" \
     -DLLAMA_BUILD_TESTS=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
     -DLLAMA_BUILD_TOOLS=OFF \
+    # Standalone libmtmd: llama.cpp gates tools/mtmd behind this when
+    # LLAMA_BUILD_TOOLS is off. Needed for mmproj vision support.
+    -DLLAMA_BUILD_MTMD=ON \
     -DGGML_NATIVE=OFF \
     -DLLAMA_CURL=OFF \
     -DBUILD_SHARED_LIBS=OFF
