@@ -28,6 +28,7 @@ final class VLMEngine: ObservableObject {
         status = "載入中 \(url.lastPathComponent)…"
         appLogMemory("vlm pre-load", source: "vlm")
         do {
+            appLog("vlm: entering loadContainer \(url.lastPathComponent)", source: "vlm")
             let loaded = try await VLMModelFactory.shared.loadContainer(
                 from: url,
                 using: LocalTokenizerLoader())
@@ -56,11 +57,16 @@ final class VLMEngine: ObservableObject {
         }
         isBusy = true
         answer = ""
-        appLogMemory("vlm pre-analyze", source: "vlm")
+        appLog(String(format: "vlm: analyze begin, prompt chars=%d image=%@ · %@",
+                      prompt.count, image.lastPathComponent,
+                      LogStore.memoryDescription()), source: "vlm")
         Task {
             let started = Date()
             do {
+                appLog("vlm: entering respond(to:image:)", source: "vlm")
                 let text = try await session.respond(to: prompt, image: .url(image))
+                appLog(String(format: "vlm: respond returned %d chars · %@",
+                              text.count, LogStore.memoryDescription()), source: "vlm")
                 let secs = Date().timeIntervalSince(started)
                 self.answer = text
                 self.status = String(format: "完成 · %.1fs · %@",

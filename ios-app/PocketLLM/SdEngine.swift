@@ -47,6 +47,7 @@ final class SdEngine: ObservableObject {
 
     private var context: SdContext?
     private var pollTask: Task<Void, Never>?
+    private var lastLoggedStep = -1
 
     var isReady: Bool { context != nil }
 
@@ -123,6 +124,11 @@ final class SdEngine: ObservableObject {
                 let total = Int(c.progressSteps)
                 if total > 0 {
                     self.phase = .running(step: step, steps: total)
+                    if step != self.lastLoggedStep {
+                        self.lastLoggedStep = step
+                        appLog(String(format: "sd: step %d/%d · %@",
+                                      step, total, LogStore.memoryDescription()), source: "sd")
+                    }
                 }
             }
         }
@@ -140,6 +146,10 @@ final class SdEngine: ObservableObject {
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()
+            // Stage logs: a native crash produces no line of its own, so the last
+            // line before death is the only evidence of where it died.
+            appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d) · %@",
+                          w, h, n, c, b, LogStore.memoryDescription()), source: "sd")
             let result: [SdImage]?
             do {
                 result = try ctx.generatePrompt(
@@ -160,8 +170,15 @@ final class SdEngine: ObservableObject {
                 return
             }
 
+            pollTask?.cancel()
+            pollTask = nil
+            appLog(String(format: "sd: generatePrompt returned %d image(s) in %.1fs · %@",
+                          (result ?? []).count, Date().timeIntervalSince(started),
+                          LogStore.memoryDescription()), source: "sd")
+
             var decoded: [UIImage] = []
-            for img in result ?? [] {
+            for (i, img) in (result ?? []).enumerated() {
+                appLog("sd: decoding image \(i) \(img.width)x\(img.height)x\(img.channel)", source: "sd")
                 if let ui = SdEngine.bitmap(from: img) { decoded.append(ui) }
             }
             let secs = Date().timeIntervalSince(started)
