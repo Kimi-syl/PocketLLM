@@ -20,6 +20,10 @@ data class ImageGenSettings(
     val clipG: String = "",
     val clipV: String = "",
     val t5xxl: String = "",
+    /** Qwen-Image text encoder (Qwen2.5-VL LLM). */
+    val llmPath: String = "",
+    /** LoRAs as "path|multiplier;path|multiplier". */
+    val loras: String = "",
     val diffusion: String = "",
     val vae: String = "",
     val taesd: String = "",
@@ -65,6 +69,43 @@ class ImageGenManager(private val context: Context) {
     val settings: StateFlow<ImageGenSettings> = _settings
 
     /** Applies [transform] and persists the result, so it survives restarts. */
+    /**
+     * Multi-file models (Qwen-Image, Flux, SD3) load their transformer through
+     * diffusion_model_path, not model_path. Single-file SD checkpoints go in
+     * model_path. Route by filename so picking a downloaded model puts it in the
+     * slot the engine actually reads.
+     */
+    fun pickModelPath(name: String, absolutePath: String): ImageGenSettings {
+        val n = name.lowercase()
+        // Order matters. Text encoder is tested FIRST because an encoder name
+        // can also look like a diffusion one: "qwen3-0.6b-base" is Anima's text
+        // encoder, but a bare "qwen" would otherwise be claimed by the diffusion
+        // rule below and land the encoder in the model slot - which is what
+        // makes the Anima conditioner abort on a tensor shape it never expected.
+        val isTextEncoder = n.contains("text_encoder") || n.contains("llm") ||
+            n.contains("t5") || n.contains("clip") || n.contains("embed") ||
+            n.contains("qwen3") || n.contains("qwen2") || n.contains("qwen_")
+        val isVae = n.contains("vae") && !n.contains("taesd")
+        // Architecture names, not just generic ones: anima, minit2i and the rest
+        // name the family rather than the role, and a bare filename used to fall
+        // through to model_path.
+        val isDiffusion = !isTextEncoder && !isVae &&
+            (n.contains("diffusion") || n.contains("transformer") ||
+                n.contains("unet") || n.contains("flux") || n.contains("sd3") ||
+                n.contains("mmdit") || n.contains("qwen") || n.contains("anima") ||
+                n.contains("minit2i") || n.contains("sensenova") ||
+                n.contains("z-image") || n.contains("z_image") ||
+                n.contains("ming"))
+        return _settings.value.let {
+            when {
+                isDiffusion -> it.copy(diffusion = absolutePath)
+                isTextEncoder -> it.copy(llmPath = absolutePath)
+                isVae -> it.copy(vae = absolutePath)
+                else -> it.copy(modelPath = absolutePath)
+            }
+        }
+    }
+
     fun updateSettings(transform: (ImageGenSettings) -> ImageGenSettings) {
         val next = transform(_settings.value)
         _settings.value = next
@@ -74,6 +115,8 @@ class ImageGenManager(private val context: Context) {
             .putString("clip_g", next.clipG)
             .putString("clip_v", next.clipV)
             .putString("t5xxl", next.t5xxl)
+            .putString("llm_path", next.llmPath)
+            .putString("loras", next.loras)
             .putString("diffusion", next.diffusion)
             .putString("vae", next.vae)
             .putString("taesd", next.taesd)
@@ -98,6 +141,8 @@ class ImageGenManager(private val context: Context) {
         clipG = prefs.getString("clip_g", "") ?: "",
         clipV = prefs.getString("clip_v", "") ?: "",
         t5xxl = prefs.getString("t5xxl", "") ?: "",
+        llmPath = prefs.getString("llm_path", "") ?: "",
+        loras = prefs.getString("loras", "") ?: "",
         diffusion = prefs.getString("diffusion", "") ?: "",
         vae = prefs.getString("vae", "") ?: "",
         taesd = prefs.getString("taesd", "") ?: "",
@@ -177,6 +222,7 @@ class ImageGenManager(private val context: Context) {
                     settings.width, settings.height, settings.steps,
                     settings.cfg, settings.distilled, settings.seed, settings.batch,
                     settings.sampleMethod, settings.scheduler, settings.clipSkip,
+                    settings.loras.ifBlank { null },
                 )
                 pollJob?.cancel()
 
@@ -201,7 +247,7 @@ class ImageGenManager(private val context: Context) {
     private fun ensureContext(s: ImageGenSettings): Boolean {
         val key = listOf(
             s.modelPath, s.clipL, s.clipG, s.clipV,
-            s.t5xxl, s.diffusion, s.vae, s.taesd, s.backend,
+            s.t5xxl, s.llmPath, s.diffusion, s.vae, s.taesd, s.backend,
         ).joinToString("|")
         if (ctx != 0L && key == loadedKey) return true
 
@@ -213,9 +259,9 @@ class ImageGenManager(private val context: Context) {
         val handle = SdBridge.nativeCreate(
             s.modelPath.ifBlank { null }, s.clipL.ifBlank { null },
             s.clipG.ifBlank { null }, s.clipV.ifBlank { null },
-            s.t5xxl.ifBlank { null }, s.diffusion.ifBlank { null },
+            s.t5xxl.ifBlank { null }, s.llmPath.ifBlank { null }, s.diffusion.ifBlank { null },
             s.vae.ifBlank { null }, s.taesd.ifBlank { null },
-            s.backend.ifBlank { null }, threads, 1,  // 1 = SD_TYPE_F16
+            s.backend.ifBlank { null }, threads, -1,  // -1 = engine default
         )
         if (handle == 0L) {
             _state.value = ImageGenState.Failed("模型載入失敗，請確認檔案路徑與格式")
