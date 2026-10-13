@@ -66,15 +66,19 @@ struct ChatView: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.footnote) }
             HStack {
-                PhotosPicker(selection: $attachItem, matching: .images) {
-                    Image(systemName: attachedImage == nil ? "photo" : "photo.fill")
-                        .foregroundStyle(attachedImage == nil ? Color.secondary : Color.accentColor)
-                }
-                if let attachedPreview {
-                    Image(uiImage: attachedPreview)
-                        .resizable().scaledToFill()
-                        .frame(width: 28, height: 28)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                // Only offered when the loaded model actually declares vision
+                // support, so the button never promises what the model cannot do.
+                if loadedSupportsVision {
+                    PhotosPicker(selection: $attachItem, matching: .images) {
+                        Image(systemName: attachedImage == nil ? "photo" : "photo.fill")
+                            .foregroundStyle(attachedImage == nil ? Color.secondary : Color.accentColor)
+                    }
+                    if let attachedPreview {
+                        Image(uiImage: attachedPreview)
+                            .resizable().scaledToFill()
+                            .frame(width: 28, height: 28)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
                 }
                 TextField("Message", text: $input)
                     .textFieldStyle(.roundedBorder)
@@ -172,6 +176,11 @@ struct ChatView: View {
         if currentMode == .mlx {
             // An MLX model is a directory of weights, config and tokenizer.
             loadedModel = model
+            // Auto-detect: a vision-capable MLX model is also handed to the VLM
+            // engine, so attaching a photo just works without a second step.
+            if model.kind == .mlx && ModelInspector.inspect(directory: model.url).isVision {
+                Task { await vlm.load(directory: model.url) }
+            }
             Task { await mlx.load(directory: model.url) }
         } else {
             loadGGUF(model.url)
@@ -263,6 +272,18 @@ struct ChatView: View {
         try? data.write(to: url)
         attachedPreview = ui
         attachedImage = url
+    }
+
+
+    /// Whether the loaded model declares vision support, read from its own
+    /// metadata. MLX VLMs carry vision keys in config.json; a GGUF needs a
+    /// companion mmproj beside it.
+    private var loadedSupportsVision: Bool {
+        guard let m = loadedModel else { return false }
+        if m.kind == .mlx {
+            return ModelInspector.inspect(directory: m.url).isVision
+        }
+        return ModelInspector.companionProjection(for: m.url) != nil
     }
 
     private func send() {
