@@ -80,9 +80,6 @@ final class VLMEngine: ObservableObject {
             appLog("vlm: refusing to analyze — \(problem)", source: "vlm")
             return
         }
-        if let problem = prerequisiteProblem {
-            _ = problem
-        }
         isBusy = true
         answer = ""
         appLog(String(format: "vlm: analyze begin, prompt chars=%d image=%@ · %@",
