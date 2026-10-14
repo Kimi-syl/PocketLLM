@@ -17,11 +17,35 @@ final class ModelStore: ObservableObject {
     enum Kind: String, Hashable, CaseIterable {
         case gguf
         case mlx
+        /// Vision models. They are MLX checkpoints, but `filter=mlx` alone drags
+        /// in every text model too; the Hub's pipeline tag is what actually
+        /// narrows to models that accept an image.
+        case vlm
 
-        /// The Hub library tag that narrows a search to repositories carrying
-        /// this format, across the whole Hub rather than one organisation.
-        var searchFilter: String { self == .gguf ? "gguf" : "mlx" }
-        var label: String { self == .gguf ? "GGUF (llama.cpp)" : "MLX (Apple)" }
+        /// The Hub library tag that narrows a search by format. nil means "do
+        /// not constrain by format", which is what the safetensors toggle wants.
+        var searchFilter: String? {
+            switch self {
+            case .gguf: return "gguf"
+            case .mlx: return "mlx"
+            case .vlm: return nil
+            }
+        }
+
+        var pipelineTag: String? {
+            switch self {
+            case .vlm: return "image-text-to-text"
+            default: return "text-generation"
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .gguf: return "GGUF (llama.cpp)"
+            case .mlx: return "MLX (Apple)"
+            case .vlm: return "視覺 (VLM)"
+            }
+        }
     }
 
     struct InstalledModel: Identifiable, Hashable {
@@ -46,6 +70,10 @@ final class ModelStore: ObservableObject {
     @Published private(set) var results: [HuggingFaceClient.SearchResult] = []
     @Published private(set) var isSearching = false
     @Published var notice: String?
+
+    /// When on, searches are not narrowed by format and repository listings show
+    /// every file, so safetensors checkpoints can be downloaded at any size.
+    @Published var showSafetensors = false
 
     let root: URL
     /// Built per access so a token saved in Settings applies to the next
@@ -225,7 +253,10 @@ final class ModelStore: ObservableObject {
         Task {
             do {
                 let found = try await client.search(
-                    query, filter: kind.searchFilter, sort: sort)
+                    query,
+                    filter: showSafetensors ? nil : kind.searchFilter,
+                    pipelineTag: kind.pipelineTag,
+                    sort: sort)
                 DispatchQueue.main.async {
                     self.results = found
                     self.isSearching = false
@@ -243,6 +274,9 @@ final class ModelStore: ObservableObject {
     }
 
     func listFiles(repoId: String, kind: Kind) async throws -> [HuggingFaceClient.FileEntry] {
+        // The toggle wins over the format filter: with it on, the user is
+        // deliberately looking for something the app cannot load unmodified.
+        let includeAll = showSafetensors
         try await client.listFiles(
             repoId: repoId,
             extensions: kind == .gguf ? [".gguf"] : Self.mlxExtensions)
