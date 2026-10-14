@@ -71,10 +71,6 @@ final class ModelStore: ObservableObject {
     @Published private(set) var isSearching = false
     @Published var notice: String?
 
-    /// When on, searches are not narrowed by format and repository listings show
-    /// every file, so safetensors checkpoints can be downloaded at any size.
-    @Published var showSafetensors = false
-
     let root: URL
     /// Built per access so a token saved in Settings applies to the next
     /// request without relaunching the app.
@@ -254,7 +250,7 @@ final class ModelStore: ObservableObject {
             do {
                 let found = try await client.search(
                     query,
-                    filter: showSafetensors ? nil : kind.searchFilter,
+                    filter: kind.searchFilter,
                     pipelineTag: kind.pipelineTag,
                     sort: sort)
                 DispatchQueue.main.async {
@@ -274,13 +270,9 @@ final class ModelStore: ObservableObject {
     }
 
     func listFiles(repoId: String, kind: Kind) async throws -> [HuggingFaceClient.FileEntry] {
-        // The toggle wins over the format filter: with it on, the user is
-        // deliberately looking for something the app cannot load unmodified.
-        let includeAll = showSafetensors
-        // An empty extension list means "do not filter" — with the toggle on the
-        // user is deliberately looking for something the app cannot load as-is.
-        let extensions: [String] = includeAll ? [] : (kind == .gguf ? [".gguf"] : Self.mlxExtensions)
-        try await client.listFiles(repoId: repoId, extensions: extensions)
+        try await client.listFiles(
+            repoId: repoId,
+            extensions: kind == .gguf ? [".gguf"] : Self.mlxExtensions)
     }
 
     // MARK: - Downloads

@@ -121,12 +121,6 @@ struct ModelsView: View {
                 ForEach(ModelStore.Kind.allCases, id: \.self) { option in
                     Text(option.label).tag(option)
                 }
-
-                // Off by default: non-GGUF checkpoints need converting before
-                // they load, so they are opt-in rather than noise.
-                Toggle("顯示 safetensors 模型", isOn: $store.showSafetensors)
-                    .font(.footnote)
-                    .padding(.horizontal)
             }
             .pickerStyle(.segmented)
 
