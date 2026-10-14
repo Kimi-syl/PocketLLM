@@ -600,7 +600,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (query.isBlank() || _searchLoading.value) return
         viewModelScope.launch {
             _searchLoading.value = true
-            val tag = if (category == "image") "text-to-image" else "text-generation"
+            // image-text-to-text is the pipeline tag for vision models, so a
+            // dedicated category surfaces VLMs that text-generation never matches.
+            val tag = when (category) {
+                "image" -> "text-to-image"
+                "vlm" -> "image-text-to-text"
+                else -> "text-generation"
+            }
             runCatching { hfClient.search(query.trim(), pipelineTag = tag) }
                 .onSuccess { _searchResults.value = it }
                 .onFailure { ServerLog.log("HF search failed: ${it.message}") }

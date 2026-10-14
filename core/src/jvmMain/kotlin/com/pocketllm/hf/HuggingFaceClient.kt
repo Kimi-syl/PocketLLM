@@ -53,14 +53,16 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
     suspend fun search(
         query: String,
         limit: Int = 25,
-        pipelineTag: String = "text-generation",
+        pipelineTag: String? = "text-generation",
     ): List<HfSearchResult> = withContext(Dispatchers.IO) {
         val builder = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
             .addQueryParameter("search", query)
-            .addQueryParameter("pipeline_tag", pipelineTag)
             .addQueryParameter("sort", "downloads")
             .addQueryParameter("direction", "-1")
             .addQueryParameter("limit", limit.toString())
+        // Only constrain by pipeline when a category actually asks for it; the
+        // download filter already stops anything unusable being offered.
+        if (pipelineTag != null) builder.addQueryParameter("pipeline_tag", pipelineTag)
         val request = authorize(Request.Builder().url(builder.build())).build()
         client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "Search failed: HTTP ${response.code}" }
@@ -69,7 +71,11 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
         }
     }
 
-    suspend fun listGgufFiles(repoId: String, revision: String = "main"): List<HfTreeEntry> =
+    suspend fun listGgufFiles(
+        repoId: String,
+        revision: String = "main",
+        includeAll: Boolean = false,
+    ): List<HfTreeEntry> =
         withContext(Dispatchers.IO) {
             val url = "https://huggingface.co/api/models/$repoId/tree/$revision?recursive=false"
             val request = authorize(Request.Builder().url(url)).build()
@@ -77,7 +83,10 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
                 check(response.isSuccessful) { "Could not list files: HTTP ${response.code}" }
                 val body = response.body?.string() ?: error("Empty file listing")
                 json.decodeFromString<List<HfTreeEntry>>(body)
-                    .filter { it.type == "file" && it.path.endsWith(".gguf", ignoreCase = true) }
+                    .filter {
+                        it.type == "file" &&
+                            (includeAll || it.path.endsWith(".gguf", ignoreCase = true))
+                    }
                     .sortedBy { it.realSize }
             }
         }
