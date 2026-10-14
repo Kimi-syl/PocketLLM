@@ -84,4 +84,8 @@ targets:
         # Metal/MetalKit are linked by the app, not propagated by the static
         # ggml-metal library (its CMake links them PRIVATE), so they belong here.
         # Harmless when the CPU-only simulator slice is linked instead.
-        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -framework Accelerate -framework Metal -framework MetalKit"
+        # sd builds its ggml as a shared library so its patched extensions
+        # (ggml_sage_attn, ggml_prec_set_acc, ggml_mul_mat_i8_tensorwise,
+        # ggml_quantize_i8_convrot) cannot collide with llama.cpp ggml, which was
+        # linked into the same binary and resolved silently, corrupting tensors.
+        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -lggml -lggml-base -lggml-cpu -framework Accelerate -framework Metal -framework MetalKit"
