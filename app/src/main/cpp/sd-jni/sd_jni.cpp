@@ -140,7 +140,13 @@ Java_com_pocketllm_img_SdBridge_nativeCreate(
         p.wtype = static_cast<sd_type_t>(wtype);
     }
     p.enable_mmap              = true;
-    p.backend                  = backend;
+    // Only override when the caller actually specifies a backend. Assigning
+    // unconditionally wiped the te=cpu assignment above whenever the app passed
+    // nothing, which silently restored the GPU backend that aborted the Anima
+    // conditioner graph.
+    if (backend != nullptr && backend[0] != '\0') {
+        p.backend = backend;
+    }
 
     return reinterpret_cast<jlong>(new_sd_ctx(&p));
 }
