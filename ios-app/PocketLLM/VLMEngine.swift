@@ -23,6 +23,26 @@ final class VLMEngine: ObservableObject {
 
     var isReady: Bool { session != nil }
 
+    /// MLX VLMs need more than weights: the image preprocessing constants
+    /// (size, mean, std, patch size) live in preprocessor_config.json. Without
+    /// it the image path has no processor to build, and respond(to:image:)
+    /// fails deep inside MLX with nothing useful to report. Checking up front
+    /// turns that crash into a message naming the missing file.
+    var prerequisiteProblem: String? {
+        guard let dir = directory else { return "尚未選擇模型目錄" }
+        let fm = FileManager.default
+        for name in ["config.json", "preprocessor_config.json"] {
+            if !fm.fileExists(atPath: dir.appendingPathComponent(name).path) {
+                return "缺少 \(name)"
+            }
+        }
+        let entries = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        if !entries.contains(where: { $0.hasSuffix(".safetensors") }) {
+            return "目錄中沒有 .safetensors 權重"
+        }
+        return nil
+    }
+
     func load(directory url: URL) async {
         isBusy = true
         status = "載入中 \(url.lastPathComponent)…"
@@ -54,6 +74,14 @@ final class VLMEngine: ObservableObject {
         guard let session else {
             status = "尚未載入模型"
             return
+        }
+        if let problem = prerequisiteProblem {
+            status = "無法分析圖片：\(problem)"
+            appLog("vlm: refusing to analyze — \(problem)", source: "vlm")
+            return
+        }
+        if let problem = prerequisiteProblem {
+            _ = problem
         }
         isBusy = true
         answer = ""
