@@ -114,10 +114,10 @@ struct ImageGenView: View {
                 Text("支援 .gguf 與 .safetensors（也接受 diffusers 資料夾）")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                slotRow(.textEncoder, value: engine.textEncoder, editable: true)
-                slotRow(.mainModel, value: engine.mainModel, editable: true)
-                slotRow(.vae, value: engine.vae, editable: true)
-                slotRow(.lora, value: engine.loras, editable: true)
+                slotRow(.textEncoder, value: engine.textEncoder)
+                slotRow(.mainModel, value: engine.mainModel)
+                slotRow(.vae, value: engine.vae)
+                slotRow(.lora, value: engine.loras)
                 if let note = importNote {
                     Text(note).font(.caption2)
                         .foregroundStyle(note.hasPrefix("已匯入") ? .green : .red)
@@ -136,7 +136,9 @@ struct ImageGenView: View {
         }
     }
 
-    private func slotRow(_ slot: Slot, value: String, editable: Bool) -> some View {
+    // The path is only ever set by the file picker: there is no text field
+    // for it, so nothing here can put a path in that the user typed.
+    private func slotRow(_ slot: Slot, value: String) -> some View {
         let firstPath = value.split(separator: "|").first.map(String.init) ?? value
         let readable = !value.isEmpty && FileManager.default.isReadableFile(atPath: firstPath)
         return VStack(alignment: .leading, spacing: 2) {
