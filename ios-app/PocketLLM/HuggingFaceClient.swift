@@ -107,10 +107,11 @@ struct HuggingFaceClient {
 
     /// Searches the Hub.
     ///
-    /// `filter` is a library tag — `gguf` or `mlx` — which narrows to repos
-    /// actually carrying that format anywhere on the Hub. Scoping MLX to the
-    /// `mlx-community` organisation instead would hide the other converters
-    /// (lmstudio-community, prism-ml and others publish MLX builds too).
+    /// `filters` are Hub library tags: `gguf`, or `mlx` together with
+    /// `transformers`, since MLX builds are converted from transformers
+    /// checkpoints and carry both. Scoping MLX to the `mlx-community`
+    /// organisation instead would hide the other converters (lmstudio-community,
+    /// prism-ml and others publish MLX builds too).
     ///
     /// `pipelineTag` is ANDed with the format filter. Without it a whole-hub MLX
     /// search returns speech and vision repos that MLXLLM cannot load, so the
