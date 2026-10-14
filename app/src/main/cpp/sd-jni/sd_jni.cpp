@@ -120,8 +120,6 @@ Java_com_pocketllm_img_SdBridge_nativeCreate(
     // CPU and weights stay in RAM until needed.
     p.backend = "te=cpu";
     p.params_backend = "*=cpu";
-    p.flash_attn = true;
-    p.diffusion_flash_attn = true;
 
     p.model_path               = model;
     p.clip_l_path              = clip_l;

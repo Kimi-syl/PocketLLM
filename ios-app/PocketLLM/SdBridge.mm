@@ -89,8 +89,6 @@ static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /
     // weights in RAM and loads them on demand.
     p.backend = "te=cpu";
     p.params_backend = "*=cpu";
-    p.flash_attn = true;
-    p.diffusion_flash_attn = true;
 
     if (!sModel.empty())     p.model_path = sModel.c_str();
     if (!sClipL.empty())     p.clip_l_path = sClipL.c_str();
