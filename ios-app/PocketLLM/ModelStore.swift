@@ -22,8 +22,9 @@ final class ModelStore: ObservableObject {
         /// narrows to models that accept an image.
         case vlm
 
-        /// The Hub library tag that narrows a search by format. nil means "do
-        /// not constrain by format", which is what the safetensors toggle wants.
+        /// The Hub library tag that narrows a search by format. nil leaves the
+        /// format unconstrained, which is what the vision category needs: VLMs
+        /// are safetensors and filter=mlx would drag in every text model too.
         var searchFilter: String? {
             switch self {
             case .gguf: return "gguf"
