@@ -264,16 +264,41 @@ struct ChatView: View {
         return [OpenAIClient.Message(role: "system", content: prompt)] + history
     }
 
-    /// PhotosPicker yields an item, not a path, so persist the bytes before use.
+    /// PhotosPicker yields an item, not a path, so persist the decoded image.
+    ///
+    /// The bytes must be RE-ENCODED, not written through: the picker hands back
+    /// the asset in its original format (HEIC on iOS, sometimes JPEG), and
+    /// writing those bytes under a `photo-….png` name made both engines fail —
+    /// llama.cpp's mtmd produced no bitmap and MLX failed immediately, from one
+    /// shared cause. Encoding from the decoded image guarantees a real file in a
+    /// format both of them read.
     private func attachPhoto(_ item: PhotosPickerItem) async {
         guard let data = try? await item.loadTransferable(type: Data.self),
-              let ui = UIImage(data: data) else { return }
+              let ui = UIImage(data: data) else {
+            appLog("attach: could not decode the picked item", source: "app")
+            return
+        }
+        // A 48MP asset is ~190MB once decoded and both engines downscale it
+        // anyway, so cap the long side before it ever reaches them.
+        let scaled = ui.scaled(maxDimension: 1280)
+        guard let jpeg = scaled.jpegData(compressionQuality: 0.9) else {
+            appLog("attach: could not re-encode the image", source: "app")
+            return
+        }
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Photos", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("photo-\(Int(Date().timeIntervalSince1970)).png")
-        try? data.write(to: url)
-        attachedPreview = ui
+        let url = dir.appendingPathComponent("photo-\(Int(Date().timeIntervalSince1970)).jpg")
+        do {
+            try jpeg.write(to: url)
+        } catch {
+            appLog("attach: write failed — \(error.localizedDescription)", source: "app")
+            return
+        }
+        appLog(String(format: "attach: %dx%d jpeg %d bytes -> %@",
+                      Int(scaled.size.width), Int(scaled.size.height),
+                      jpeg.count, url.lastPathComponent), source: "app")
+        attachedPreview = scaled
         attachedImage = url
     }
 
@@ -368,6 +393,20 @@ struct ChatView: View {
                 }
                 busy = false
             }
+        }
+    }
+}
+
+extension UIImage {
+    /// A copy whose longest side is at most `maxDimension`.
+    func scaled(maxDimension: CGFloat) -> UIImage {
+        let longest = max(size.width, size.height)
+        guard longest > maxDimension, longest > 0 else { return self }
+        let factor = maxDimension / longest
+        let target = CGSize(width: (size.width * factor).rounded(),
+                            height: (size.height * factor).rounded())
+        return UIGraphicsImageRenderer(size: target).image { _ in
+            draw(in: CGRect(origin: .zero, size: target))
         }
     }
 }
