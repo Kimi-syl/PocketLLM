@@ -277,9 +277,10 @@ final class ModelStore: ObservableObject {
         // The toggle wins over the format filter: with it on, the user is
         // deliberately looking for something the app cannot load unmodified.
         let includeAll = showSafetensors
-        try await client.listFiles(
-            repoId: repoId,
-            extensions: kind == .gguf ? [".gguf"] : Self.mlxExtensions)
+        // An empty extension list means "do not filter" — with the toggle on the
+        // user is deliberately looking for something the app cannot load as-is.
+        let extensions: [String] = includeAll ? [] : (kind == .gguf ? [".gguf"] : Self.mlxExtensions)
+        try await client.listFiles(repoId: repoId, extensions: extensions)
     }
 
     // MARK: - Downloads
