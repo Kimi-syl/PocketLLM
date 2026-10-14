@@ -22,14 +22,18 @@ final class ModelStore: ObservableObject {
         /// narrows to models that accept an image.
         case vlm
 
-        /// The Hub library tag that narrows a search by format. nil leaves the
-        /// format unconstrained, which is what the vision category needs: VLMs
-        /// are safetensors and filter=mlx would drag in every text model too.
-        var searchFilter: String? {
+        /// Hub library tags narrowing a search by format. Several are sent
+        /// together and the Hub ANDs them: MLX repositories are converted from
+        /// transformers checkpoints and carry both tags, so asking for `mlx`
+        /// alone misses the ones that were not tagged that way. Empty means the
+        /// format is unconstrained, which is what the vision category needs —
+        /// VLMs are safetensors, and a format filter would exclude text models
+        /// that also take an image.
+        var searchFilters: [String] {
             switch self {
-            case .gguf: return "gguf"
-            case .mlx: return "mlx"
-            case .vlm: return nil
+            case .gguf: return ["gguf"]
+            case .mlx: return ["mlx", "transformers"]
+            case .vlm: return []
             }
         }
 
@@ -251,7 +255,7 @@ final class ModelStore: ObservableObject {
             do {
                 let found = try await client.search(
                     query,
-                    filter: kind.searchFilter,
+                    filters: kind.searchFilters,
                     pipelineTag: kind.pipelineTag,
                     sort: sort)
                 DispatchQueue.main.async {

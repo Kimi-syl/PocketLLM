@@ -117,7 +117,7 @@ struct HuggingFaceClient {
     /// browser asks for text-generation specifically.
     func search(
         _ query: String,
-        filter: String? = nil,
+        filters: [String] = [],
         sort: Sort = .relevance,
         pipelineTag: String? = "text-generation",
         limit: Int = 25
@@ -133,8 +133,10 @@ struct HuggingFaceClient {
         if !trimmed.isEmpty {
             items.append(URLQueryItem(name: "search", value: trimmed))
         }
-        if let filter, !filter.isEmpty {
-            items.append(URLQueryItem(name: "filter", value: filter))
+        // Repeated filter params are ANDed by the Hub, which is what a model
+        // carrying both an mlx and a transformers tag requires.
+        for f in filters where !f.isEmpty {
+            items.append(URLQueryItem(name: "filter", value: f))
         }
         if let pipelineTag, !pipelineTag.isEmpty {
             items.append(URLQueryItem(name: "pipeline_tag", value: pipelineTag))
