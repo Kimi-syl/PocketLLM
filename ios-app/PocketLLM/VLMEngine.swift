@@ -4,6 +4,10 @@ import MLXLMCommon
 import MLXVLM
 import Tokenizers
 
+// The session is driven by a single analysis at a time; conforming it lets the
+// inference run off the main actor without an unsafe cast at each call site.
+extension ChatSession: @unchecked Sendable {}
+
 /// Photo analysis through a vision-language model.
 ///
 /// Uses MLXVLM, which is the VLM half of mlx-swift-lm. Models are ordinary MLX
@@ -80,28 +84,38 @@ final class VLMEngine: ObservableObject {
             appLog("vlm: refusing to analyze — \(problem)", source: "vlm")
             return
         }
+
         isBusy = true
         answer = ""
+        let prompt = self.prompt
+        let started = Date()
         appLog(String(format: "vlm: analyze begin, prompt chars=%d image=%@ · %@",
-                      prompt.count, image.lastPathComponent,
-                      LogStore.memoryDescription()), source: "vlm")
-        Task {
-            let started = Date()
+                      prompt.count, image.lastPathComponent, LogStore.memoryDescription()),
+               source: "vlm")
+        appLog("vlm: entering respond(to:image:) off the main actor", source: "vlm")
+
+        // Vision inference is heavy — image preprocessing plus a vision tower and
+        // an LLM forward pass. Held on the main actor it freezes the UI for the
+        // whole analysis, which is the shape of a process that gets killed rather
+        // than one that throws. Only the results cross back.
+        Task.detached(priority: .userInitiated) {
             do {
-                appLog("vlm: entering respond(to:image:)", source: "vlm")
                 let text = try await session.respond(to: prompt, image: .url(image))
-                appLog(String(format: "vlm: respond returned %d chars · %@",
-                              text.count, LogStore.memoryDescription()), source: "vlm")
                 let secs = Date().timeIntervalSince(started)
-                self.answer = text
-                self.status = String(format: "完成 · %.1fs · %@",
-                                     secs, LogStore.memoryDescription())
-                appLog(String(format: "vlm analyzed in %.1fs", secs), source: "vlm")
+                await MainActor.run {
+                    self.answer = text
+                    self.status = String(format: "完成 · %.1fs · %@", secs, LogStore.memoryDescription())
+                    appLog(String(format: "vlm: respond returned %d chars in %.1fs · %@",
+                                  text.count, secs, LogStore.memoryDescription()), source: "vlm")
+                    self.isBusy = false
+                }
             } catch {
-                self.status = "分析失敗：\(error.localizedDescription)"
-                appLog("vlm analyze failed: \(error.localizedDescription)", source: "vlm")
+                await MainActor.run {
+                    self.status = "分析失敗：\(error.localizedDescription)"
+                    appLog("vlm analyze failed: \(error.localizedDescription)", source: "vlm")
+                    self.isBusy = false
+                }
             }
-            self.isBusy = false
         }
     }
 
