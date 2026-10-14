@@ -2982,25 +2982,25 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                     singleLine = true,
                 )
             }
-            OutlinedTextField(
-                value = img.llmPath,
-                onValueChange = { v -> vm.updateImageGenSettings { it.copy(llmPath = v) } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("文字編碼器（Qwen-Image 的 Qwen2.5-VL LLM）") },
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = img.vae,
-                onValueChange = { v -> vm.updateImageGenSettings { it.copy(vae = v) } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("VAE") },
-                singleLine = true,
-            )
+                        // Every slot picks from what is actually on disk. The main model
+            // auto-routes by filename; these three name their slot outright,
+            // because the user is saying what the file is.
+            SlotDropdown("文字編碼器 (llm_path)", img.llmPath, localModels, vm) { abs ->
+                vm.updateImageGenSettings { it.copy(llmPath = abs) }
+            }
+            SlotDropdown("VAE", img.vae, localModels, vm) { abs ->
+                vm.updateImageGenSettings { it.copy(vae = abs) }
+            }
+            // LoRA takes several entries, so picking appends rather than replaces.
+            SlotDropdown("LoRA（可多個）", img.loras, localModels, vm) { abs ->
+                val next = if (img.loras.isBlank()) "$abs|1.0" else "${img.loras};$abs|1.0"
+                vm.updateImageGenSettings { it.copy(loras = next) }
+            }
             OutlinedTextField(
                 value = img.loras,
                 onValueChange = { v -> vm.updateImageGenSettings { it.copy(loras = v) } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("LoRA（選填，格式 路徑|強度;路徑|強度）") },
+                label = { Text("LoRA 內容（path|強度;…）") },
                 singleLine = true,
             )
 
@@ -4644,3 +4644,45 @@ private fun CompanionMemorySection(vm: AppViewModel) {
     }
 }
 
+
+/// A dropdown over the models already on disk, for a specific image-gen slot.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SlotDropdown(
+    label: String,
+    value: String,
+    models: List<String>,
+    vm: AppViewModel,
+    onPick: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val shown = if (value.isBlank()) "（未選擇）" else value.substringAfterLast('/')
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }) {
+        OutlinedTextField(
+            value = shown,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("（清除）") },
+                onClick = { onPick(""); open = false },
+            )
+            if (models.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("尚無已下載的模型") },
+                    onClick = { open = false },
+                )
+            }
+            models.forEach { name ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = { onPick(vm.imageModelPathFor(name)); open = false },
+                )
+            }
+        }
+    }
+}

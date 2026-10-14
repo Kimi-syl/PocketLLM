@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -404,6 +405,9 @@ private fun HfSearchSection(vm: AppViewModel) {
     // its progress can render under that field (it has no file row).
     var directDownloadActive by remember { mutableStateOf(false) }
     var hfCategory by remember { mutableStateOf("llm") }
+    // Off by default: safetensors checkpoints need conversion before llama.cpp
+    // will load them, so they are opt-in rather than noise in the results.
+    var showSafetensors by remember { mutableStateOf(false) }
 
     LaunchedEffect(downloadProgress) {
         if (downloadProgress == null) directDownloadActive = false
@@ -428,6 +432,20 @@ private fun HfSearchSection(vm: AppViewModel) {
                     onClick = { hfCategory = "image" },
                     label = { Text("圖片生成") },
                 )
+                FilterChip(
+                    selected = hfCategory == "vlm",
+                    onClick = { hfCategory = "vlm" },
+                    label = { Text("視覺 (VLM)") },
+                )
+            }
+        }
+        item {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { showSafetensors = !showSafetensors },
+            ) {
+                Checkbox(checked = showSafetensors, onCheckedChange = { showSafetensors = it })
+                Text("顯示 safetensors 模型", style = MaterialTheme.typography.bodyMedium)
             }
         }
         item {
@@ -436,10 +454,22 @@ private fun HfSearchSection(vm: AppViewModel) {
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = {
-                    Text(if (hfCategory == "image") "Search image models" else "Search GGUF models")
+                    Text(
+                        when (hfCategory) {
+                            "image" -> "Search image models"
+                            "vlm" -> "Search vision models"
+                            else -> "Search GGUF models"
+                        }
+                    )
                 },
                 placeholder = {
-                    Text(if (hfCategory == "image") "e.g. stable diffusion 1.5" else "e.g. Qwen2.5 3B instruct")
+                    Text(
+                        when (hfCategory) {
+                            "image" -> "e.g. stable diffusion 1.5"
+                            "vlm" -> "e.g. Qwen2.5-VL"
+                            else -> "e.g. Qwen2.5 3B instruct"
+                        }
+                    )
                 },
                 singleLine = true,
                 trailingIcon = {
@@ -466,7 +496,7 @@ private fun HfSearchSection(vm: AppViewModel) {
                     vm.clearRepoFiles()
                 } else {
                     expandedRepo = result.repoId
-                    vm.loadRepoFiles(result.repoId)
+                    vm.loadRepoFiles(result.repoId, showSafetensors)
                 }
             }) {
                 Column(Modifier.padding(12.dp)) {

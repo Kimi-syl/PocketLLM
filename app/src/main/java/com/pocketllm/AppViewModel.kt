@@ -614,11 +614,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadRepoFiles(repoId: String) {
+    fun loadRepoFiles(repoId: String, includeAll: Boolean = false) {
         if (_filesLoading.value) return
         viewModelScope.launch {
             _filesLoading.value = true
-            runCatching { repoId to hfClient.listGgufFiles(repoId) }
+            runCatching { repoId to hfClient.listGgufFiles(repoId, includeAll = includeAll) }
                 .onSuccess { _fileListing.value = it }
                 .onFailure { ServerLog.log("File listing failed: ${it.message}") }
             _filesLoading.value = false
