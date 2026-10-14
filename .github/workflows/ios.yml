@@ -237,18 +237,6 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -configuration Debug -derivedDataPath build \
             build CODE_SIGNING_ALLOWED=NO
-      - name: Verify no duplicate ggml symbols
-        run: |
-          APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
-          test -n "$APP" || { echo "no .app found"; exit 1; }
-          BIN="$APP/PocketLLM"
-          NM=$(xcrun -f llvm-nm)
-          DUP=$("$NM" "$BIN" | awk '/ [Tt] _?ggml_/ {print $NF}' | sort | uniq -d)
-          if [ -n "$DUP" ]; then
-            echo "duplicate ggml symbols found:"; echo "$DUP" | head; exit 1
-          fi
-          echo "ggml symbols unique: $("$NM" "$BIN" | grep -cE ' [Tt] _?ggml_')"
-
 
       - name: Upload framework artifact
         uses: actions/upload-artifact@v4
@@ -323,6 +311,18 @@ jobs:
           rm -rf Payload
           mkdir Payload && cp -R PocketLLM.app Payload/
           zip -qry PocketLLM-unsigned.ipa Payload
+
+      - name: Verify no duplicate ggml symbols
+        run: |
+          APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
+          test -n "$APP" || { echo "no .app found"; exit 1; }
+          BIN="$APP/PocketLLM"
+          NM=$(xcrun -f llvm-nm)
+          DUP=$("$NM" "$BIN" | awk '/ [Tt] _?ggml_/ {print $NF}' | sort | uniq -d)
+          if [ -n "$DUP" ]; then
+            echo "duplicate ggml symbols found:"; echo "$DUP" | head; exit 1
+          fi
+          echo "ggml symbols unique: $("$NM" "$BIN" | grep -cE ' [Tt] _?ggml_')"
 
       - name: Upload device .ipa artifact
         uses: actions/upload-artifact@v4
