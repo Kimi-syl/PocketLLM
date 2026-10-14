@@ -211,7 +211,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF -DSD_BUILD_SHARED_GGML_LIB=ON \
             -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-sim -j3
@@ -237,6 +237,18 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -configuration Debug -derivedDataPath build \
             build CODE_SIGNING_ALLOWED=NO
+      - name: Verify no duplicate ggml symbols
+        run: |
+          APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
+          test -n "$APP" || { echo "no .app found"; exit 1; }
+          BIN="$APP/PocketLLM"
+          NM=$(xcrun -f llvm-nm)
+          DUP=$("$NM" "$BIN" | awk '/ [Tt] _?ggml_/ {print $NF}' | sort | uniq -d)
+          if [ -n "$DUP" ]; then
+            echo "duplicate ggml symbols found:"; echo "$DUP" | head; exit 1
+          fi
+          echo "ggml symbols unique: $("$NM" "$BIN" | grep -cE ' [Tt] _?ggml_')"
+
 
       - name: Upload framework artifact
         uses: actions/upload-artifact@v4
@@ -282,7 +294,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF -DSD_BUILD_SHARED_GGML_LIB=ON \
             -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-dev -j3
