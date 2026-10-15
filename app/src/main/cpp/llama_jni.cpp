@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -18,6 +19,10 @@ struct Session {
     llama_context* ctx = nullptr;
     // mmproj side of multimodal inference. Null unless loadVision() succeeded.
     mtmd_context* vision = nullptr;
+    // LoRA adapters applied to ctx. The model owns them and frees them when it
+    // is deleted, so this only has to be cleared, never freed here.
+    std::vector<llama_adapter_lora*> loras;
+    std::vector<float> lora_scales;
     std::atomic<bool> stopGen{false};
     std::mutex busy;
 };
@@ -179,6 +184,10 @@ Java_com_pocketllm_llm_LlamaBridge_loadModel(JNIEnv* env, jobject, jstring jPath
 
     auto session = std::shared_ptr<Session>(new Session(), [](Session* s) {
         if (s->ctx != nullptr) llama_free(s->ctx);
+        // Drop the adapter handles first: they belong to the model, which frees
+        // them on the next line, so holding them past this point would dangle.
+        s->loras.clear();
+        s->lora_scales.clear();
         if (s->vision != nullptr) mtmd_free(s->vision);
         if (s->model != nullptr) llama_model_free(s->model);
         delete s;
@@ -540,4 +549,65 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
         if (llama_decode(s->ctx, batch) != 0) break;
     }
     return env->NewStringUTF(out.c_str());
+}
+
+// Applies LLM LoRA adapters to a loaded session.
+//
+// spec is "path|scale;path|scale"; a missing scale means 1.0. Passing an empty
+// string detaches whatever was applied before. Returns the number of adapters
+// applied, or a negative code naming which stage failed.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_pocketllm_llm_LlamaBridge_setLoras(JNIEnv* env, jobject, jlong id, jstring jLoras) {
+    // id <= 0 is the caller's "no session" sentinel, and casting it would give a
+    // wild pointer rather than a null one, which the nullptr check would miss.
+    if (id <= 0) return -1;
+    Session* s = reinterpret_cast<Session*>(id);
+    if (s == nullptr || s->model == nullptr || s->ctx == nullptr) return -1;
+
+    std::string spec;
+    if (jLoras != nullptr) {
+        const char* p = env->GetStringUTFChars(jLoras, nullptr);
+        spec.assign(p != nullptr ? p : "");
+        if (p != nullptr) env->ReleaseStringUTFChars(jLoras, p);
+    }
+
+    // Detach first: llama_set_adapters_lora only reconfigures when the set
+    // differs, so leaving the old ones in place would silently keep them active.
+    if (!s->loras.empty()) {
+        if (llama_set_adapters_lora(s->ctx, nullptr, 0, nullptr) != 0) return -2;
+        s->loras.clear();
+        s->lora_scales.clear();
+    }
+    if (spec.empty()) return 0;
+
+    size_t start = 0;
+    int applied = 0;
+    while (start < spec.size()) {
+        size_t semi = spec.find(';', start);
+        std::string entry = spec.substr(start,
+            semi == std::string::npos ? std::string::npos : semi - start);
+        start = (semi == std::string::npos) ? spec.size() : semi + 1;
+        if (entry.empty()) continue;
+
+        std::string path = entry;
+        float scale = 1.0f;
+        size_t bar = entry.find('|');
+        if (bar != std::string::npos) {
+            path = entry.substr(0, bar);
+            const float v = std::strtof(entry.c_str() + bar + 1, nullptr);
+            if (v > 0.0f) scale = v;
+        }
+        if (path.empty()) continue;
+
+        llama_adapter_lora* adapter = llama_adapter_lora_init(s->model, path.c_str());
+        if (adapter == nullptr) return -(10 + applied);
+        s->loras.push_back(adapter);
+        s->lora_scales.push_back(scale);
+        applied++;
+    }
+
+    if (s->loras.empty()) return 0;
+    if (llama_set_adapters_lora(s->ctx, s->loras.data(), s->loras.size(),
+                                s->lora_scales.data()) != 0) return -3;
+    return applied;
 }

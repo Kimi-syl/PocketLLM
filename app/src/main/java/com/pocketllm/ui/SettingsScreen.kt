@@ -2849,6 +2849,37 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
             }
         }
 
+        // --- LLM LoRA ------------------------------------------------------
+        SectionCard("LLM LoRA 適配器") {
+            val s by vm.currentSettings.collectAsState()
+            OutlinedTextField(
+                value = s.llmLoras,
+                onValueChange = { v -> vm.updateSettings { it.copy(llmLoras = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("LoRA 路徑（path|強度;…）") },
+                minLines = 2,
+            )
+            OutlinedTextField(
+                value = s.decisionModel,
+                onValueChange = { v -> vm.updateSettings { it.copy(decisionModel = v) } },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("決策模型") },
+                singleLine = true,
+            )
+            Text(
+                "用於挑選工具與路由決策的小模型，預設 d1-3b。填模型名稱（在模型目錄內），" +
+                    "留空則由主模型自行決定。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "留空表示不使用。每個 LoRA 寫成「路徑|強度」，多個以分號分隔。" +
+                    "在模型載入後套用；換模型要重新載入才會生效。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SectionCard("CPU 指令集") {
             val optimized = vm.cpuKernelsOptimized
             val supported = features.dotProd && features.fp16
@@ -4646,7 +4677,8 @@ private fun CompanionMemorySection(vm: AppViewModel) {
 
 
 /// A dropdown over the models already on disk, for a specific image-gen slot.
-@OptIn(ExperimentalMaterial3Api::class)
+/// The file-level @file:OptIn covers this; a local @OptIn would need the
+/// unqualified name imported, which this file does not do.
 @Composable
 private fun SlotDropdown(
     label: String,

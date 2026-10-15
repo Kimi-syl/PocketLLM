@@ -256,8 +256,8 @@ final class ModelStore: ObservableObject {
                 let found = try await client.search(
                     query,
                     filters: kind.searchFilters,
-                    pipelineTag: kind.pipelineTag,
-                    sort: sort)
+                    sort: sort,
+                    pipelineTag: kind.pipelineTag)
                 DispatchQueue.main.async {
                     self.results = found
                     self.isSearching = false

@@ -87,6 +87,28 @@ data class AppSettings(
     /** Offline (Piper/sherpa) speaker index; only multi-speaker models use it. */
     val ttsSpeakerId: Int = 0,
     val gpuOffload: Boolean = true,
+
+    /**
+     * LLM LoRA adapters, `"path|scale;path|scale"`. Applied to the chat model
+     * after it loads; empty detaches any previously applied adapter.
+     */
+    val llmLoras: String = "",
+
+    /**
+     * Small model used to make routing/tool decisions instead of the chat model.
+     * "d1-3b" resolves to the models-directory entry of that name; empty disables
+     * it and decisions fall back to the chat model.
+     */
+    val decisionModel: String = "liquidAI/d1-3b",
+
+    /**
+     * Draft model for speculative decoding. Must share the target model's
+     * tokenizer. Empty disables speculation.
+     */
+    val draftModel: String = "",
+
+    /** Tokens proposed per speculation round before the target model verifies. */
+    val draftTokens: Int = 4,
     /** Target GGUF quantization for checkpoint conversion. "F16" skips it. */
     val convertQuant: String = "Q4_K_M",
     val agentEnabled: Boolean = false,

@@ -348,6 +348,64 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(enabledTools = current) }
     }
 
+    /**
+     * Loads the configured decision model into the single engine and returns the
+     * chat model's name so it can be restored afterwards.
+     *
+     * The engine is an `object` holding exactly one model, so a *separate*
+     * decision model is only reachable by swapping it in for the agent's turn.
+     * Returns null when nothing is configured, the file is absent, or the
+     * decision model is already the loaded one.
+     */
+    private suspend fun swapInDecisionModel(): String? {
+        val configured = _currentSettings.value.decisionModel.trim()
+        if (configured.isEmpty()) return null
+        val leaf = configured.substringAfterLast('/').trim()
+        if (leaf.isEmpty()) return null
+
+        var file: java.io.File? = null
+        for (candidate in listOf(leaf, "$leaf.gguf")) {
+            val f = modelRepo.file(candidate)
+            if (f != null && f.exists()) { file = f; break }
+        }
+        val target = file ?: return null
+
+        val current = (engine.state.value as? EngineState.Ready)?.modelName ?: return null
+        if (current.equals(target.name, ignoreCase = true)) return null
+
+        val resolved = _currentSettings.value.resolve()
+        return try {
+            engine.load(
+                file = target,
+                contextSize = resolved.contextSize,
+                threads = CpuInfo.recommendedThreads(),
+                gpuOffload = resolved.gpuOffload,
+                batchSize = resolved.batchSize,
+            )
+            com.pocketllm.server.ServerLog.log("decision model loaded: ${target.name}")
+            current
+        } catch (t: Throwable) {
+            com.pocketllm.server.ServerLog.log("decision model load failed: ${t.message}")
+            null
+        }
+    }
+
+    /** Restores the chat model after the agent's turn. */
+    private suspend fun restoreChatModel(name: String) {
+        val file = modelRepo.file(name) ?: return
+        val resolved = _currentSettings.value.resolve()
+        runCatching {
+            engine.load(
+                file = file,
+                contextSize = resolved.contextSize,
+                threads = CpuInfo.recommendedThreads(),
+                gpuOffload = resolved.gpuOffload,
+                batchSize = resolved.batchSize,
+            )
+            com.pocketllm.server.ServerLog.log("chat model restored: $name")
+        }
+    }
+
     private val agentLoop = com.pocketllm.agent.AgentLoop(
         engine = engine,
         registry = agentRegistry,
@@ -666,6 +724,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     gpuOffload = resolved.gpuOffload,
                     batchSize = resolved.batchSize,
                 )
+                // Re-applied on every load: an adapter is bound to the model
+                // instance, so loading a different model silently drops it.
+                val loras = settings.current().llmLoras
+                if (loras.isNotBlank()) {
+                    val applied = engine.applyLoras(loras)
+                    com.pocketllm.server.PLog.log("LLM LoRA: applied=$applied spec=$loras")
+                }
             } catch (t: Throwable) {
                 com.pocketllm.server.PLog.error("loadModel failed", t)
                 engine.setError(t.message ?: "Failed to load model")
@@ -1964,15 +2029,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     } else "",
                 )
                 val logLines = mutableListOf<String>()
-                val result = loop.run(trimmed) { line ->
-                    logLines += line
-                    com.pocketllm.server.ServerLog.log("ui-agent: $line")
-                }
-                when (result) {
-                    is com.pocketllm.agent.UiAgentLoop.UiResult.Done ->
-                        setReply(result.answer ?: logLines.lastOrNull() ?: "Done.")
-                    is com.pocketllm.agent.UiAgentLoop.UiResult.Error ->
-                        setReply("UI agent error: ${result.message}")
+                // Decision model, if configured: routing prompts come from a small
+                // model. The engine holds one model at a time, so this is a swap
+                // with a reload at each end rather than a second instance.
+                val restoreTo = swapInDecisionModel()
+                try {
+                    val result = loop.run(trimmed) { line ->
+                        logLines += line
+                        com.pocketllm.server.ServerLog.log("ui-agent: $line")
+                    }
+                    when (result) {
+                        is com.pocketllm.agent.UiAgentLoop.UiResult.Done ->
+                            setReply(result.answer ?: logLines.lastOrNull() ?: "Done.")
+                        is com.pocketllm.agent.UiAgentLoop.UiResult.Error ->
+                            setReply("UI agent error: ${result.message}")
+                    }
+                } finally {
+                    if (restoreTo != null) restoreChatModel(restoreTo)
                 }
             } catch (e: Throwable) {
                 com.pocketllm.server.ServerLog.log("sendChatWithUiAgent: failed: ${e.message}")

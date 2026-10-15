@@ -20,6 +20,19 @@ object LlamaEngine : ChatEngine {
     private val _state = MutableStateFlow<EngineState>(EngineState.Empty)
     override val state: StateFlow<EngineState> = _state
 
+    /**
+     * Applies LLM LoRA adapters to the currently loaded model, `"path|scale;…"`.
+     * Returns the number applied, or a negative code. Never throws: a bad LoRA
+     * path must not take down a chat session that is otherwise fine.
+     */
+    fun applyLoras(spec: String): Int {
+        val h = handle
+        // -1 is the "no model loaded" sentinel (see the field declaration), so
+        // testing for 0 here would pass a wild pointer straight into the JNI.
+        if (h <= 0L) return -1
+        return runCatching { LlamaBridge.setLoras(h, spec) }.getOrDefault(-4)
+    }
+
     fun setError(message: String) {
         _state.value = EngineState.Error(message)
     }

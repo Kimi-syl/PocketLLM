@@ -90,6 +90,13 @@ object LlamaBridge {
     external fun supportsGpuOffload(): Boolean
     external fun loadModel(path: String, contextSize: Int, batchSize: Int, threads: Int, gpuLayers: Int): Long
     external fun freeModel(handle: Long)
+
+    /**
+     * Applies LLM LoRA adapters, `"path|scale;path|scale"`; empty detaches all.
+     * Returns the number of adapters applied, or a negative code naming which
+     * stage failed (see setLoras in llama_jni.cpp).
+     */
+    external fun setLoras(handle: Long, loras: String): Int
     external fun contextLength(handle: Long): Int
     external fun applyChatTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String
     external fun generate(

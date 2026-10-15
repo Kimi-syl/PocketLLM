@@ -37,6 +37,7 @@ object SdBridge {
         clipG: String?,
         clipV: String?,
         t5: String?,
+        llm: String?,
         diffusion: String?,
         vae: String?,
         taesd: String?,
@@ -63,5 +64,6 @@ object SdBridge {
         sampleMethod: Int,
         scheduler: Int,
         clipSkip: Int,
+        loras: String?,
     ): ByteArray?
 }
