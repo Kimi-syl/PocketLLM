@@ -375,6 +375,26 @@ jobs:
           mkdir Payload && cp -R PocketLLM.app Payload/
           zip -qry PocketLLM-unsigned.ipa Payload
 
+      - name: Verify the ipa actually contains the dylibs
+        run: |
+          cd ios-app/build-device/Build/Products/Release-iphoneos
+          # Check the PACKAGED artifact, not the .app and not the symbols.
+          # Three separate bugs shipped an ipa whose Frameworks/ held none of the
+          # ggml dylibs while every individual step reported success: the collect
+          # ran before the sd build, the embed ran after packaging, and the embed
+          # wrote into the simulator bundle. Each was individually valid and only
+          # visible in the finished artifact, so that is what gets asserted.
+          LIST=$(unzip -l PocketLLM-unsigned.ipa)
+          n=$(echo "$LIST" | grep -c 'Frameworks/.*\.dylib')
+          echo "dylibs inside the ipa: $n"
+          echo "$LIST" | grep 'Frameworks/.*dylib' || true
+          test "$n" -ge 4 || { echo "ipa contains only $n dylib(s)"; exit 1; }
+          for want in libggml.0.dylib libggml-base.0.dylib libggml-cpu.0.dylib; do
+            echo "$LIST" | grep -q "Frameworks/$want" || {
+              echo "missing $want inside the ipa"; exit 1; }
+            echo "ok in ipa: $want"
+          done
+
       - name: Verify no duplicate ggml symbols
         run: |
           APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
