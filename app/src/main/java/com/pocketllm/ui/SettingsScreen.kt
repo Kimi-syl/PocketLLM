@@ -2987,33 +2987,32 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
                 value = img.modelPath,
                 onValueChange = { v -> vm.updateImageGenSettings { it.copy(modelPath = v) } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("自訂路徑（選填，覆蓋上方選擇）") },
+                label = { Text("自訂路徑（選填，僅用於不在上方清單中的檔案）") },
                 singleLine = true,
             )
-            OutlinedTextField(
-                value = img.diffusion,
-                onValueChange = { v -> vm.updateImageGenSettings { it.copy(diffusion = v) } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Diffusion 模型（SD3 / Flux 分離式，選填）") },
-                singleLine = true,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = img.clipL,
-                    onValueChange = { v -> vm.updateImageGenSettings { it.copy(clipL = v) } },
-                    modifier = Modifier.weight(1f),
-                    label = { Text("clip_l") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = img.t5xxl,
-                    onValueChange = { v -> vm.updateImageGenSettings { it.copy(t5xxl = v) } },
-                    modifier = Modifier.weight(1f),
-                    label = { Text("t5xxl") },
-                    singleLine = true,
-                )
+            // Every slot below is chosen from files already on disk. Nothing here
+            // asks for a path: a bare text field was the main source of confusion
+            // on this page, because a wrong path only surfaces as a load failure
+            // much later.
+            SlotDropdown("主模型 / Diffusion（SD3、Flux、Qwen-Image 分離式）", img.diffusion, localModels, vm) { abs ->
+                vm.updateImageGenSettings { it.copy(diffusion = abs) }
             }
-                        // Every slot picks from what is actually on disk. The main model
+            SlotDropdown("CLIP-L（SD1/SD2 文字編碼器）", img.clipL, localModels, vm) { abs ->
+                vm.updateImageGenSettings { it.copy(clipL = abs) }
+            }
+            SlotDropdown("T5-XXL（SD3 / Flux 文字編碼器）", img.t5xxl, localModels, vm) { abs ->
+                vm.updateImageGenSettings { it.copy(t5xxl = abs) }
+            }
+            Text(
+                "哪個模型要用哪些欄位：\n" +
+                    "• SD1.5 / SDXL / Chroma / PixArt — 只填「主模型」\n" +
+                    "• SD3 / SD3.5 / Flux — 主模型 + CLIP-L + T5-XXL + VAE\n" +
+                    "• Qwen-Image — 文字編碼器 + 主模型 + VAE\n" +
+                    "• Anima — 文字編碼器（Qwen3-0.6B-Base）+ 主模型 + VAE（Qwen Image VAE）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Every slot picks from what is actually on disk. The main model
             // auto-routes by filename; these three name their slot outright,
             // because the user is saying what the file is.
             SlotDropdown("文字編碼器 (llm_path)", img.llmPath, localModels, vm) { abs ->
