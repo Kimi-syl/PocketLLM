@@ -325,13 +325,6 @@ jobs:
             build CODE_SIGNING_ALLOWED=NO \
             LIBRARY_SEARCH_PATHS="\$(SRCROOT)/llama-libs-device \$(SRCROOT)/sd-libs-device"
 
-      - name: Package unsigned .ipa
-        run: |
-          cd ios-app/build-device/Build/Products/Release-iphoneos
-          rm -rf Payload
-          mkdir Payload && cp -R PocketLLM.app Payload/
-          zip -qry PocketLLM-unsigned.ipa Payload
-
       - name: Embed sd ggml dylibs
         run: |
           APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
@@ -360,6 +353,13 @@ jobs:
           for want in libggml.0.dylib libggml-base.0.dylib libggml-cpu.0.dylib; do
             if ls "$APP/Frameworks/$want" >/dev/null 2>&1; then echo "ok: $want"; fi
           done
+
+      - name: Package unsigned .ipa
+        run: |
+          cd ios-app/build-device/Build/Products/Release-iphoneos
+          rm -rf Payload
+          mkdir Payload && cp -R PocketLLM.app Payload/
+          zip -qry PocketLLM-unsigned.ipa Payload
 
       - name: Verify no duplicate ggml symbols
         run: |
