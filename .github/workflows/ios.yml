@@ -327,32 +327,46 @@ jobs:
 
       - name: Embed sd ggml dylibs
         run: |
-          APP=$(find ios-app/build -name 'PocketLLM.app' -type d | head -1)
-          test -n "$APP" || { echo "no .app found"; exit 1; }
-          mkdir -p "$APP/Frameworks"
+          # The device app is built with -derivedDataPath build-device, so it
+          # lives under ios-app/build-device. Searching only "ios-app/build"
+          # found the SIMULATOR bundle instead, and the dylibs were embedded
+          # into a bundle that is never packaged -- the ipa therefore shipped
+          # with no ggml dylibs and died in dyld with
+          # "Library not loaded: @rpath/libggml.0.dylib" even though this step
+          # reported success.
+          DEV=$(find ios-app/build-device -name 'PocketLLM.app' -type d 2>/dev/null | head -1)
+          echo "device app: ${DEV:-none}"
+          test -n "$DEV" || { echo "no device .app found"; exit 1; }
+          # Refuse to write into anything that is not a device bundle, so a path
+          # mistake fails here instead of at launch on the phone.
+          case "$DEV" in
+            *-iphoneos*) ;;
+            *) echo "refusing: $DEV is not an iphoneos bundle"; exit 1 ;;
+          esac
+
+          mkdir -p "$DEV/Frameworks"
           n=0
           for f in ios-app/sd-libs-device/*.dylib; do
             [ -e "$f" ] || continue
             base=$(basename "$f")
-            cp -f "$f" "$APP/Frameworks/$base"
-            n=$((n + 1))
+            cp -f "$f" "$DEV/Frameworks/$base"
             # dyld resolves the LC_LOAD_DYLIB install name, which CMake sets with
             # the SOVERSION (libggml.0.dylib) while the file on disk is
-            # unversioned. Embedding under the install name too is what stops the
-            # launch crash "Library not loaded: @rpath/libggml.0.dylib".
+            # unversioned. Embedding under both names covers that.
             id=$(otool -D "$f" 2>/dev/null | tail -1)
             if [ -n "$id" ] && [ "$(basename "$id")" != "$base" ]; then
-              cp -f "$f" "$APP/Frameworks/$(basename "$id")"
-              echo "  $base -> also $(basename "$id")"
+              cp -f "$f" "$DEV/Frameworks/$(basename "$id")"
             fi
+            n=$((n + 1))
           done
-          echo "embedded $n dylib(s)"
-          ls "$APP/Frameworks/" || true
+          echo "embedded $n dylib(s) into $DEV"
+          ls "$DEV/Frameworks/" || true
           # Fail loudly rather than shipping a bundle that dies in dyld.
           test "$n" -gt 0 || { echo "no dylibs embedded"; exit 1; }
           for want in libggml.0.dylib libggml-base.0.dylib libggml-cpu.0.dylib; do
-            if ls "$APP/Frameworks/$want" >/dev/null 2>&1; then echo "ok: $want"; fi
+            if ls "$DEV/Frameworks/$want" >/dev/null 2>&1; then echo "ok: $want"; fi
           done
+          test -f "$DEV/Frameworks/libggml.0.dylib" || { echo "missing libggml.0.dylib in the DEVICE bundle"; exit 1; }
 
       - name: Package unsigned .ipa
         run: |
