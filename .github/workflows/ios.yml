@@ -167,14 +167,6 @@ jobs:
 
       # ----------------------------------------------------------------- build
 
-      - name: Collect sd ggml dylibs
-        run: |
-          for d in sim dev; do
-            out="ios-app/sd-libs"; [ "$d" = dev ] && out="ios-app/sd-libs-device"
-            find build-sd-$d -name '*.dylib' -exec cp {} "$out/" \; 2>/dev/null || true
-          done
-          ls -la ios-app/sd-libs ios-app/sd-libs-device 2>/dev/null | grep -c dylib || true
-
       - name: Build PocketLLMKit XCFramework
         run: ./gradlew :core:assemblePocketLLMKitXCFramework -PenableIos=true -PskipAndroid=true --no-daemon
 
@@ -228,6 +220,16 @@ jobs:
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
+
+      - name: Collect sd ggml dylibs
+        run: |
+          for d in sim dev; do
+            out="ios-app/sd-libs"; [ "$d" = dev ] && out="ios-app/sd-libs-device"
+            mkdir -p "$out"
+            find build-sd-$d -name '*.dylib' -exec cp {} "$out/" \; 2>/dev/null || true
+          done
+          echo "sim dylibs:  $(ls ios-app/sd-libs/*.dylib 2>/dev/null | wc -l)"
+          echo "dev dylibs:  $(ls ios-app/sd-libs-device/*.dylib 2>/dev/null | wc -l)"
 
       - name: Generate Xcode project
         run: |
@@ -299,6 +301,16 @@ jobs:
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
+
+      - name: Collect sd ggml dylibs
+        run: |
+          for d in sim dev; do
+            out="ios-app/sd-libs"; [ "$d" = dev ] && out="ios-app/sd-libs-device"
+            mkdir -p "$out"
+            find build-sd-$d -name '*.dylib' -exec cp {} "$out/" \; 2>/dev/null || true
+          done
+          echo "sim dylibs:  $(ls ios-app/sd-libs/*.dylib 2>/dev/null | wc -l)"
+          echo "dev dylibs:  $(ls ios-app/sd-libs-device/*.dylib 2>/dev/null | wc -l)"
 
       - name: Build iOS app (device, unsigned)
         run: |
