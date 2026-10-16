@@ -1,5 +1,7 @@
 #import "LlamaBridge.h"
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 
 #include <algorithm>
 #include <atomic>
@@ -56,6 +58,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 @implementation LlamaContext {
     llama_model *_model;
     llama_context *_ctx;
+    mtmd_context *_vision;
     std::atomic<bool> _stopGen;
     std::mutex _busy;
 }
@@ -109,6 +112,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 }
 
 - (void)dealloc {
+    if (_vision) mtmd_free(_vision);
     if (_ctx) llama_free(_ctx);
     if (_model) llama_model_free(_model);
 }
@@ -141,6 +145,116 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     if (written < 0 || (size_t)written >= buffer.size()) return nil;
     buffer[(size_t)written] = '\0';
     return [NSString stringWithUTF8String:buffer.data()];
+}
+
+#pragma mark - Vision (mmproj)
+
+- (BOOL)loadVisionWithMmprojPath:(NSString *)path error:(NSError **_Nullable)error {
+    if (!_model) {
+        if (error) *error = [NSError errorWithDomain:@"LlamaBridge" code:2
+            userInfo:@{NSLocalizedDescriptionKey: @"no model loaded"}];
+        return NO;
+    }
+    if (_vision) {
+        mtmd_free(_vision);
+        _vision = nullptr;
+    }
+    mtmd_context_params params = mtmd_context_params_default();
+    params.use_gpu = false;   // GGML_METAL is off for the simulator slice
+    params.print_timings = false;
+    params.n_threads = 4;
+
+    _vision = mtmd_init_from_file(path.UTF8String, _model, params);
+    if (!_vision) {
+        if (error) *error = [NSError errorWithDomain:@"LlamaBridge" code:3
+            userInfo:@{NSLocalizedDescriptionKey: @"could not load mmproj"}];
+        return NO;
+    }
+    if (!mtmd_support_vision(_vision)) {
+        if (error) *error = [NSError errorWithDomain:@"LlamaBridge" code:4
+            userInfo:@{NSLocalizedDescriptionKey: @"mmproj reports no vision support"}];
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)supportsVision {
+    return _vision != nullptr && mtmd_support_vision(_vision);
+}
+
+- (void)describeImage:(NSString *)imagePath
+               prompt:(NSString *)prompt
+            maxTokens:(int)maxTokens
+              onToken:(void (^)(NSString *))onToken
+           completion:(void (^)(BOOL, NSString *_Nullable))completion {
+    if (!_vision || !_ctx) {
+        completion(NO, @"vision not loaded");
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_busy);
+    _stopGen.store(false);
+
+    std::string text = prompt.UTF8String ?: "";
+    // The marker is where the image tokens are spliced in; without it the
+    // bitmap is never referenced by the prompt at all.
+    const char *marker = mtmd_default_marker();
+    if (marker && text.find(marker) == std::string::npos) {
+        text = std::string(marker) + "\n" + text;
+    }
+
+    mtmd_helper_bitmap_wrapper wrap =
+        mtmd_helper_bitmap_init_from_file(_vision, imagePath.UTF8String, false);
+    if (wrap.bitmap == nullptr) {
+        completion(NO, @"could not decode image");
+        return;
+    }
+
+    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap *bitmaps[1] = { wrap.bitmap };
+    mtmd_input_text input;
+    input.text = text.c_str();
+    input.add_special = true;
+    input.parse_special = true;
+
+    if (mtmd_tokenize(_vision, chunks, &input, bitmaps, 1) != 0) {
+        mtmd_input_chunks_free(chunks);
+        completion(NO, @"tokenize failed");
+        return;
+    }
+
+    llama_pos n_past = 0;
+    if (mtmd_helper_eval_chunks(_vision, _ctx, chunks, n_past, 0, (int32_t)512, true, &n_past) != 0) {
+        mtmd_input_chunks_free(chunks);
+        completion(NO, @"failed to evaluate the image prompt");
+        return;
+    }
+    mtmd_input_chunks_free(chunks);
+
+    const llama_vocab *vocab = llama_model_get_vocab(_model);
+    int produced = 0;
+    for (; produced < maxTokens; produced++) {
+        if (_stopGen.load()) break;
+        const float *logits = llama_get_logits_ith(_ctx, -1);
+        if (!logits) break;
+        const int n_vocab = llama_vocab_n_tokens(vocab);
+        llama_token best = 0;
+        float bestScore = logits[0];
+        for (int i = 1; i < n_vocab; i++) {
+            if (logits[i] > bestScore) { bestScore = logits[i]; best = i; }
+        }
+        if (llama_vocab_is_eog(vocab, best)) break;
+
+        char piece[256];
+        const int n = llama_token_to_piece(vocab, best, piece, (int32_t)sizeof(piece), 0, true);
+        if (n > 0) {
+            NSString *pieceStr = [[NSString alloc] initWithBytes:piece length:(NSUInteger)n
+                                                         encoding:NSUTF8StringEncoding];
+            if (pieceStr) onToken(pieceStr);
+        }
+        llama_batch batch = llama_batch_get_one(&best, 1);
+        if (llama_decode(_ctx, batch) != 0) break;
+    }
+    completion(YES, nil);
 }
 
 - (void)stop {
