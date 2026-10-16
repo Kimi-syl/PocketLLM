@@ -193,6 +193,13 @@ jobs:
           # here: the alternative shells out to `xcrun -sdk macosx metal` (wrong
           # SDK for an iOS cross-build) and expects a default.metallib sitting in
           # the app bundle, which a libtool-merged .a cannot provide.
+          # The checkout used to happen in the simulator step, which is gone:
+          # the device step assumed ci-llama was already there and failed with
+          # "source directory does not exist". Guarded by -d because a cache hit
+          # already provides it, so this only runs on a miss.
+          test -d ci-llama/.git || git clone --filter=blob:none https://github.com/ggml-org/llama.cpp ci-llama
+          git -C ci-llama fetch --depth 1 origin "$LLAMA_COMMIT" || true
+          git -C ci-llama checkout "$LLAMA_COMMIT" 2>/dev/null || git -C ci-llama checkout -f FETCH_HEAD
           cmake -S ci-llama -B build-ios-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
