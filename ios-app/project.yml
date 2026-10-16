@@ -88,4 +88,4 @@ targets:
         # (ggml_sage_attn, ggml_prec_set_acc, ggml_mul_mat_i8_tensorwise,
         # ggml_quantize_i8_convrot) cannot collide with llama.cpp ggml, which was
         # linked into the same binary and resolved silently, corrupting tensors.
-        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -lggml -lggml-base -lggml-cpu -framework Accelerate -framework Metal -framework MetalKit"
+        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -framework Accelerate -framework Metal -framework MetalKit"

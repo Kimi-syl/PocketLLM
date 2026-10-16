@@ -211,7 +211,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
             -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-sim -j3
@@ -220,16 +220,6 @@ jobs:
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
-
-      - name: Collect sd ggml dylibs
-        run: |
-          for d in sim dev; do
-            out="ios-app/sd-libs"; [ "$d" = dev ] && out="ios-app/sd-libs-device"
-            mkdir -p "$out"
-            find build-sd-$d -name '*.dylib' -exec cp {} "$out/" \; 2>/dev/null || true
-          done
-          echo "sim dylibs:  $(ls ios-app/sd-libs/*.dylib 2>/dev/null | wc -l)"
-          echo "dev dylibs:  $(ls ios-app/sd-libs-device/*.dylib 2>/dev/null | wc -l)"
 
       - name: Generate Xcode project
         run: |
@@ -292,7 +282,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
             -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-dev -j3
@@ -301,16 +291,6 @@ jobs:
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
-
-      - name: Collect sd ggml dylibs
-        run: |
-          for d in sim dev; do
-            out="ios-app/sd-libs"; [ "$d" = dev ] && out="ios-app/sd-libs-device"
-            mkdir -p "$out"
-            find build-sd-$d -name '*.dylib' -exec cp {} "$out/" \; 2>/dev/null || true
-          done
-          echo "sim dylibs:  $(ls ios-app/sd-libs/*.dylib 2>/dev/null | wc -l)"
-          echo "dev dylibs:  $(ls ios-app/sd-libs-device/*.dylib 2>/dev/null | wc -l)"
 
       - name: Build iOS app (device, unsigned)
         run: |
@@ -325,75 +305,12 @@ jobs:
             build CODE_SIGNING_ALLOWED=NO \
             LIBRARY_SEARCH_PATHS="\$(SRCROOT)/llama-libs-device \$(SRCROOT)/sd-libs-device"
 
-      - name: Embed sd ggml dylibs
-        run: |
-          # The device app is built with -derivedDataPath build-device, so it
-          # lives under ios-app/build-device. Searching only "ios-app/build"
-          # found the SIMULATOR bundle instead, and the dylibs were embedded
-          # into a bundle that is never packaged -- the ipa therefore shipped
-          # with no ggml dylibs and died in dyld with
-          # "Library not loaded: @rpath/libggml.0.dylib" even though this step
-          # reported success.
-          DEV=$(find ios-app/build-device -name 'PocketLLM.app' -type d 2>/dev/null | head -1)
-          echo "device app: ${DEV:-none}"
-          test -n "$DEV" || { echo "no device .app found"; exit 1; }
-          # Refuse to write into anything that is not a device bundle, so a path
-          # mistake fails here instead of at launch on the phone.
-          case "$DEV" in
-            *-iphoneos*) ;;
-            *) echo "refusing: $DEV is not an iphoneos bundle"; exit 1 ;;
-          esac
-
-          mkdir -p "$DEV/Frameworks"
-          n=0
-          for f in ios-app/sd-libs-device/*.dylib; do
-            [ -e "$f" ] || continue
-            base=$(basename "$f")
-            cp -f "$f" "$DEV/Frameworks/$base"
-            # dyld resolves the LC_LOAD_DYLIB install name, which CMake sets with
-            # the SOVERSION (libggml.0.dylib) while the file on disk is
-            # unversioned. Embedding under both names covers that.
-            id=$(otool -D "$f" 2>/dev/null | tail -1)
-            if [ -n "$id" ] && [ "$(basename "$id")" != "$base" ]; then
-              cp -f "$f" "$DEV/Frameworks/$(basename "$id")"
-            fi
-            n=$((n + 1))
-          done
-          echo "embedded $n dylib(s) into $DEV"
-          ls "$DEV/Frameworks/" || true
-          # Fail loudly rather than shipping a bundle that dies in dyld.
-          test "$n" -gt 0 || { echo "no dylibs embedded"; exit 1; }
-          for want in libggml.0.dylib libggml-base.0.dylib libggml-cpu.0.dylib; do
-            if ls "$DEV/Frameworks/$want" >/dev/null 2>&1; then echo "ok: $want"; fi
-          done
-          test -f "$DEV/Frameworks/libggml.0.dylib" || { echo "missing libggml.0.dylib in the DEVICE bundle"; exit 1; }
-
       - name: Package unsigned .ipa
         run: |
           cd ios-app/build-device/Build/Products/Release-iphoneos
           rm -rf Payload
           mkdir Payload && cp -R PocketLLM.app Payload/
           zip -qry PocketLLM-unsigned.ipa Payload
-
-      - name: Verify the ipa actually contains the dylibs
-        run: |
-          cd ios-app/build-device/Build/Products/Release-iphoneos
-          # Check the PACKAGED artifact, not the .app and not the symbols.
-          # Three separate bugs shipped an ipa whose Frameworks/ held none of the
-          # ggml dylibs while every individual step reported success: the collect
-          # ran before the sd build, the embed ran after packaging, and the embed
-          # wrote into the simulator bundle. Each was individually valid and only
-          # visible in the finished artifact, so that is what gets asserted.
-          LIST=$(unzip -l PocketLLM-unsigned.ipa)
-          n=$(echo "$LIST" | grep -c 'Frameworks/.*\.dylib')
-          echo "dylibs inside the ipa: $n"
-          echo "$LIST" | grep 'Frameworks/.*dylib' || true
-          test "$n" -ge 4 || { echo "ipa contains only $n dylib(s)"; exit 1; }
-          for want in libggml.0.dylib libggml-base.0.dylib libggml-cpu.0.dylib; do
-            echo "$LIST" | grep -q "Frameworks/$want" || {
-              echo "missing $want inside the ipa"; exit 1; }
-            echo "ok in ipa: $want"
-          done
 
       - name: Verify no duplicate ggml symbols
         run: |
