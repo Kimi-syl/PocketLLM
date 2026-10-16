@@ -69,7 +69,7 @@ final class LocalEngine: ObservableObject {
             // button can be gated on the truth rather than on a name guess.
             if let mmproj = Self.companionMmproj(for: url) {
                 do {
-                    let ok = try ctx.loadVisionWithMmprojPath(mmproj.path)
+                    let ok = try ctx.loadVision(withMmprojPath: mmproj.path)
                     supportsVision = ok
                     mmprojName = mmproj.lastPathComponent
                     appLog(ok

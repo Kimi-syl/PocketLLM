@@ -321,7 +321,9 @@ struct ChatView: View {
     private func send() {
         // llama.cpp vision. Checked before the MLX branch because the two are
         // mutually exclusive: one engine is on, the other has no model loaded.
-        if let image = attachedImage, currentMode == .llama, engine.supportsVision {
+        // Mode.local is the llama.cpp backend; its display label is "llama.cpp",
+        // which is why this is not .llama.
+        if let image = attachedImage, currentMode == .local, engine.supportsVision {
             let asked = input.isEmpty ? "請描述這張照片的內容" : input
             messages.append(.init(role: "user", content: input.isEmpty ? "[照片]" : input))
             input = ""
