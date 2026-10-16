@@ -17,6 +17,13 @@ final class LocalEngine: ObservableObject {
     static let allLayers = 999
 
     private var context: LlamaContext?
+
+    /// YES when a companion mmproj loaded and reported image support. Gate the
+    /// attachment UI on this, not on the model's filename.
+    @Published private(set) var supportsVision = false
+
+    /// Name of the loaded projector, for display in the details panel.
+    @Published private(set) var mmprojName: String?
     // Security scope is held for the context's whole lifetime: llama.cpp mmaps
     // the model file, so pages can fault in long after load() returns; stopping
     // the scope early can make later page-ins fail.
@@ -36,6 +43,8 @@ final class LocalEngine: ObservableObject {
     func load(url: URL, contextSize: Int32, threads: Int, gpuLayers: Int) {
         appLogMemory("pre-load", source: "llama")
         state = "loading…"
+        supportsVision = false
+        mmprojName = nil
         appLog("loading…", source: "llama")
         LlamaGlobalInit()
         releaseSecurityScope() // drop the previous model's scope, if any
@@ -54,6 +63,26 @@ final class LocalEngine: ObservableObject {
             // Swift interpolates the function value itself.
             state = "\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength())"
             appLog("\(url.lastPathComponent) · \(backend) · ctx \(ctx.contextLength())", source: "llama")
+
+            // Vision models ship as two files in one folder: the text model and
+            // its projector. Loading the companion here means the attachment
+            // button can be gated on the truth rather than on a name guess.
+            if let mmproj = Self.companionMmproj(for: url) {
+                do {
+                    let ok = try ctx.loadVisionWithMmprojPath(mmproj.path)
+                    supportsVision = ok
+                    mmprojName = mmproj.lastPathComponent
+                    appLog(ok
+                           ? "vision: enabled via \(mmproj.lastPathComponent)"
+                           : "vision: \(mmproj.lastPathComponent) loaded but reports no vision",
+                           source: "llama")
+                } catch {
+                    appLog("vision: \(mmproj.lastPathComponent) failed — \(error.localizedDescription)",
+                           source: "llama")
+                }
+            } else {
+                appLog("vision: no mmproj beside \(url.lastPathComponent)", source: "llama")
+            }
         } catch {
             releaseSecurityScope()
             // Surface the real reason — "load failed" gave users nothing.
@@ -63,6 +92,40 @@ final class LocalEngine: ObservableObject {
     }
 
     var isReady: Bool { context != nil }
+
+    /// Finds the mmproj that ships beside a GGUF model.
+    ///
+    /// Matched on the filename because that is the only signal the filesystem
+    /// offers — an mmproj carries no marker readable without loading it, and
+    /// loading it is the expensive decision this lookup exists to inform.
+    /// Returns nil for a plain text model, which is the common case.
+    nonisolated static func companionMmproj(for modelURL: URL) -> URL? {
+        let dir = modelURL.deletingLastPathComponent()
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? []
+        return entries.first { url in
+            let n = url.lastPathComponent.lowercased()
+            return n.hasSuffix(".gguf") && n.contains("mmproj")
+        }
+    }
+
+    /// One image+text turn on the vision path, when an mmproj is loaded.
+    ///
+    /// Takes a URL rather than a UIImage because the bridge reads the file
+    /// itself; decoding here would only duplicate that work.
+    func describe(image: URL, prompt: String,
+                  onToken: @escaping (String) -> Void,
+                  done: @escaping (String?) -> Void) {
+        guard let ctx = context, supportsVision else {
+            done("此模型沒有載入視覺投影（mmproj），無法分析圖片")
+            return
+        }
+        ctx.describeImage(image.path, prompt: prompt, maxTokens: 512) { piece in
+            onToken(piece)
+        } completion: { ok, err in
+            done(ok ? nil : (err ?? "vision failed"))
+        }
+    }
 
     func generate(messages: [OpenAIClient.Message],
                   sampling: AppSettings.Sampling,
