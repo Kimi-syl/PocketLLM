@@ -53,7 +53,28 @@ final class SdEngine: ObservableObject {
 
     // MARK: - Loading
 
+    /// True for video checkpoints (WAN, LTXV, AnimateDiff, LingBot), matched on
+    /// whole name tokens so `wan` does not match inside another word.
+    ///
+    /// They share the .gguf extension with image models, so nothing downstream
+    /// can tell them apart before load -- and by then several GB of weights are
+    /// being mapped. Refusing here keeps a phone from being asked to hold many
+    /// frames at once.
+    nonisolated static func isVideoCheckpoint(_ name: String) -> Bool {
+        let markers: Set<String> = ["wan", "wan21", "wan22", "ltxv", "animatediff", "lingbot"]
+        let tokens = name.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+        return tokens.contains { markers.contains($0) }
+    }
+
     func load() {
+        if let bad = [mainModel, textEncoder, vae, diffusion]
+            .first(where: { !$0.isEmpty && Self.isVideoCheckpoint($0) }) {
+            phase = .failed("這是影片模型（\(bad)）。手機記憶體放不下多幀影片，請改用圖片模型。")
+            appLog("sd: refused video checkpoint \(bad)", source: "sd")
+            return
+        }
         guard !mainModel.isEmpty || !textEncoder.isEmpty else {
             phase = .failed("先選擇主要模型（或文字編碼器）")
             return

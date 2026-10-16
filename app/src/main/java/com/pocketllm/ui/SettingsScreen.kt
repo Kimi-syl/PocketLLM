@@ -2939,8 +2939,15 @@ private fun AdvancedSettingsSection(vm: AppViewModel) {
             // Model picker: the models already downloaded, not a path the user
             // has to type. A custom-path field stays for files the app did not
             // download.
+            // Video checkpoints (WAN, LTXV, AnimateDiff, LingBot) share the .gguf
+            // extension with image models but are many GB and hold many frames at
+            // once -- no phone can fit them. Kept out of the pickers rather than
+            // offered and then failing after the RAM is already committed.
             val localModels = (vm.models.collectAsState().value +
-                vm.safetensors.collectAsState().value).map { it.name }.distinct().sorted()
+                vm.safetensors.collectAsState().value)
+                .map { it.name }
+                .filterNot { isVideoCheckpoint(it) }
+                .distinct().sorted()
             var modelMenuOpen by remember { mutableStateOf(false) }
             val currentName = localModels.firstOrNull {
                 vm.imageModelPathFor(it) == img.modelPath
@@ -4679,6 +4686,21 @@ private fun CompanionMemorySection(vm: AppViewModel) {
 /// The file-level @file:OptIn covers this; a local @OptIn would need the
 /// unqualified name imported, which this file does not do.
 @Composable
+/**
+ * True for video checkpoints, matched on whole name tokens.
+ *
+ * The picker only has the filename, and the engine architecture is not known
+ * until load -- by which point the weights are already being mapped. Token
+ * matching keeps "wan-2.1-t2v-14b.gguf" out while leaving "anima-turbo" and
+ * anything containing "wan" inside another word alone.
+ */
+private fun isVideoCheckpoint(name: String): Boolean {
+    val markers = setOf("wan", "wan21", "wan22", "ltxv", "animatediff", "lingbot")
+    return name.lowercase()
+        .split(Regex("[^a-z0-9]+"))
+        .any { it.isNotEmpty() && it in markers }
+}
+
 private fun SlotDropdown(
     label: String,
     value: String,
