@@ -35,6 +35,21 @@ void LlamaGlobalInit(void);
           onToken:(void (^)(NSString *piece))onToken
        completion:(void (^)(int promptTokens, int generatedTokens, BOOL stopped))completion;
 
+/// Loads the mmproj (projection) file that gives a text model vision, the
+/// llama.cpp equivalent of sd's text encoder. Mirrors loadVision in llama_jni.
+- (BOOL)loadVisionWithMmprojPath:(NSString *)path error:(NSError * _Nullable * _Nullable)error;
+
+/// YES when an mmproj was loaded and reports image support.
+@property (nonatomic, readonly) BOOL supportsVision;
+
+/// Runs one image+text turn and streams the answer. The prompt is prefixed with
+/// the engine's image marker so the bitmap lands where the model expects it.
+- (void)describeImage:(NSString *)imagePath
+               prompt:(NSString *)prompt
+            maxTokens:(int)maxTokens
+              onToken:(void (^)(NSString *piece))onToken
+           completion:(void (^)(BOOL ok, NSString * _Nullable error))completion;
+
 - (void)stop;
 - (int32_t)contextLength;
 

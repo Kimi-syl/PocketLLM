@@ -192,13 +192,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
-            -DGGML_METAL=OFF -DLLAMA_CURL=OFF
-          cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu -j3
+            -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF
+          cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu mtmd -j3
 
           mkdir -p ios-app/llama-libs ios-app/llama-headers
           libtool -static -o ios-app/llama-libs/libpocketllm_ios.a $(find build-ios-sim -name "*.a" | sort)
           cp ci-llama/include/llama.h ios-app/llama-headers/
           cp ci-llama/ggml/include/*.h ios-app/llama-headers/
+          cp ci-llama/tools/mtmd/*.h ios-app/llama-headers/ 2>/dev/null || true
+          cp ci-llama/tools/mtmd/*.h ios-app/llama-headers/ 2>/dev/null || true
           find build-ios-sim -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
 
       - name: Build stable-diffusion.cpp (simulator)
@@ -266,8 +268,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
-            -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DLLAMA_CURL=OFF
-          cmake --build build-ios-dev --target llama ggml ggml-base ggml-cpu ggml-metal -j3
+            -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF
+          cmake --build build-ios-dev --target llama ggml ggml-base ggml-cpu ggml-metal mtmd -j3
 
           mkdir -p ios-app/llama-libs-device
           libtool -static -o ios-app/llama-libs-device/libpocketllm_ios.a $(find build-ios-dev -name "*.a" | sort)
