@@ -69,7 +69,7 @@ final class SdEngine: ObservableObject {
     }
 
     func load() {
-        if let bad = [mainModel, textEncoder, vae, diffusion]
+        if let bad = [mainModel, textEncoder, vae, clipL, t5]
             .first(where: { !$0.isEmpty && Self.isVideoCheckpoint($0) }) {
             phase = .failed("這是影片模型（\(bad)）。手機記憶體放不下多幀影片，請改用圖片模型。")
             appLog("sd: refused video checkpoint \(bad)", source: "sd")
