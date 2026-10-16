@@ -216,6 +216,10 @@ jobs:
           # shared with the app target through HEADER_SEARCH_PATHS. They used
           # to be copied inside the simulator step; with that step gone this is
           # the only copy, so removing it would leave the app with no llama.h.
+          # The mkdir used to live in the simulator step alongside these copies;
+          # dropping that step dropped it too, and set -e turned the missing
+          # destination into a failed build rather than a silent skip.
+          mkdir -p ios-app/llama-headers ios-app/llama-libs-device
           cp ci-llama/include/llama.h ios-app/llama-headers/
           cp ci-llama/ggml/include/*.h ios-app/llama-headers/
           # mtmd lives in tools/, not include/, and had no copy of its own -- the
