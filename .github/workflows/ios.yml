@@ -175,54 +175,6 @@ jobs:
           mkdir -p ios-app/Frameworks
           cp -R core/build/XCFrameworks/Release/PocketLLMKit.xcframework ios-app/Frameworks/
 
-      - name: Build llama.cpp for iOS (simulator)
-        run: |
-          # Clone only when the cache missed; a restored checkout is already at
-          # the pinned commit.
-          if [ ! -d ci-llama/.git ]; then
-            git clone https://github.com/ggml-org/llama.cpp ci-llama
-            git -C ci-llama checkout "$LLAMA_COMMIT"
-          fi
-
-          # CMake is incremental: on a cache hit the configure step reuses the
-          # existing tree and `--build` compiles nothing.
-          cmake -S ci-llama -B build-ios-sim \
-            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DGGML_OPENMP=OFF \
-            -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF
-          cmake --build build-ios-sim --target llama ggml ggml-base ggml-cpu mtmd -j3
-
-          mkdir -p ios-app/llama-libs ios-app/llama-headers
-          libtool -static -o ios-app/llama-libs/libpocketllm_ios.a $(find build-ios-sim -name "*.a" | sort)
-          cp ci-llama/include/llama.h ios-app/llama-headers/
-          cp ci-llama/ggml/include/*.h ios-app/llama-headers/
-          cp ci-llama/tools/mtmd/*.h ios-app/llama-headers/ 2>/dev/null || true
-          cp ci-llama/tools/mtmd/*.h ios-app/llama-headers/ 2>/dev/null || true
-          find build-ios-sim -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
-
-      - name: Build stable-diffusion.cpp (simulator)
-        run: |
-          test -d ci-sd/.git || git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp ci-sd
-          git -C ci-sd fetch --depth 1 origin "$SD_COMMIT" || true
-          git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
-          git -C ci-sd submodule update --init --recursive --depth 1 || true
-          cmake -S ci-sd -B build-sd-sim \
-            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
-            -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
-            -DGGML_METAL=OFF -DGGML_NATIVE=OFF
-          cmake --build build-sd-sim -j3
-          mkdir -p ios-app/sd-libs ios-app/sd-headers
-          libtool -static -o ios-app/sd-libs/libsdcpp_ios.a $(find build-sd-sim -name "*.a" | sort)
-          cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
-          cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
-
-
       - name: Generate Xcode project
         run: |
           # brew is a no-op when the formula is already present (cached bottles).
@@ -232,27 +184,6 @@ jobs:
       # NOTE: Xcode 26 is required — mlx-swift-lm 3.x declares swift-tools-version 6.2.
       # is a simulator-only developer build (not a release), and hard-pinning a
       # major version eventually breaks CI when GitHub prunes runner images.
-      - name: Build iOS app (simulator)
-        run: |
-          cd ios-app
-          xcodebuild -project PocketLLM.xcodeproj -scheme PocketLLM \
-            -destination 'generic/platform=iOS Simulator' \
-            -configuration Debug -derivedDataPath build \
-            build CODE_SIGNING_ALLOWED=NO
-
-      - name: Upload framework artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PocketLLMKit.xcframework
-          path: ios-app/Frameworks/PocketLLMKit.xcframework
-
-      - name: Upload simulator app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PocketLLM-simulator.app
-          path: ios-app/build/Build/Products/Debug-iphonesimulator/PocketLLM.app
-          if-no-files-found: error
-
       - name: Build llama.cpp for iOS (device, arm64)
         run: |
           # Device slice of the pinned llama.cpp, with the Metal backend.
@@ -273,6 +204,19 @@ jobs:
 
           mkdir -p ios-app/llama-libs-device
           libtool -static -o ios-app/llama-libs-device/libpocketllm_ios.a $(find build-ios-dev -name "*.a" | sort)
+
+          # Headers come from the same source tree as the archive, and are
+          # shared with the app target through HEADER_SEARCH_PATHS. They used
+          # to be copied inside the simulator step; with that step gone this is
+          # the only copy, so removing it would leave the app with no llama.h.
+          cp ci-llama/include/llama.h ios-app/llama-headers/
+          cp ci-llama/ggml/include/*.h ios-app/llama-headers/
+          # mtmd lives in tools/, not include/, and had no copy of its own -- the
+          # simulator step used to carry it behind `|| true`, which would have
+          # hidden its absence. No `|| true` here: a missing mtmd.h must fail the
+          # build rather than surface as `file not found` inside LlamaBridge.mm.
+          cp ci-llama/tools/mtmd/*.h ios-app/llama-headers/
+          find build-ios-dev -name "ggml-version.h" -exec cp {} ios-app/llama-headers/ \; || true
 
       - name: Build stable-diffusion.cpp (device)
         run: |
