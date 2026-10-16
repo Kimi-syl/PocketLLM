@@ -69,10 +69,14 @@ final class LocalEngine: ObservableObject {
             // button can be gated on the truth rather than on a name guess.
             if let mmproj = Self.companionMmproj(for: url) {
                 do {
-                    let ok = try ctx.loadVision(withMmprojPath: mmproj.path)
-                    supportsVision = ok
+                    // Swift imports BOOL + NSError** as `throws -> Void`, treating
+                    // the flag as the success indicator. The loader is called for
+                    // its effect and the answer is read from supportsVision, which
+                    // is the engine's own report rather than the return value.
+                    try ctx.loadVision(withMmprojPath: mmproj.path)
+                    supportsVision = ctx.supportsVision
                     mmprojName = mmproj.lastPathComponent
-                    appLog(ok
+                    appLog(supportsVision
                            ? "vision: enabled via \(mmproj.lastPathComponent)"
                            : "vision: \(mmproj.lastPathComponent) loaded but reports no vision",
                            source: "llama")
