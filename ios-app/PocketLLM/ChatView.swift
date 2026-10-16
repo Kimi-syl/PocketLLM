@@ -311,10 +311,44 @@ struct ChatView: View {
         if m.kind == .mlx {
             return ModelInspector.inspect(directory: m.url).isVision
         }
-        return ModelInspector.companionProjection(for: m.url) != nil
+        // For GGUF the truth is whether an mmproj actually loaded, not whether
+        // a file with a matching name happens to sit beside the model. A named
+        // projector that failed to load must not offer an attachment the engine
+        // cannot use.
+        return engine.supportsVision
     }
 
     private func send() {
+        // llama.cpp vision. Checked before the MLX branch because the two are
+        // mutually exclusive: one engine is on, the other has no model loaded.
+        if let image = attachedImage, currentMode == .llama, engine.supportsVision {
+            let asked = input.isEmpty ? "請描述這張照片的內容" : input
+            messages.append(.init(role: "user", content: input.isEmpty ? "[照片]" : input))
+            input = ""
+            attachedImage = nil
+            attachedPreview = nil
+            attachItem = nil
+
+            let idx = messages.count
+            messages.append(.init(role: "assistant", content: ""))
+            // The bridge streams from its own thread, so each piece is applied
+            // on the main actor and appended to whatever is already there --
+            // no captured accumulator, which would be a data race.
+            engine.describe(image: image, prompt: asked) { piece in
+                Task { @MainActor in
+                    let cur = messages[idx].content
+                    messages[idx] = .init(role: "assistant", content: cur + piece)
+                }
+            } done: { err in
+                Task { @MainActor in
+                    if let err {
+                        messages[idx] = .init(role: "assistant",
+                                              content: "分析失敗：\(err)")
+                    }
+                }
+            }
+            return
+        }
         if let image = attachedImage, vlm.isReady {
             messages.append(.init(role: "user", content: input.isEmpty ? "[照片]" : input))
             let asked = input.isEmpty ? vlm.prompt : input
