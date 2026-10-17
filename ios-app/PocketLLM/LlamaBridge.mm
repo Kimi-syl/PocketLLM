@@ -55,6 +55,34 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 
 } // namespace
 
+
+// Appends directly to the app's persistent log, flushed per line. Stage logging
+// has to survive the process being killed -- that is exactly the case being
+// diagnosed -- so it must not buffer or live only in memory.
+static void bridgeLog(NSString *msg) {
+    static FILE *f = nullptr;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray *dirs = NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *path = [dirs.firstObject stringByAppendingPathComponent:@"pocketllm.log"];
+        f = fopen(path.UTF8String, "a");
+    });
+    if (f == nullptr) return;
+    fprintf(f, "%s
+", msg.UTF8String);
+    fflush(f);
+}
+
+// llama and mtmd report *why* something failed through this hook; without it the
+// reason is printed to a console nobody is watching.
+static void llamaLogBridge(enum ggml_log_level level, const char *text, void *user) {
+    if (text == nullptr) return;
+    NSString *t = [NSString stringWithUTF8String:text];
+    if (t.length == 0) return;
+    bridgeLog([NSString stringWithFormat:@"[llama-native] %@", [t stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]]]);
+}
+
 @implementation LlamaContext {
     llama_model *_model;
     llama_context *_ctx;
@@ -202,6 +230,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         return;
     }
     std::lock_guard<std::mutex> lock(_busy);
+    llama_log_set(llamaLogBridge, nullptr);
     _stopGen.store(false);
 
     std::string text = prompt.UTF8String ?: "";
@@ -219,6 +248,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         return;
     }
 
+    bridgeLog(@"bridge: bitmap decoded, tokenizing");
     mtmd_input_chunks *chunks = mtmd_input_chunks_init();
     const mtmd_bitmap *bitmaps[1] = { wrap.bitmap };
     mtmd_input_text input;
@@ -230,6 +260,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     input.add_special = true;
     input.parse_special = true;
 
+    bridgeLog([NSString stringWithFormat:@"bridge: tokenizing chars=%zu", input.text_len]);
     if (mtmd_tokenize(_vision, chunks, &input, bitmaps, 1) != 0) {
         mtmd_input_chunks_free(chunks);
         completion(NO, @"tokenize failed");
@@ -239,6 +270,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     // Start from an empty cache. A previous text generation leaves tokens in the
     // KV while mtmd begins from n_past = 0, and the stale entries are enough to
     // make the image batch fail to evaluate.
+    bridgeLog([NSString stringWithFormat:@"bridge: tokenized chunks=%zu, eval starting", mtmd_input_chunks_size(chunks)]);
     llama_memory_clear(llama_get_memory(_ctx), true);
 
     llama_pos n_past = 0;
@@ -256,10 +288,12 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         completion(NO, why);
         return;
     }
+    bridgeLog([NSString stringWithFormat:@"bridge: eval done n_past=%d", (int)n_past]);
     _lastVisionTokens = (NSInteger)n_past;
     mtmd_input_chunks_free(chunks);
 
     const llama_vocab *vocab = llama_model_get_vocab(_model);
+    bridgeLog(@"bridge: decode starting");
     int produced = 0;
     for (; produced < maxTokens; produced++) {
         if (_stopGen.load()) break;
