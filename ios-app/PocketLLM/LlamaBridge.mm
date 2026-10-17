@@ -69,8 +69,7 @@ static void bridgeLog(NSString *msg) {
         f = fopen(path.UTF8String, "a");
     });
     if (f == nullptr) return;
-    fprintf(f, "%s
-", msg.UTF8String);
+    fprintf(f, "%s\n", msg.UTF8String);
     fflush(f);
 }
 
