@@ -120,7 +120,7 @@ struct HuggingFaceClient {
         _ query: String,
         filters: [String] = [],
         sort: Sort = .relevance,
-        pipelineTag: String? = "text-generation",
+        pipelineTags: [String] = ["text-generation"],
         limit: Int = 25
     ) async throws -> [SearchResult] {
         var components = URLComponents(string: Self.api)!
@@ -139,14 +139,38 @@ struct HuggingFaceClient {
         for f in filters where !f.isEmpty {
             items.append(URLQueryItem(name: "filter", value: f))
         }
-        if let pipelineTag, !pipelineTag.isEmpty {
-            items.append(URLQueryItem(name: "pipeline_tag", value: pipelineTag))
-        }
         components.queryItems = items
         guard let url = components.url else { throw ClientError.badURL(Self.api) }
 
-        let data = try await get(url)
-        return try Self.decoder.decode([SearchResult].self, from: data)
+        // One request per pipeline tag, merged. The Hub ANDs repeated filters
+        // and a repository carries exactly one pipeline tag, so asking for
+        // text-generation and image-text-to-text together returns nothing.
+        _ = url
+        var merged: [String: SearchResult] = [:]
+        var order: [String] = []
+        for tag in (pipelineTags.isEmpty ? [nil] : pipelineTags.map { Optional($0) }) {
+            var tagged = components
+            var taggedItems = items
+            if let tag { taggedItems.append(URLQueryItem(name: "pipeline_tag", value: tag)) }
+            tagged.queryItems = taggedItems
+            guard let taggedURL = tagged.url else { continue }
+            let data = try await get(taggedURL)
+            let page = try Self.decoder.decode([SearchResult].self, from: data)
+            for row in page {
+                let key = row.modelId ?? UUID().uuidString
+                if merged[key] == nil {
+                    merged[key] = row
+                    order.append(key)
+                }
+            }
+        }
+        // Each request is sorted by its own popularity; re-sort the union so one
+        // tag does not dominate purely because its request returned first.
+        return order
+            .compactMap { merged[$0] }
+            .sorted { ($0.downloads ?? 0) > ($1.downloads ?? 0) }
+            .prefix(limit)
+            .map { $0 }
     }
 
     // MARK: - Repository listing

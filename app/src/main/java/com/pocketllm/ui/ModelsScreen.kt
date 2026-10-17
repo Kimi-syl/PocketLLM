@@ -405,6 +405,8 @@ private fun HfSearchSection(vm: AppViewModel) {
     // its progress can render under that field (it has no file row).
     var directDownloadActive by remember { mutableStateOf(false) }
     var hfCategory by remember { mutableStateOf("llm") }
+    // Narrows the result set; the plain search already covers both tags.
+    var visionOnly by remember { mutableStateOf(false) }
     // Off by default: safetensors checkpoints need conversion before llama.cpp
     // will load them, so they are opt-in rather than noise in the results.
     var showSafetensors by remember { mutableStateOf(false) }
@@ -432,11 +434,18 @@ private fun HfSearchSection(vm: AppViewModel) {
                     onClick = { hfCategory = "image" },
                     label = { Text("圖片生成") },
                 )
-                FilterChip(
-                    selected = hfCategory == "vlm",
-                    onClick = { hfCategory = "vlm" },
-                    label = { Text("視覺 (VLM)") },
-                )
+            }
+        }
+        item {
+            // The default search asks for text-generation and image-text-to-text
+            // together, since llama.cpp loads both. Ticking this drops the text
+            // tag rather than switching to a separate category.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.clickable { visionOnly = !visionOnly },
+            ) {
+                Checkbox(checked = visionOnly, onCheckedChange = { visionOnly = it })
+                Text("只顯示視覺模型", style = MaterialTheme.typography.bodyMedium)
             }
         }
         item {
@@ -457,7 +466,6 @@ private fun HfSearchSection(vm: AppViewModel) {
                     Text(
                         when (hfCategory) {
                             "image" -> "Search image models"
-                            "vlm" -> "Search vision models"
                             else -> "Search GGUF models"
                         }
                     )
@@ -466,7 +474,6 @@ private fun HfSearchSection(vm: AppViewModel) {
                     Text(
                         when (hfCategory) {
                             "image" -> "e.g. stable diffusion 1.5"
-                            "vlm" -> "e.g. Qwen2.5-VL"
                             else -> "e.g. Qwen2.5 3B instruct"
                         }
                     )
@@ -474,7 +481,7 @@ private fun HfSearchSection(vm: AppViewModel) {
                 singleLine = true,
                 trailingIcon = {
                     IconButton(
-                        onClick = { vm.searchHuggingFace(query, hfCategory) },
+                        onClick = { vm.searchHuggingFace(query, hfCategory, visionOnly) },
                         enabled = query.isNotBlank() && !searchLoading,
                     ) {
                         Icon(Icons.Outlined.Search, contentDescription = "Search")

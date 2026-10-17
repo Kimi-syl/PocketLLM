@@ -17,38 +17,33 @@ final class ModelStore: ObservableObject {
     enum Kind: String, Hashable, CaseIterable {
         case gguf
         case mlx
-        /// Vision models. They are MLX checkpoints, but `filter=mlx` alone drags
-        /// in every text model too; the Hub's pipeline tag is what actually
-        /// narrows to models that accept an image.
-        case vlm
 
         /// Hub library tags narrowing a search by format. Several are sent
         /// together and the Hub ANDs them: MLX repositories are converted from
         /// transformers checkpoints and carry both tags, so asking for `mlx`
-        /// alone misses the ones that were not tagged that way. Empty means the
-        /// format is unconstrained, which is what the vision category needs —
-        /// VLMs are safetensors, and a format filter would exclude text models
-        /// that also take an image.
+        /// alone misses the ones that were not tagged that way.
         var searchFilters: [String] {
             switch self {
             case .gguf: return ["gguf"]
             case .mlx: return ["mlx", "transformers"]
-            case .vlm: return []
             }
         }
 
-        var pipelineTag: String? {
-            switch self {
-            case .vlm: return "image-text-to-text"
-            default: return "text-generation"
-            }
+        /// Pipeline tags to search, one request each.
+        ///
+        /// The Hub ANDs repeated filters and a repository carries exactly one
+        /// pipeline tag, so text and vision models cannot be asked for in a
+        /// single request — their union needs separate calls. Both are included
+        /// because llama.cpp and MLX load text and vision models alike; the
+        /// vision-only switch drops the text tag rather than switching category.
+        var pipelineTags: [String] {
+            ["text-generation", "image-text-to-text"]
         }
 
         var label: String {
             switch self {
             case .gguf: return "GGUF (llama.cpp)"
             case .mlx: return "MLX (Apple)"
-            case .vlm: return "視覺 (VLM)"
             }
         }
     }
@@ -73,6 +68,8 @@ final class ModelStore: ObservableObject {
     @Published private(set) var installed: [InstalledModel] = []
     @Published private(set) var downloads: [ActiveDownload] = []
     @Published private(set) var results: [HuggingFaceClient.SearchResult] = []
+    /// Narrows results to vision models; the plain search covers both tags.
+    @Published var visionOnly = false
     @Published private(set) var isSearching = false
     @Published var notice: String?
 
@@ -257,7 +254,7 @@ final class ModelStore: ObservableObject {
                     query,
                     filters: kind.searchFilters,
                     sort: sort,
-                    pipelineTag: kind.pipelineTag)
+                    pipelineTags: visionOnly ? ["image-text-to-text"] : kind.pipelineTags)
                 DispatchQueue.main.async {
                     self.results = found
                     self.isSearching = false

@@ -124,6 +124,12 @@ struct ModelsView: View {
             }
             .pickerStyle(.segmented)
 
+            // The default search asks for text-generation and image-text-to-text
+            // together, since both loaders handle text and vision models. This
+            // narrows the result set rather than being a third format.
+            Toggle("Only vision models", isOn: $store.visionOnly)
+                .font(.footnote)
+
             Picker("Sort by", selection: sortBinding) {
                 ForEach(HuggingFaceClient.Sort.allCases) { option in
                     Text(option.label).tag(option)

@@ -654,18 +654,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun searchHuggingFace(query: String, category: String = "llm") {
+    fun searchHuggingFace(
+        query: String,
+        category: String = "llm",
+        visionOnly: Boolean = false,
+    ) {
         if (query.isBlank() || _searchLoading.value) return
         viewModelScope.launch {
             _searchLoading.value = true
-            // image-text-to-text is the pipeline tag for vision models, so a
-            // dedicated category surfaces VLMs that text-generation never matches.
-            val tag = when (category) {
-                "image" -> "text-to-image"
-                "vlm" -> "image-text-to-text"
-                else -> "text-generation"
+            // One list by default: llama.cpp loads text and vision models alike,
+            // so both pipeline tags are searched together. "Vision only" simply
+            // drops the text tag rather than being a separate category.
+            val tags = when {
+                category == "image" -> listOf("text-to-image")
+                visionOnly -> listOf("image-text-to-text")
+                else -> listOf("text-generation", "image-text-to-text")
             }
-            runCatching { hfClient.search(query.trim(), pipelineTag = tag) }
+            runCatching { hfClient.search(query.trim(), pipelineTags = tags) }
                 .onSuccess { _searchResults.value = it }
                 .onFailure { ServerLog.log("HF search failed: ${it.message}") }
             _searchLoading.value = false

@@ -4701,6 +4701,7 @@ private fun isVideoCheckpoint(name: String): Boolean {
         .any { it.isNotEmpty() && it in markers }
 }
 
+@Composable
 private fun SlotDropdown(
     label: String,
     value: String,

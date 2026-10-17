@@ -50,25 +50,39 @@ class HuggingFaceClient(private val tokenProvider: () -> String? = { null }) {
      * downloads stay GGUF-only (see [listGgufFiles]), because other formats may
      * need converting before they will load.
      */
+    /**
+     * Searches the Hub across several pipeline tags.
+     *
+     * The Hub ANDs repeated query parameters, and a repository carries exactly
+     * one pipeline tag, so asking for text-generation and image-text-to-text in
+     * a single request matches nothing. One request per tag, merged by repo id,
+     * is the only way to get their union.
+     */
     suspend fun search(
         query: String,
         limit: Int = 25,
-        pipelineTag: String? = "text-generation",
+        pipelineTags: List<String> = listOf("text-generation"),
     ): List<HfSearchResult> = withContext(Dispatchers.IO) {
-        val builder = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
-            .addQueryParameter("search", query)
-            .addQueryParameter("sort", "downloads")
-            .addQueryParameter("direction", "-1")
-            .addQueryParameter("limit", limit.toString())
-        // Only constrain by pipeline when a category actually asks for it; the
-        // download filter already stops anything unusable being offered.
-        if (pipelineTag != null) builder.addQueryParameter("pipeline_tag", pipelineTag)
-        val request = authorize(Request.Builder().url(builder.build())).build()
-        client.newCall(request).execute().use { response ->
-            check(response.isSuccessful) { "Search failed: HTTP ${response.code}" }
-            val body = response.body?.string() ?: error("Empty search response")
-            json.decodeFromString<List<HfSearchResult>>(body)
+        val merged = LinkedHashMap<String, HfSearchResult>()
+        for (tag in pipelineTags.ifEmpty { listOf("") }) {
+            val builder = "https://huggingface.co/api/models".toHttpUrl().newBuilder()
+                .addQueryParameter("search", query)
+                .addQueryParameter("sort", "downloads")
+                .addQueryParameter("direction", "-1")
+                .addQueryParameter("limit", limit.toString())
+            if (tag.isNotEmpty()) builder.addQueryParameter("pipeline_tag", tag)
+            val request = authorize(Request.Builder().url(builder.build())).build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use
+                val body = response.body?.string().orEmpty()
+                runCatching { json.decodeFromString<List<HfSearchResult>>(body) }
+                    .getOrDefault(emptyList())
+                    .forEach { row -> row.id?.let { id -> merged.putIfAbsent(id, row) } }
+            }
         }
+        // Sorted by downloads within each request; re-sort the union so a tag
+        // that happened to return first does not dominate the list.
+        merged.values.sortedByDescending { it.downloads }.take(limit)
     }
 
     suspend fun listGgufFiles(
