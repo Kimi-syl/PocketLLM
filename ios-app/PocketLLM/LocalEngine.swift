@@ -157,7 +157,7 @@ final class LocalEngine: ObservableObject {
             // An instruct VLM given bare text has no user turn, so it emits a
             // space and stops. The marker goes inside the user turn, which is
             // where mtmd expects the image placeholder.
-            let marker = LlamaContext.visionMarker
+            let marker = LlamaContext.visionMarker()
             let raw = marker.isEmpty ? prompt : marker + "\n" + prompt
             let templated = ctx.applyTemplate([["user", raw]]) ?? raw
             // Log exactly what reaches the model: the typed text, the template
