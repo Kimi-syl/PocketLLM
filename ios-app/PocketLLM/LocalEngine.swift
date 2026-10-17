@@ -145,15 +145,20 @@ final class LocalEngine: ObservableObject {
             done("此模型沒有載入視覺投影（mmproj），無法分析圖片")
             return
         }
-        // Image tokens scale with pixel area: on a Qwen-class VLM a 1280px photo
-        // is roughly (1280/28)^2 ~ 2000 tokens before any text, which overflows
-        // the default 2048 context and makes the prompt fail to evaluate.
-        // Shrinking here keeps the prompt inside the window at any setting.
-        let target = Self.visionSizedCopy(of: image, maxDimension: 768) ?? image
-        ctx.describeImage(target.path, prompt: prompt, maxTokens: 512) { piece in
-            onToken(piece)
-        } completion: { ok, err in
-            done(ok ? nil : (err ?? "vision failed"))
+        // Encoding, evaluating and decoding an image is minutes of work and
+        // describeImage is synchronous. Running it on the caller's thread froze
+        // the UI until the watchdog killed the app -- the same defect already
+        // fixed in SdEngine and VLMEngine, and the reason this path hung.
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Image tokens scale with pixel area: a 1280px photo on a
+            // Qwen-class VLM is roughly (1280/28)^2 ~ 2000 tokens before any
+            // text, which overflows the default 2048 context.
+            let target = Self.visionSizedCopy(of: image, maxDimension: 768) ?? image
+            ctx.describeImage(target.path, prompt: prompt, maxTokens: 512) { piece in
+                DispatchQueue.main.async { onToken(piece) }
+            } completion: { ok, err in
+                DispatchQueue.main.async { done(ok ? nil : (err ?? "vision failed")) }
+            }
         }
     }
 
