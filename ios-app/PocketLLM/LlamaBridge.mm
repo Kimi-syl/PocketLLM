@@ -226,10 +226,24 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         return;
     }
 
+    // Start from an empty cache. A previous text generation leaves tokens in the
+    // KV while mtmd begins from n_past = 0, and the stale entries are enough to
+    // make the image batch fail to evaluate.
+    llama_memory_clear(llama_get_memory(_ctx), true);
+
     llama_pos n_past = 0;
-    if (mtmd_helper_eval_chunks(_vision, _ctx, chunks, n_past, 0, (int32_t)512, true, &n_past) != 0) {
+    const int32_t n_batch = 512;
+    const uint32_t n_ctx_now = llama_n_ctx(_ctx);
+    const size_t n_chunks = mtmd_input_chunks_size(chunks);
+    if (mtmd_helper_eval_chunks(_vision, _ctx, chunks, n_past, 0, n_batch, true, &n_past) != 0) {
+        // Carry the context size in the message: this call fails when the image
+        // tokens do not fit, and without the numbers the reason is invisible.
+        NSString *why = [NSString stringWithFormat:
+            @"failed to evaluate the image prompt (n_ctx=%u, n_batch=%d, chunks=%zu) — "
+            @"an image prompt needs a larger context than plain text",
+            n_ctx_now, n_batch, n_chunks];
         mtmd_input_chunks_free(chunks);
-        completion(NO, @"failed to evaluate the image prompt");
+        completion(NO, why);
         return;
     }
     mtmd_input_chunks_free(chunks);

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// On-device inference using the llama.cpp ObjC++ bridge.
 final class LocalEngine: ObservableObject {
@@ -103,6 +104,26 @@ final class LocalEngine: ObservableObject {
     /// offers — an mmproj carries no marker readable without loading it, and
     /// loading it is the expensive decision this lookup exists to inform.
     /// Returns nil for a plain text model, which is the common case.
+    /// Writes a down-scaled copy for the vision path and returns it.
+    ///
+    /// Vision prompts spend context on image tokens, so a full-resolution photo
+    /// can exhaust the window before the question is tokenised. The copy lives
+    /// beside the original and is temporary.
+    nonisolated static func visionSizedCopy(of url: URL, maxDimension: CGFloat) -> URL? {
+        guard let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else { return nil }
+        let scaled = image.scaled(maxDimension: maxDimension)
+        guard let jpeg = scaled.jpegData(compressionQuality: 0.9) else { return nil }
+        let out = url.deletingLastPathComponent()
+            .appendingPathComponent("vision-\(url.deletingPathExtension().lastPathComponent).jpg")
+        do {
+            try jpeg.write(to: out)
+            return out
+        } catch {
+            return nil
+        }
+    }
+
     nonisolated static func companionMmproj(for modelURL: URL) -> URL? {
         let dir = modelURL.deletingLastPathComponent()
         let entries = (try? FileManager.default.contentsOfDirectory(
@@ -124,7 +145,12 @@ final class LocalEngine: ObservableObject {
             done("此模型沒有載入視覺投影（mmproj），無法分析圖片")
             return
         }
-        ctx.describeImage(image.path, prompt: prompt, maxTokens: 512) { piece in
+        // Image tokens scale with pixel area: on a Qwen-class VLM a 1280px photo
+        // is roughly (1280/28)^2 ~ 2000 tokens before any text, which overflows
+        // the default 2048 context and makes the prompt fail to evaluate.
+        // Shrinking here keeps the prompt inside the window at any setting.
+        let target = Self.visionSizedCopy(of: image, maxDimension: 768) ?? image
+        ctx.describeImage(target.path, prompt: prompt, maxTokens: 512) { piece in
             onToken(piece)
         } completion: { ok, err in
             done(ok ? nil : (err ?? "vision failed"))
