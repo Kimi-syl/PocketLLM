@@ -224,12 +224,19 @@ static void llamaLogBridge(enum ggml_log_level level, const char *text, void *us
             maxTokens:(int)maxTokens
               onToken:(void (^)(NSString *))onToken
            completion:(void (^)(BOOL, NSString *_Nullable))completion {
+    // Logged before the guard and before the mutex: if the lock is held by a
+    // generation in flight this call blocks here, and any logging placed after
+    // the lock would be invisible for exactly that case.
+    bridgeLog(@"bridge: describe entered");
+    llama_log_set(llamaLogBridge, nullptr);
     if (!_vision || !_ctx) {
+        bridgeLog(@"bridge: no vision context");
         completion(NO, @"vision not loaded");
         return;
     }
+    bridgeLog(@"bridge: waiting for busy lock");
     std::lock_guard<std::mutex> lock(_busy);
-    llama_log_set(llamaLogBridge, nullptr);
+    bridgeLog(@"bridge: busy lock acquired");
     _stopGen.store(false);
 
     std::string text = prompt.UTF8String ?: "";
