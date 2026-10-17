@@ -213,6 +213,10 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     const mtmd_bitmap *bitmaps[1] = { wrap.bitmap };
     mtmd_input_text input;
     input.text = text.c_str();
+    // text_len is a separate field and is NOT derived from text: leaving it
+    // uninitialised made mtmd tokenise a garbage-length string, which is what
+    // surfaced as "tokenize failed".
+    input.text_len = text.size();
     input.add_special = true;
     input.parse_special = true;
 

@@ -505,6 +505,10 @@ Java_com_pocketllm_llm_LlamaBridge_visionDescribe(JNIEnv* env, jobject, jlong id
     mtmd_input_chunks* chunks = mtmd_input_chunks_init();
     mtmd_input_text text;
     text.text = prompt.c_str();
+    // text_len is its own field and is NOT inferred from text: left
+    // uninitialised, mtmd tokenises a garbage-length string and reports a
+    // tokenize failure regardless of how good the image or marker are.
+    text.text_len = prompt.size();
     text.add_special = true;
     text.parse_special = true;
 
