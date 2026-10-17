@@ -42,6 +42,8 @@ final class LocalEngine: ObservableObject {
     /// (which has no Metal backend) silently yields a CPU load rather than a
     /// failure — the reported backend below is the truth.
     func load(url: URL, contextSize: Int32, threads: Int, gpuLayers: Int) {
+        // Native stage logs must land in the same file the Logs tab reads.
+        LlamaContext.setLogPath(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("pocketllm.log").path)
         appLogMemory("pre-load", source: "llama")
         state = "loading…"
         supportsVision = false

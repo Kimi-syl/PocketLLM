@@ -59,18 +59,30 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 // Appends directly to the app's persistent log, flushed per line. Stage logging
 // has to survive the process being killed -- that is exactly the case being
 // diagnosed -- so it must not buffer or live only in memory.
+static NSString *g_logPath = nil;
+
 static void bridgeLog(NSString *msg) {
     static FILE *f = nullptr;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
+    static NSString *opened = nil;
+    NSString *path = g_logPath;
+    if (path.length == 0) {
         NSArray *dirs = NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES);
-        NSString *path = [dirs.firstObject stringByAppendingPathComponent:@"pocketllm.log"];
+        path = [dirs.firstObject stringByAppendingPathComponent:@"pocketllm.log"];
+    }
+    if (f == nullptr || ![opened isEqualToString:path]) {
+        if (f != nullptr) { fclose(f); f = nullptr; }
         f = fopen(path.UTF8String, "a");
-    });
+        opened = path;
+    }
     if (f == nullptr) return;
     fprintf(f, "%s\n", msg.UTF8String);
     fflush(f);
+}
+
++ (void)setLogPath:(NSString *)path {
+    g_logPath = [path copy];
+    bridgeLog(@"bridge: log path set");
 }
 
 // llama and mtmd report *why* something failed through this hook; without it the
@@ -197,6 +209,7 @@ static void llamaLogBridge(enum ggml_log_level level, const char *text, void *us
     params.print_timings = false;
     params.n_threads = 4;
 
+    bridgeLog(@"bridge: loading mmproj");
     _vision = mtmd_init_from_file(path.UTF8String, _model, params);
     if (!_vision) {
         if (error) *error = [NSError errorWithDomain:@"LlamaBridge" code:3
