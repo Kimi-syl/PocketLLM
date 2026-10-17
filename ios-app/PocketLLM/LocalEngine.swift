@@ -160,10 +160,19 @@ final class LocalEngine: ObservableObject {
             let marker = LlamaContext.visionMarker
             let raw = marker.isEmpty ? prompt : marker + "\n" + prompt
             let templated = ctx.applyTemplate([["user", raw]]) ?? raw
+            // Log exactly what reaches the model: the typed text, the template
+            // wrapper, and the marker position. Reading the code has been an
+            // unreliable way to confirm this chain, so the prompt is recorded.
+            let head = templated.prefix(160).replacingOccurrences(of: "\n", with: "\\n")
+            appLog("vision: typed=\(prompt.prefix(80)) chars=\(prompt.count)", source: "llama")
+            appLog("vision: templated chars=\(templated.count) head=\(head)", source: "llama")
             ctx.describeImage(target.path, prompt: templated, maxTokens: 512) { piece in
                 DispatchQueue.main.async { onToken(piece) }
             } completion: { ok, err in
-                DispatchQueue.main.async { done(ok ? nil : (err ?? "vision failed")) }
+                DispatchQueue.main.async {
+                    appLog("vision: eval tokens=\(ctx.lastVisionTokens) ok=\(ok)", source: "llama")
+                    done(ok ? nil : (err ?? "vision failed"))
+                }
             }
         }
     }

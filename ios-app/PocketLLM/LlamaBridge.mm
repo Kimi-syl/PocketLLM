@@ -59,6 +59,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     llama_model *_model;
     llama_context *_ctx;
     mtmd_context *_vision;
+    NSInteger _lastVisionTokens;
     std::atomic<bool> _stopGen;
     std::mutex _busy;
 }
@@ -187,6 +188,10 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
     return _vision != nullptr && mtmd_support_vision(_vision);
 }
 
+- (NSInteger)lastVisionTokens {
+    return _lastVisionTokens;
+}
+
 - (void)describeImage:(NSString *)imagePath
                prompt:(NSString *)prompt
             maxTokens:(int)maxTokens
@@ -251,6 +256,7 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
         completion(NO, why);
         return;
     }
+    _lastVisionTokens = (NSInteger)n_past;
     mtmd_input_chunks_free(chunks);
 
     const llama_vocab *vocab = llama_model_get_vocab(_model);

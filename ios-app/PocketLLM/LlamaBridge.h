@@ -49,6 +49,10 @@ void LlamaGlobalInit(void);
 
 /// Runs one image+text turn and streams the answer. The prompt is prefixed with
 /// the engine's image marker so the bitmap lands where the model expects it.
+/// Tokens evaluated for the last image prompt, including the image tokens.
+/// A value barely larger than the text suggests the bitmap was never spliced in.
+@property (nonatomic, readonly) NSInteger lastVisionTokens;
+
 - (void)describeImage:(NSString *)imagePath
                prompt:(NSString *)prompt
             maxTokens:(int)maxTokens
