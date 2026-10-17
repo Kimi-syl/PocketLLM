@@ -80,11 +80,6 @@ static void bridgeLog(NSString *msg) {
     fflush(f);
 }
 
-+ (void)setLogPath:(NSString *)path {
-    g_logPath = [path copy];
-    bridgeLog(@"bridge: log path set");
-}
-
 // llama and mtmd report *why* something failed through this hook; without it the
 // reason is printed to a console nobody is watching.
 static void llamaLogBridge(enum ggml_log_level level, const char *text, void *user) {
@@ -95,6 +90,12 @@ static void llamaLogBridge(enum ggml_log_level level, const char *text, void *us
 }
 
 @implementation LlamaContext {
+
++ (void)setLogPath:(NSString *)path {
+    g_logPath = [path copy];
+    bridgeLog(@"bridge: log path set");
+}
+
     llama_model *_model;
     llama_context *_ctx;
     mtmd_context *_vision;
