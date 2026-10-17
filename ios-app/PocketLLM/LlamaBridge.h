@@ -37,6 +37,11 @@ void LlamaGlobalInit(void);
 
 /// Loads the mmproj (projection) file that gives a text model vision, the
 /// llama.cpp equivalent of sd's text encoder. Mirrors loadVision in llama_jni.
+/// The placeholder mtmd substitutes for the image tokens (e.g. <__media__>).
+/// Needed on the Swift side so the marker can be placed inside the user turn
+/// before the chat template is applied.
++ (NSString *)visionMarker;
+
 - (BOOL)loadVisionWithMmprojPath:(NSString *)path error:(NSError * _Nullable * _Nullable)error;
 
 /// YES when an mmproj was loaded and reports image support.

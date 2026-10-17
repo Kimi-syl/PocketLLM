@@ -154,7 +154,13 @@ final class LocalEngine: ObservableObject {
             // Qwen-class VLM is roughly (1280/28)^2 ~ 2000 tokens before any
             // text, which overflows the default 2048 context.
             let target = Self.visionSizedCopy(of: image, maxDimension: 768) ?? image
-            ctx.describeImage(target.path, prompt: prompt, maxTokens: 512) { piece in
+            // An instruct VLM given bare text has no user turn, so it emits a
+            // space and stops. The marker goes inside the user turn, which is
+            // where mtmd expects the image placeholder.
+            let marker = LlamaContext.visionMarker
+            let raw = marker.isEmpty ? prompt : marker + "\n" + prompt
+            let templated = ctx.applyTemplate([["user", raw]]) ?? raw
+            ctx.describeImage(target.path, prompt: templated, maxTokens: 512) { piece in
                 DispatchQueue.main.async { onToken(piece) }
             } completion: { ok, err in
                 DispatchQueue.main.async { done(ok ? nil : (err ?? "vision failed")) }

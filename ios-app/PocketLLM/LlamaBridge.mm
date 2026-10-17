@@ -149,6 +149,11 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 
 #pragma mark - Vision (mmproj)
 
++ (NSString *)visionMarker {
+    const char *m = mtmd_default_marker();
+    return (m != nullptr) ? @(m) : @"";
+}
+
 - (BOOL)loadVisionWithMmprojPath:(NSString *)path error:(NSError **_Nullable)error {
     if (!_model) {
         if (error) *error = [NSError errorWithDomain:@"LlamaBridge" code:2
