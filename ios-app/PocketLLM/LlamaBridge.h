@@ -2,10 +2,6 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Lets Swift hand the bridge the exact path of the app log, so the native
-/// writer cannot diverge from the one the Logs tab reads.
-+ (void)setLogPath:(NSString *)path;
-
 /// ObjC++ wrapper over llama.cpp for on-device inference on iOS.
 /// Mirrors the Android JNI bridge (llama_jni.cpp): one context per model,
 /// serialized generation, cooperative stop.
@@ -20,6 +16,10 @@ void LlamaGlobalInit(void);
 #endif
 
 @interface LlamaContext : NSObject
+
+/// Lets Swift hand the bridge the exact path of the app log, so the native
+/// writer cannot diverge from the one the Logs tab reads.
++ (void)setLogPath:(NSString *)path;
 
 - (nullable instancetype)initWithModelPath:(NSString *)path
                                contextSize:(int32_t)contextSize
