@@ -328,6 +328,7 @@ struct ChatView: View {
         // Mode.local is the llama.cpp backend; its display label is "llama.cpp",
         // which is why this is not .llama.
         if let image = attachedImage, currentMode == .local, engine.supportsVision {
+            guard !busy else { return }
             let asked = input.isEmpty ? "請描述這張照片的內容" : input
             messages.append(.init(role: "user", content: input.isEmpty ? "[照片]" : input))
             input = ""
@@ -335,21 +336,35 @@ struct ChatView: View {
             attachedPreview = nil
             attachItem = nil
 
+            busy = true
+            error = nil
             let idx = messages.count
-            messages.append(.init(role: "assistant", content: ""))
+            // Encoding an image on-device is seconds of silence before the first
+            // token. An empty bubble made that look like a hang, so a placeholder
+            // stands in until the first piece arrives (or the call fails).
+            let placeholder = "分析圖片中…"
+            messages.append(.init(role: "assistant", content: placeholder))
             // The bridge streams from its own thread, so each piece is applied
             // on the main actor and appended to whatever is already there --
-            // no captured accumulator, which would be a data race.
+            // no captured accumulator, which would be a data race. The
+            // placeholder is detected by its own text rather than a captured
+            // flag, so no state is shared across the two closures.
             engine.describe(image: image, prompt: asked) { piece in
                 Task { @MainActor in
+                    guard idx < messages.count else { return }
                     let cur = messages[idx].content
-                    messages[idx] = .init(role: "assistant", content: cur + piece)
+                    messages[idx] = .init(role: "assistant",
+                                          content: cur == placeholder ? piece : cur + piece)
                 }
             } done: { err in
                 Task { @MainActor in
+                    busy = false
+                    guard idx < messages.count else { return }
+                    let stillPlaceholder = messages[idx].content == placeholder
                     if let err {
-                        messages[idx] = .init(role: "assistant",
-                                              content: "分析失敗：\(err)")
+                        messages[idx] = .init(role: "assistant", content: "分析失敗：\(err)")
+                    } else if stillPlaceholder {
+                        messages[idx] = .init(role: "assistant", content: "(模型沒有輸出)")
                     }
                 }
             }
