@@ -231,6 +231,15 @@ jobs:
 
       - name: Build stable-diffusion.cpp (device)
         run: |
+          # Built as a SHARED library so sdcpp carries its vendored ggml in its
+          # own Mach-O image. Statically linking it next to llama.cpp put two
+          # ggml copies in one binary: only sdcpp's *extra* patched ops pulled
+          # its ggml objects, so ggml_new_tensor_impl and ggml_new_object existed
+          # twice. sdcpp's calls then bound to llama.cpp's unpatched ggml, the
+          # tensor layout diverged and the sampler read through a bad pointer
+          # (SIGSEGV mid-generation). Android is safe because sdcpp ships as
+          # libsdcpp.so; this is the iOS equivalent. SD_BUILD_SHARED_GGML_LIB is
+          # OFF so ggml is static *inside* that one dylib, not a second image.
           test -d ci-sd/.git || git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp ci-sd
           git -C ci-sd fetch --depth 1 origin "$SD_COMMIT" || true
           git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
@@ -239,12 +248,19 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=OFF \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath -DCMAKE_BUILD_WITH_INSTALL_NAME_DIR=ON \
             -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
             -DGGML_METAL=OFF -DGGML_NATIVE=OFF
           cmake --build build-sd-dev -j3
           mkdir -p ios-app/sd-libs-device ios-app/sd-headers
-          libtool -static -o ios-app/sd-libs-device/libsdcpp_ios.a $(find build-sd-dev -name "*.a" | sort)
+          SD_DYLIB=$(find build-sd-dev -name "libstable-diffusion*.dylib" | head -1)
+          test -n "$SD_DYLIB" || { echo "stable-diffusion dylib was not built"; exit 1; }
+          cp "$SD_DYLIB" ios-app/sd-libs-device/libsdcpp_ios.dylib
+          # The app records this id in its load command; without it the binary
+          # would look for the CI build path at launch and fail to dlopen.
+          install_name_tool -id @rpath/libsdcpp_ios.dylib ios-app/sd-libs-device/libsdcpp_ios.dylib
           cp ci-sd/include/*.h ios-app/sd-headers/ 2>/dev/null || true
           cp ci-sd/ggml/include/*.h ios-app/sd-headers/ 2>/dev/null || true
 
@@ -265,11 +281,17 @@ jobs:
       - name: Package unsigned .ipa
         run: |
           cd ios-app/build-device/Build/Products/Release-iphoneos
+          # The sdcpp dylib carries its own ggml and is loaded from
+          # @executable_path/Frameworks (the app's rpath). No "Embed Frameworks"
+          # build phase exists for it because it is produced outside Xcode, so
+          # copy it in here, before the bundle is zipped.
+          mkdir -p PocketLLM.app/Frameworks
+          cp "$GITHUB_WORKSPACE/ios-app/sd-libs-device/libsdcpp_ios.dylib" PocketLLM.app/Frameworks/
           rm -rf Payload
           mkdir Payload && cp -R PocketLLM.app Payload/
           zip -qry PocketLLM-unsigned.ipa Payload
 
-      - name: Verify no duplicate ggml symbols
+      - name: Verify ggml symbols are not duplicated and sdcpp is embedded
         run: |
           # build-device, not build: the device app is built with
           # -derivedDataPath build-device, while build belonged to the simulator
@@ -281,25 +303,31 @@ jobs:
             *-iphoneos*) ;;
             *) echo "refusing: $APP is not an iphoneos bundle"; exit 1 ;;
           esac
+          # sdcpp must be inside the bundle as a dylib, not linked into the app.
+          test -f "$APP/Frameworks/libsdcpp_ios.dylib" || {
+            echo "$APP/Frameworks/libsdcpp_ios.dylib is missing"; exit 1; }
           BIN="$APP/PocketLLM"
           test -f "$BIN" || { echo "no binary at $BIN"; exit 1; }
 
           NM=$(xcrun -f llvm-nm)
+          # Now that sdcpp is a separate image its ggml cannot collide with
+          # llama.cpp's, so any duplicate here means the dylib was linked back
+          # into the app and the crash has been reintroduced.
           DEFS=$("$NM" "$BIN" | awk '($2 == "T" || $2 == "t") {print $3}' | grep -c '^_ggml_' || true)
           DUP=$("$NM" "$BIN" | awk '($2 == "T" || $2 == "t") {print $3}' | grep '^_ggml_' | sort | uniq -d || true)
-          echo "ggml definitions: $DEFS"
+          echo "ggml definitions in app binary: $DEFS"
           if [ -n "$DUP" ]; then
-            echo "WARNING: these ggml symbols are defined more than once:"
+            echo "ERROR: duplicate ggml symbols are back — sdcpp is no longer"
+            echo "isolated in its own image. sdcpp's calls would bind to"
+            echo "llama.cpp's ggml again and corrupt tensors:"
             echo "$DUP" | sed 's/^/  /'
-            echo "They come from stable-diffusion.cpp vendoring its own ggml"
-            echo "next to llama.cpp's. Core functions such as"
-            echo "ggml_new_tensor_impl existing twice is the interposition behind"
-            echo "the SD crashes; llama.cpp itself is unaffected."
-            echo "Not failing the build: the duplicate is a pre-existing defect and"
-            echo "blocking here would hide a working vision build behind it."
-          else
-            echo "no duplicate ggml symbols"
+            exit 1
           fi
+          echo "sdcpp isolated; no duplicate ggml symbols in the app binary"
+          # The dylib must define its own ggml.
+          "$NM" "$APP/Frameworks/libsdcpp_ios.dylib" | grep -q '^.*_ggml_new_tensor_impl' \
+            && echo "sdcpp dylib carries its own ggml" \
+            || { echo "sdcpp dylib does not define ggml"; exit 1; }
 
       - name: Upload device .ipa artifact
         uses: actions/upload-artifact@v4
