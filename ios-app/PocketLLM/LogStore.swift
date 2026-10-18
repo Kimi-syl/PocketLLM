@@ -50,6 +50,17 @@ final class LogStore: ObservableObject {
         appendToDisk(entry)
     }
 
+    /// Mirrors a native bridge line into the tab without writing the file again.
+    /// The ObjC++ writer already persists its lines (flushed, crash-safe), but
+    /// it is invisible in the running app: only `log` feeds `entries`, so the
+    /// stage logs appeared only after a relaunch re-read the file.
+    func logNative(_ message: String) {
+        entries.append(LogEntry(date: Date(), source: "native", message: message))
+        if entries.count > memoryLimit {
+            entries.removeFirst(entries.count - memoryLimit)
+        }
+    }
+
     /// Convenience: current resident memory plus device headroom, which is the
     /// pair that matters when something dies under load.
     nonisolated static func memoryDescription() -> String {
@@ -131,6 +142,16 @@ final class LogStore: ObservableObject {
 /// Fire-and-forget logging that is safe from any context.
 func appLog(_ message: String, source: String = "app") {
     Task { @MainActor in LogStore.shared.log(message, source: source) }
+}
+
+/// C entry point for the ObjC++ bridge. Swift free functions are not visible to
+/// ObjC, so the native writer calls this to reach the in-app log. Hops to the
+/// main actor because LogStore is @MainActor.
+@_cdecl("PocketLLMNativeLog")
+public func PocketLLMNativeLog(_ cstr: UnsafePointer<CChar>?) {
+    guard let cstr else { return }
+    let msg = String(cString: cstr)
+    Task { @MainActor in LogStore.shared.logNative(msg) }
 }
 
 /// Log a line annotated with current memory. Use at points where allocation

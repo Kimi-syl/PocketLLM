@@ -61,6 +61,11 @@ std::vector<llama_token> tokenize(const llama_vocab *vocab, const std::string &t
 // diagnosed -- so it must not buffer or live only in memory.
 static NSString *g_logPath = nil;
 
+// Implemented in Swift (LogStore.swift) so the stage logs also appear in the
+// running Logs tab, not only in the file after a relaunch. extern "C" because
+// this is a C++ translation unit and the symbol comes from @_cdecl.
+extern "C" void PocketLLMNativeLog(const char *msg);
+
 static void bridgeLog(NSString *msg) {
     static FILE *f = nullptr;
     static NSString *opened = nil;
@@ -86,6 +91,7 @@ static void bridgeLog(NSString *msg) {
                       [df stringFromDate:[NSDate date]], msg];
     fprintf(f, "%s\n", line.UTF8String);
     fflush(f);
+    if (msg.length > 0) PocketLLMNativeLog(msg.UTF8String);
 }
 
 // llama and mtmd report *why* something failed through this hook; without it the
@@ -213,7 +219,10 @@ static void llamaLogBridge(enum ggml_log_level level, const char *text, void *us
         _vision = nullptr;
     }
     mtmd_context_params params = mtmd_context_params_default();
-    params.use_gpu = false;   // GGML_METAL is off for the simulator slice
+    // Let the encoder use the GPU when the build has a backend. This was pinned
+    // to CPU for the simulator slice, which no longer exists; on device it made
+    // a single image take minutes to encode. CPU-only builds still get false.
+    params.use_gpu = LlamaSupportsGpuOffload();
     params.print_timings = false;
     params.n_threads = 4;
 
