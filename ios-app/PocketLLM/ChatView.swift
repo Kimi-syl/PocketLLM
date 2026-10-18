@@ -87,8 +87,11 @@ struct ChatView: View {
                         if currentMode == .mlx { mlx.stop() } else { engine.stop() }
                     }
                 }
+                // An attached photo is itself a message: send() falls back to a
+                // default prompt when the field is empty. Disabling on empty text
+                // alone made image-only analysis impossible to trigger.
                 Button(busy ? "..." : "Send") { send() }
-                    .disabled(input.isEmpty || busy)
+                    .disabled((input.isEmpty && attachedImage == nil) || busy)
             }
             .padding()
         }
@@ -100,7 +103,8 @@ struct ChatView: View {
         .sheet(isPresented: $showDetails) {
             ModelDetailsView(modelName: loadedModel?.name ?? "未載入",
                              modelURL: loadedModel?.url,
-                             isMLX: currentMode == .mlx)
+                             isMLX: currentMode == .mlx,
+                             onProjection: { url in engine.attachVision(from: url) })
         }
         .fileImporter(isPresented: $showModelPicker, allowedContentTypes: [.data]) { result in
             if case .success(let url) = result {

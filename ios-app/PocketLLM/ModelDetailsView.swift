@@ -8,6 +8,10 @@ struct ModelDetailsView: View {
     let modelName: String
     let modelURL: URL?
     let isMLX: Bool
+    /// Hands a manually chosen projector to the loaded engine. The auto-detected
+    /// one beside the model is attached during load; this covers the projector
+    /// that sits elsewhere, which the picker previously only recorded.
+    var onProjection: ((URL) -> Void)? = nil
 
     @State private var caps: ModelCapabilities?
     @State private var projection: URL?
@@ -51,7 +55,7 @@ struct ModelDetailsView: View {
                             Text(projection.lastPathComponent)
                                 .lineLimit(1).truncationMode(.middle)
                         }
-                        Text("llama.cpp 的視覺推理需要 libmtmd 橋接，尚未接上；這裡先只做偵測，不會謊稱已生效。")
+                        Text("同目錄下的這個投影檔會在載入模型時自動接上，供 llama.cpp（libmtmd）做視覺推理。")
                             .font(.caption2).foregroundStyle(.secondary)
                     } else {
                         Text("此模型旁沒有 mmproj／projector 檔案。")
@@ -77,7 +81,8 @@ struct ModelDetailsView: View {
                           allowsMultipleSelection: false) { result in
                 if case .success(let urls) = result, let u = urls.first {
                     projection = u
-                    appLog("mmproj selected: \(u.lastPathComponent) (bridge pending)", source: "vision")
+                    onProjection?(u)
+                    appLog("mmproj selected: \(u.lastPathComponent)", source: "vision")
                 }
             }
             .task {

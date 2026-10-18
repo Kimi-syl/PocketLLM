@@ -100,6 +100,41 @@ final class LocalEngine: ObservableObject {
 
     var isReady: Bool { context != nil }
 
+    /// Attaches a projector the user picked by hand, for the case where the
+    /// mmproj does not sit beside the model or does not carry "mmproj" in its
+    /// name. Without this the picker in the details panel was a no-op, so a
+    /// projector that was not auto-found could never reach the vision tower.
+    func attachVision(from url: URL) {
+        guard let ctx = context else {
+            appLog("vision: no model loaded to attach a projector to", source: "llama")
+            return
+        }
+        // Held for the session on purpose: mtmd mmaps the projector, so pages
+        // can fault in long after this call returns. Releasing the scope here
+        // would make a later page-in fail.
+        _ = url.startAccessingSecurityScopedResource()
+        appLog("vision: attaching \(url.lastPathComponent)", source: "llama")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try ctx.loadVision(withMmprojPath: url.path)
+                DispatchQueue.main.async {
+                    self.supportsVision = ctx.supportsVision
+                    self.mmprojName = url.lastPathComponent
+                    appLog(self.supportsVision
+                           ? "vision: enabled via \(url.lastPathComponent)"
+                           : "vision: \(url.lastPathComponent) loaded but reports no vision",
+                           source: "llama")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.supportsVision = false
+                    appLog("vision: \(url.lastPathComponent) failed — \(error.localizedDescription)",
+                           source: "llama")
+                }
+            }
+        }
+    }
+
     /// Finds the mmproj that ships beside a GGUF model.
     ///
     /// Matched on the filename because that is the only signal the filesystem
@@ -132,7 +167,10 @@ final class LocalEngine: ObservableObject {
             at: dir, includingPropertiesForKeys: nil)) ?? []
         return entries.first { url in
             let n = url.lastPathComponent.lowercased()
-            return n.hasSuffix(".gguf") && n.contains("mmproj")
+            // Same match as ModelInspector.companionProjection: it decides whether
+            // the UI offers vision, so a projector this rejects would advertise a
+            // button the engine then refuses.
+            return n.hasSuffix(".gguf") && (n.contains("mmproj") || n.contains("projector"))
         }
     }
 

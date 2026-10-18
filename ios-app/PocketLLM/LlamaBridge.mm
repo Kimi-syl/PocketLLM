@@ -76,7 +76,15 @@ static void bridgeLog(NSString *msg) {
         opened = path;
     }
     if (f == nullptr) return;
-    fprintf(f, "%s\n", msg.UTF8String);
+    // Same shape as LogStore's lines (timestamp + [source] + message). The Logs
+    // tab rebuilds its list by parsing the file and drops any line without a
+    // leading timestamp, so a bare line written here is invisible on reload --
+    // which is why the native stage logs never appeared.
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *line = [NSString stringWithFormat:@"%@  [native]  %@",
+                      [df stringFromDate:[NSDate date]], msg];
+    fprintf(f, "%s\n", line.UTF8String);
     fflush(f);
 }
 
@@ -90,18 +98,17 @@ static void llamaLogBridge(enum ggml_log_level level, const char *text, void *us
 }
 
 @implementation LlamaContext {
-
-+ (void)setLogPath:(NSString *)path {
-    g_logPath = [path copy];
-    bridgeLog(@"bridge: log path set");
-}
-
     llama_model *_model;
     llama_context *_ctx;
     mtmd_context *_vision;
     NSInteger _lastVisionTokens;
     std::atomic<bool> _stopGen;
     std::mutex _busy;
+}
+
++ (void)setLogPath:(NSString *)path {
+    g_logPath = [path copy];
+    bridgeLog(@"bridge: log path set");
 }
 
 - (nullable instancetype)initWithModelPath:(NSString *)path
