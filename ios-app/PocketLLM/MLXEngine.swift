@@ -37,12 +37,37 @@ final class MLXEngine: ObservableObject {
 
     var isReady: Bool { container != nil }
 
+    init() {
+        // MLX drives Metal directly, so it holds the GPU exactly like llama.cpp
+        // and sdcpp do. The image engine frees us before it builds its own
+        // context, and we free the image engine before we load (see load()).
+        ComputeCoordinator.shared.registerTextEngine(.mlx) { [weak self] in
+            self?.unload()
+        }
+    }
+
+    /// Releases the weights and the MLX GPU buffers. Called by the coordinator
+    /// before sdcpp takes the GPU, so it must drop the container rather than
+    /// schedule it: an async free would race the context it is making room for.
+    func unload() {
+        guard container != nil else { return }
+        container = nil
+        // The buffer cache is process-wide; without this the freed weights sit
+        // in MLX's pool and auto-fit still sees the memory as occupied.
+        GPU.clearCache()
+        appLog("mlx unloaded so the image engine can take the GPU", source: "mlx")
+        setState("no model loaded")
+    }
+
     /// Loads an MLX model directory. The weights are already on disk, so this
     /// is a load rather than a download. mlx-swift-lm resolves the architecture
     /// from config.json itself, qwen3_5 included.
     func load(directory: URL) async {
         appLogMemory("pre-load", source: "mlx")
         setState("loading \(directory.lastPathComponent)…")
+        // Release the image engine first: an MLX load started while sdcpp still
+        // holds several GB of VRAM is what jetsam-killed the app on a tab switch.
+        ComputeCoordinator.shared.freeImageEngine()
 
         do {
             let loaded = try await LLMModelFactory.shared.loadContainer(

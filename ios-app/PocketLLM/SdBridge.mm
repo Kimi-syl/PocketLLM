@@ -187,6 +187,8 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                    sampleMethod:(int32_t)sampleMethod
                                       scheduler:(int32_t)scheduler
                                        clipSkip:(int32_t)clipSkip
+                                      vaeTiling:(BOOL)vaeTiling
+                                    vaeTileSize:(int32_t)vaeTileSize
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error {
     if (_ctx == nullptr) return nil;
@@ -225,6 +227,17 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     if (!loraSpecs.empty()) {
         gp.loras = loraSpecs.data();
         gp.lora_count = (uint32_t)loraSpecs.size();
+    }
+
+    // VAE tiling: decode in overlapping tiles to cap the VAE's peak compute
+    // buffer. target_overlap of 0.5 is the engine's own default (see
+    // sd_img_gen_params_init) and the value its docs recommend; the tile size is
+    // in image pixels and the engine rounds it down to a VAE-scale multiple.
+    if (vaeTiling) {
+        gp.vae_tiling_params.enabled = true;
+        gp.vae_tiling_params.tile_size_w = vaeTileSize > 0 ? vaeTileSize : 256;
+        gp.vae_tiling_params.tile_size_h = vaeTileSize > 0 ? vaeTileSize : 256;
+        gp.vae_tiling_params.target_overlap = 0.5f;
     }
 
     sd_sample_params_init(&gp.sample_params);

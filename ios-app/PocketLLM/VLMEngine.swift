@@ -27,6 +27,16 @@ final class VLMEngine: ObservableObject {
 
     var isReady: Bool { session != nil }
 
+    init() {
+        // MLX VLM inference holds the GPU too, so the image engine must be able
+        // to free us before it builds its own Metal context.
+        ComputeCoordinator.shared.registerTextEngine(.vlm) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.unload()
+            }
+        }
+    }
+
     /// MLX VLMs need more than weights: the image preprocessing constants
     /// (size, mean, std, patch size) live in preprocessor_config.json. Without
     /// it the image path has no processor to build, and respond(to:image:)
@@ -51,6 +61,9 @@ final class VLMEngine: ObservableObject {
         isBusy = true
         status = "載入中 \(url.lastPathComponent)…"
         appLogMemory("vlm pre-load", source: "vlm")
+        // Release the image engine first: a VLM load while sdcpp still holds the
+        // GPU is what killed the app when the user switched to the chat tab.
+        ComputeCoordinator.shared.freeImageEngine()
         do {
             appLog("vlm: entering loadContainer \(url.lastPathComponent)", source: "vlm")
             let loaded = try await VLMModelFactory.shared.loadContainer(

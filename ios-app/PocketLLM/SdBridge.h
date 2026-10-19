@@ -32,6 +32,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// loras: "path|multiplier;path|multiplier", or nil. Each LoRA is applied to the
 /// generation, matching the Android side's sd_lora_t[] handling.
+///
+/// vaeTiling decodes the VAE in overlapping tiles rather than in one pass, which
+/// lowers the VAE's peak compute buffer; vaeTileSize is the tile edge in image
+/// pixels (the engine rounds it down to a VAE-scale multiple). Ignored when
+/// vaeTiling is NO.
 - (nullable NSArray<SdImage *> *)generatePrompt:(NSString *)prompt
                                        negative:(nullable NSString *)negative
                                           width:(int32_t)width
@@ -44,6 +49,8 @@ NS_ASSUME_NONNULL_BEGIN
                                    sampleMethod:(int32_t)sampleMethod
                                       scheduler:(int32_t)scheduler
                                        clipSkip:(int32_t)clipSkip
+                                      vaeTiling:(BOOL)vaeTiling
+                                    vaeTileSize:(int32_t)vaeTileSize
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error;
 

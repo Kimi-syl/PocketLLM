@@ -1,0 +1,55 @@
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -9,6 +9,7 @@
+ #include "ggml-metal-ops.h"
+ #include "ggml-metal-tuning.h"
+ 
++#include <cstdlib>
+ #include <mutex>
+ #include <string>
+ 
+@@ -581,6 +582,26 @@
+     ggml_metal_set_n_cb(ctx, n_cb);
+ }
+ 
++// Number of extra command buffers a graph is split across (the calling thread
++// always encodes one more, so the total is n_cb + 1).
++//
++// The default of 1 is tuned for llama.cpp's small per-token graphs. A diffusion
++// transformer at 1024x768 is a different shape: one denoise step is a single
++// graph whose command buffer runs for ~8 s on an M2, which is long enough for
++// the iOS GPU watchdog to kill the process (the failure surfaces as
++// kIOGPUCommandBufferCallbackErrorInnocentVictim / "progress timeout", not as a
++// compute error). Encoding the same graph over more, shorter command buffers
++// hands the watchdog the progress it wants and does not change the result.
++// Overridable with GGML_METAL_N_CB; clamped where it is applied.
++static int ggml_backend_metal_preferred_n_cb(void) {
++    const char * env = getenv("GGML_METAL_N_CB");
++    int n_cb = env != nullptr ? atoi(env) : 4;
++    if (n_cb < 0) n_cb = 0;
++    if (n_cb > 8) n_cb = 8;
++    GGML_LOG_INFO("%s: command buffers = %d (+1 on the calling thread)\n", __func__, n_cb);
++    return n_cb;
++}
++
+ static ggml_backend_i ggml_backend_metal_i = {
+     /* .get_name                = */ ggml_backend_metal_name,
+     /* .free                    = */ ggml_backend_metal_free,
+@@ -624,7 +645,7 @@
+         /* .context   = */ ctx,
+     };
+ 
+-    ggml_backend_metal_set_n_cb(backend, 1);
++    ggml_backend_metal_set_n_cb(backend, ggml_backend_metal_preferred_n_cb());
+ 
+     return backend;
+ }
+@@ -719,7 +740,7 @@
+         /* .context   = */ ctx,
+     };
+ 
+-    ggml_backend_metal_set_n_cb(backend, 1);
++    ggml_backend_metal_set_n_cb(backend, ggml_backend_metal_preferred_n_cb());
+ 
+     return backend;
+ 

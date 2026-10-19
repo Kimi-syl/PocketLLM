@@ -45,15 +45,23 @@ final class SdEngine: ObservableObject {
     @Published var scheduler = 0
     @Published var clipSkip = 1
 
+    /// Decode the VAE in overlapping spatial tiles instead of all at once. Cuts
+    /// the VAE's peak compute buffer, which is what makes large canvases fit —
+    /// the trade is seams if the overlap is too small and a little extra time.
+    @Published var vaeTiling = false
+    /// Tile edge in image pixels. The engine rounds it down to a multiple of the
+    /// VAE scale factor, so any of these is safe for every checkpoint.
+    @Published var vaeTileSize = 256
+
     private var context: SdContext?
     private var pollTask: Task<Void, Never>?
     private var lastLoggedStep = -1
 
     init() {
-        // The LLM frees us before it builds its own Metal context (see
-        // ComputeCoordinator). The coordinator calls this on the main thread,
-        // which is why assumeIsolated is safe here.
-        ComputeCoordinator.shared.registerSDTeardown { [weak self] in
+        // Every text/vision engine frees us before it builds its own Metal
+        // context (see ComputeCoordinator). The coordinator calls this on the
+        // main thread, which is why assumeIsolated is safe here.
+        ComputeCoordinator.shared.registerImageEngine { [weak self] in
             MainActor.assumeIsolated {
                 self?.unload()
             }
@@ -92,10 +100,11 @@ final class SdEngine: ObservableObject {
         }
         phase = .loading
         appLogMemory("sd pre-load", source: "sd")
-        // Free the LLM and its ggml-Metal context before sdcpp builds its own.
-        // Two live Metal backends abort llama at context creation, so the
-        // hand-off is a hard requirement, not an optimisation.
-        ComputeCoordinator.shared.freeLLM()
+        // Free every text/vision engine and its ggml-Metal context before sdcpp
+        // builds its own. Two live Metal users abort llama at context creation
+        // and starve auto-fit, so the hand-off is a hard requirement, not an
+        // optimisation.
+        ComputeCoordinator.shared.freeTextEngines()
 
         // Weight loading reads gigabytes. On the main actor that alone is enough
         // to trip the watchdog, so the whole call happens off-main.
@@ -188,13 +197,15 @@ final class SdEngine: ObservableObject {
         let (s0, b) = (seed, batch)
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
         let loraSpec = loras
+        let (tile, tileSize) = (vaeTiling, vaeTileSize)
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()
             // Stage logs: a native crash produces no line of its own, so the last
             // line before death is the only evidence of where it died.
-            appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d) · %@",
-                          w, h, n, c, b, LogStore.memoryDescription()), source: "sd")
+            appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d, vaeTiling %@%d) · %@",
+                          w, h, n, c, b, tile ? "on " : "off ", tile ? tileSize : 0,
+                          LogStore.memoryDescription()), source: "sd")
             let result: [SdImage]?
             do {
                 result = try ctx.generatePrompt(
@@ -203,6 +214,7 @@ final class SdEngine: ObservableObject {
                     cfg: c, distilledGuidance: 0, seed: s0, batch: Int32(b),
                     sampleMethod: Int32(sm), scheduler: Int32(sc),
                     clipSkip: Int32(cs2),
+                    vaeTiling: tile, vaeTileSize: Int32(tileSize),
                     loras: loraSpec.isEmpty ? nil : loraSpec)
             } catch {
                 await MainActor.run {

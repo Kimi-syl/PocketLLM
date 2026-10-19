@@ -179,6 +179,7 @@ struct ImageGenView: View {
     private var paramsCard: some View {
         GroupBox("參數") {
             VStack(alignment: .leading, spacing: 8) {
+                sizeRow
                 stepper("寬", value: $engine.width, range: 256...1024, step: 64)
                 stepper("高", value: $engine.height, range: 256...1024, step: 64)
                 stepper("步數", value: $engine.steps, range: 1...60, step: 1)
@@ -193,6 +194,70 @@ struct ImageGenView: View {
                     TextField("−1 為隨機", value: $engine.seed, format: .number)
                         .keyboardType(.numberPad)
                         .textFieldStyle(.roundedBorder)
+                }
+                Divider()
+                vaeTilingRows
+            }
+        }
+    }
+
+    /// Common canvas sizes, matched back to the width/height fields rather than
+    /// stored separately: the engine only ever reads width/height, so a preset
+    /// that fell out of sync with them would be a lie in the menu.
+    private static let sizePresets: [(label: String, w: Int, h: Int)] = [
+        ("256 × 256", 256, 256),
+        ("384 × 384", 384, 384),
+        ("512 × 512", 512, 512),
+        ("512 × 768", 512, 768),
+        ("768 × 512", 768, 512),
+        ("768 × 768", 768, 768),
+        ("768 × 1024", 768, 1024),
+        ("1024 × 768", 1024, 768),
+        ("1024 × 1024", 1024, 1024),
+    ]
+
+    private var sizeRow: some View {
+        HStack {
+            Text("尺寸")
+            Spacer()
+            Picker("尺寸", selection: sizeBinding) {
+                ForEach(Self.sizePresets.map { $0.label }, id: \.self) { Text($0).tag($0) }
+                Text("自訂").tag("自訂")
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private var sizeBinding: Binding<String> {
+        Binding(
+            get: {
+                Self.sizePresets.first { $0.w == engine.width && $0.h == engine.height }?.label
+                    ?? "自訂"
+            },
+            set: { label in
+                guard let preset = Self.sizePresets.first(where: { $0.label == label }) else { return }
+                engine.width = preset.w
+                engine.height = preset.h
+            }
+        )
+    }
+
+    private var vaeTilingRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("VAE 分塊解碼", isOn: $engine.vaeTiling)
+            Text("大圖解碼時把 VAE 切成重疊小塊，降低尖峰記憶體；開太大會變慢，太大塊可能出現接縫。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if engine.vaeTiling {
+                HStack {
+                    Text("分塊大小")
+                    Spacer()
+                    Picker("分塊大小", selection: $engine.vaeTileSize) {
+                        ForEach([128, 192, 256, 384, 512], id: \.self) {
+                            Text("\($0) px").tag($0)
+                        }
+                    }
+                    .pickerStyle(.menu)
                 }
             }
         }

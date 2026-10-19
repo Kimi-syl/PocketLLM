@@ -40,7 +40,7 @@ final class LocalEngine: ObservableObject {
     init() {
         // The image engine frees us before it builds its own Metal context, so
         // the two ggml instances never hold a GPU at the same time.
-        ComputeCoordinator.shared.registerLLMTeardown { [weak self] in
+        ComputeCoordinator.shared.registerTextEngine(.llama) { [weak self] in
             self?.unload()
         }
     }
@@ -82,7 +82,7 @@ final class LocalEngine: ObservableObject {
         // Release the image engine first: its ggml-Metal copy must be gone before
         // llama builds its context, or llama_init_from_model aborts in
         // ggml_metal_buffer_is_shared.
-        ComputeCoordinator.shared.freeSD()
+        ComputeCoordinator.shared.freeImageEngine()
         releaseSecurityScope() // drop the previous model's scope, if any
         let securityScoped = url.startAccessingSecurityScopedResource()
         securedURL = url
