@@ -62,6 +62,22 @@ NS_ASSUME_NONNULL_BEGIN
 /// the load or the first Metal graph dies is written to nowhere.
 + (void)setLogPath:(NSString *)path;
 
+/// The engine's own sampler and scheduler tables, in enum order, so the UI can
+/// offer exactly what the build supports instead of a hard-coded subset. The
+/// index into each array is the value `sampleMethod`/`scheduler` take. Mirrors
+/// the Android bridge's `nativeSampleMethods`/`nativeSchedulers`.
++ (NSArray<NSString *> *)sampleMethodNames;
++ (NSArray<NSString *> *)schedulerNames;
+
+/// Sets the environment knobs the vendored ggml-Metal backend reads once, at
+/// backend creation, so this must be called *before* the context is created.
+/// nCB <= 0 keeps the backend default; fusion/concurrency only ever turn a
+/// feature off (the defaults are on). Exposed because a full-resolution
+/// diffusion graph can outrun what those defaults were tuned for.
++ (void)configureMetalCommandBuffers:(int32_t)nCB
+                              fusion:(BOOL)fusion
+                         concurrency:(BOOL)concurrency;
+
 /// Polled from Swift on a timer while generation runs.
 @property (nonatomic, readonly) int32_t progressStep;
 @property (nonatomic, readonly) int32_t progressSteps;

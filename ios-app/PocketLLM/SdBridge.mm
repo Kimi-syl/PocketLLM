@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <string>
 #include <sys/time.h>
@@ -102,6 +103,47 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     }
     if (path.length == 0) return;
     g_log_file = fopen(path.UTF8String, "a");
+}
+
+// The string tables are indexed by their enum, so the array order *is* the
+// value the picker's index carries into generatePrompt. Reading the count from
+// the enum (not sizeof) keeps the two in step if the engine adds a method.
++ (NSArray<NSString *> *)sampleMethodNames {
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:(NSUInteger)SAMPLE_METHOD_COUNT];
+    for (int i = 0; i < (int)SAMPLE_METHOD_COUNT; i++) {
+        [names addObject:[NSString stringWithUTF8String:sample_method_to_str[i]]];
+    }
+    return names;
+}
+
++ (NSArray<NSString *> *)schedulerNames {
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:(NSUInteger)SCHEDULER_COUNT];
+    for (int i = 0; i < (int)SCHEDULER_COUNT; i++) {
+        [names addObject:[NSString stringWithUTF8String:scheduler_to_str[i]]];
+    }
+    return names;
+}
+
++ (void)configureMetalCommandBuffers:(int32_t)nCB
+                              fusion:(BOOL)fusion
+                         concurrency:(BOOL)concurrency {
+    // setenv/unsetenv, not just setenv: unsetting restores the backend default
+    // when the user turns a feature back on, rather than leaving a stale "1".
+    if (nCB > 0) {
+        setenv("GGML_METAL_N_CB", std::to_string(nCB).c_str(), 1);
+    } else {
+        unsetenv("GGML_METAL_N_CB");
+    }
+    if (fusion) {
+        unsetenv("GGML_METAL_FUSION_DISABLE");
+    } else {
+        setenv("GGML_METAL_FUSION_DISABLE", "1", 1);
+    }
+    if (concurrency) {
+        unsetenv("GGML_METAL_CONCURRENCY_DISABLE");
+    } else {
+        setenv("GGML_METAL_CONCURRENCY_DISABLE", "1", 1);
+    }
 }
 
 - (nullable instancetype)initWithModel:(nullable NSString *)model

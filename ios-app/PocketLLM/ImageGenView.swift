@@ -1,11 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Image generation UI: the four model slots, prompt, parameters and results.
+/// Image generation UI: the model slots, prompt, parameters and results.
 ///
 /// The slots are explicit rather than a single "pick a model" control because
-/// the checkpoint format genuinely has four parts — text encoder, main model,
-/// VAE and optional LoRAs — and the engine needs each in its own field.
+/// the checkpoint format genuinely has several parts — text encoder, main model,
+/// CLIP/T5 encoders, VAE and optional LoRAs — and the engine needs each in its
+/// own field. A single-file all-in-one checkpoint goes in the main-model slot
+/// alone; the engine detects that case and loads it as a full checkpoint.
 struct ImageGenView: View {
     @StateObject private var engine = SdEngine()
     @State private var picking: Slot?
@@ -13,20 +15,26 @@ struct ImageGenView: View {
     @State private var importNote: String?
 
     private enum Slot: String, Identifiable {
-        case textEncoder, mainModel, vae, lora
+        case textEncoder, mainModel, clipL, clipG, t5, vae, lora
         var id: String { rawValue }
         var title: String {
             switch self {
             case .textEncoder: return "文字編碼器 (llm_path)"
-            case .mainModel:   return "主要模型 (diffusion)"
+            case .mainModel:   return "主要模型 (diffusion / model)"
+            case .clipL:       return "CLIP-L"
+            case .clipG:       return "CLIP-G"
+            case .t5:          return "T5 (t5xxl)"
             case .vae:         return "VAE"
             case .lora:        return "LoRA"
             }
         }
         var hint: String {
             switch self {
-            case .textEncoder: return "Qwen-Image 用 Qwen2.5-VL；SD1.5/SDXL 改用下方 CLIP/T5 欄位"
-            case .mainModel:   return "Qwen / Flux / SD3 的 transformer"
+            case .textEncoder: return "Qwen-Image 用 Qwen2.5-VL"
+            case .mainModel:   return "單一檔案的完整模型，或 Qwen/Flux/SD3 的 transformer"
+            case .clipL:       return "SD1.5 / SDXL 的 CLIP-L"
+            case .clipG:       return "SDXL 的 OpenCLIP-G"
+            case .t5:          return "SD3 / Flux 的 T5"
             case .vae:         return "獨立的 VAE 權重"
             case .lora:        return "path|強度，多個以分號分隔"
             }
@@ -100,6 +108,9 @@ struct ImageGenView: View {
         switch slot {
         case .textEncoder: engine.textEncoder = path
         case .mainModel:   engine.mainModel = path
+        case .clipL:       engine.clipL = path
+        case .clipG:       engine.clipG = path
+        case .t5:          engine.t5 = path
         case .vae:         engine.vae = path
         case .lora:
             // Append as path|<current strength> so several can accumulate.
@@ -116,6 +127,9 @@ struct ImageGenView: View {
                     .foregroundStyle(.secondary)
                 slotRow(.textEncoder, value: engine.textEncoder)
                 slotRow(.mainModel, value: engine.mainModel)
+                slotRow(.clipL, value: engine.clipL)
+                slotRow(.clipG, value: engine.clipG)
+                slotRow(.t5, value: engine.t5)
                 slotRow(.vae, value: engine.vae)
                 slotRow(.lora, value: engine.loras)
                 if let note = importNote {
@@ -196,7 +210,12 @@ struct ImageGenView: View {
                         .textFieldStyle(.roundedBorder)
                 }
                 Divider()
+                samplerRow
+                schedulerRow
+                stepper("Clip skip", value: $engine.clipSkip, range: 1...4, step: 1)
+                Divider()
                 vaeTilingRows
+                metalRows
             }
         }
     }
@@ -261,6 +280,65 @@ struct ImageGenView: View {
                 }
             }
         }
+    }
+
+    // Pulled once from the engine's own tables rather than hard-coded, so the
+    // menu cannot offer a sampler the build does not have (the whole list,
+    // including lcm/tcd/ddim_trailing, comes straight from the library).
+    private static let samplerNames  = SdContext.sampleMethodNames()
+    private static let schedulerNames = SdContext.schedulerNames()
+
+    private var samplerRow: some View {
+        HStack {
+            Text("取樣器")
+            Spacer()
+            Picker("取樣器", selection: $engine.sampleMethod) {
+                ForEach(Array(Self.samplerNames.enumerated()), id: \.offset) { i, name in
+                    Text(name).tag(i)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private var schedulerRow: some View {
+        HStack {
+            Text("排程器")
+            Spacer()
+            Picker("排程器", selection: $engine.scheduler) {
+                ForEach(Array(Self.schedulerNames.enumerated()), id: \.offset) { i, name in
+                    Text(name).tag(i)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    // Collapsed by default: these are the backend read-at-init knobs, not part
+    // of a normal generation. They exist because a full-resolution graph is the
+    // one workload the Metal defaults were not tuned for.
+    private var metalRows: some View {
+        DisclosureGroup("Metal 進階") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("命令緩衝區 (n_cb)")
+                    Spacer()
+                    Picker("n_cb", selection: $engine.metalCommandBuffers) {
+                        ForEach([1, 2, 3, 4, 6, 8], id: \.self) { v in
+                            Text("\(v)").tag(v)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Toggle("Metal fusion", isOn: $engine.metalFusion)
+                Toggle("Metal 並行編碼", isOn: $engine.metalConcurrency)
+                Text("大圖每步太久會被 GPU watchdog 中斷：把 n_cb 調高，一步會切成更多較短的命令緩衝區。若出現 GPU 錯誤（status 5）可試著關閉並行或 fusion。改動需重新載入模型。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+        }
+        .font(.callout)
     }
 
     private func stepper(_ label: String, value: Binding<Int>,

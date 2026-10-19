@@ -25,11 +25,15 @@ final class SdEngine: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var images: [UIImage] = []
 
-    /// The four slots. Empty string means "not supplied".
+    /// The model slots. Empty string means "not supplied". `mainModel` is also
+    /// the slot for a single-file all-in-one checkpoint (SD1.5/SDXL downloads):
+    /// when no separate encoder is given, it is loaded as model_path and the
+    /// engine reads the encoders and VAE out of it.
     @Published var textEncoder = ""   // llm_path (Qwen2.5-VL for Qwen-Image)
-    @Published var mainModel   = ""   // diffusion_model_path
+    @Published var mainModel   = ""   // diffusion_model_path, or model_path for a full checkpoint
     @Published var vae         = ""   // vae_path
     @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
+    @Published var clipG       = ""   // clip_g_path (SDXL's OpenCLIP-G encoder)
     @Published var t5          = ""   // t5xxl_path
     @Published var loras       = ""   // "path|multiplier;path|multiplier"
 
@@ -52,6 +56,17 @@ final class SdEngine: ObservableObject {
     /// Tile edge in image pixels. The engine rounds it down to a multiple of the
     /// VAE scale factor, so any of these is safe for every checkpoint.
     @Published var vaeTileSize = 256
+
+    /// Metal backend tuning, applied once when the context is created (the
+    /// backend reads these environment knobs at init, not per graph). Kept
+    /// user-visible because a full-resolution diffusion graph is exactly the
+    /// workload the backend's defaults were not tuned for: a step that outruns
+    /// the GPU watchdog needs more command buffers, and a GPU error under
+    /// concurrency is worth ruling out by turning it off. n_cb defaults to 4
+    /// (1 is the library's own value, tuned for llama's small graphs).
+    @Published var metalCommandBuffers = 4
+    @Published var metalFusion = true
+    @Published var metalConcurrency = true
 
     private var context: SdContext?
     private var pollTask: Task<Void, Never>?
@@ -88,7 +103,7 @@ final class SdEngine: ObservableObject {
     }
 
     func load() {
-        if let bad = [mainModel, textEncoder, vae, clipL, t5]
+        if let bad = [mainModel, textEncoder, vae, clipL, clipG, t5]
             .first(where: { !$0.isEmpty && Self.isVideoCheckpoint($0) }) {
             phase = .failed("這是影片模型（\(bad)）。手機記憶體放不下多幀影片，請改用圖片模型。")
             appLog("sd: refused video checkpoint \(bad)", source: "sd")
@@ -106,9 +121,22 @@ final class SdEngine: ObservableObject {
         // optimisation.
         ComputeCoordinator.shared.freeTextEngines()
 
+        // An all-in-one checkpoint (the usual single-file SD1.5/SDXL download)
+        // keeps its text encoders and VAE inside the one file. stable-diffusion
+        // only looks inside it when it is handed to model_path; given instead to
+        // diffusion_model_path the loader strips a "model.diffusion_model."
+        // prefix and imports the UNet alone, so the conditioner finds no tensors
+        // and load fails with "not in model metadata". Decide by what else was
+        // supplied: with no separate encoder or CLIP/T5, the main file is the
+        // whole checkpoint.
+        let isFullCheckpoint = textEncoder.isEmpty && clipL.isEmpty && clipG.isEmpty && t5.isEmpty
+
         // Weight loading reads gigabytes. On the main actor that alone is enough
         // to trip the watchdog, so the whole call happens off-main.
-        let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae, clipLPath = clipL
+        let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae
+        let clipLPath = clipL, clipGPath = clipG
+        let full = isFullCheckpoint
+        let (ncb, fuse, concurrent) = (metalCommandBuffers, metalFusion, metalConcurrency)
         let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
         // Opened before the context is created, not after: new_sd_ctx is where a
         // Metal load aborts, so a log file opened afterwards would miss the only
@@ -118,18 +146,24 @@ final class SdEngine: ObservableObject {
 
         Task.detached(priority: .userInitiated) { [weak self] in
             SdContext.setLogPath(logPath)
+            // The Metal backend reads these at init, so they must be set before
+            // new_sd_ctx. Logged because the effect is invisible otherwise.
+            SdContext.configureMetalCommandBuffers(Int32(ncb), fusion: fuse, concurrency: concurrent)
+            appLog(String(format: "sd: metal n_cb=%d fusion=%@ concurrency=%@ · fullCheckpoint=%@",
+                          ncb, fuse ? "on" : "off", concurrent ? "on" : "off",
+                          full ? "yes" : "no"), source: "sd")
             let ctx: SdContext
             do {
                 // ObjC methods whose last parameter is NSError** import into
                 // Swift as throwing, so there is no `error:` argument to pass.
                 ctx = try SdContext(
-                    model: nil,
+                    model: full ? model : nil,
                     clipL: clipLPath.isEmpty ? nil : clipLPath,
-                    clipG: nil,
+                    clipG: clipGPath.isEmpty ? nil : clipGPath,
                     clipVision: nil,
                     t5: t5v.isEmpty ? nil : t5v,
                     llm: encoder.isEmpty ? nil : encoder,
-                    diffusion: model.isEmpty ? nil : model,
+                    diffusion: full ? nil : (model.isEmpty ? nil : model),
                     vae: vaePath.isEmpty ? nil : vaePath,
                     taesd: nil,
                     threads: threadCount)
