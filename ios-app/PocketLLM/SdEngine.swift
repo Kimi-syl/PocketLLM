@@ -101,8 +101,14 @@ final class SdEngine: ObservableObject {
         // to trip the watchdog, so the whole call happens off-main.
         let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae, clipLPath = clipL
         let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
+        // Opened before the context is created, not after: new_sd_ctx is where a
+        // Metal load aborts, so a log file opened afterwards would miss the only
+        // line that says why.
+        let logPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pocketllm.log").path
 
         Task.detached(priority: .userInitiated) { [weak self] in
+            SdContext.setLogPath(logPath)
             let ctx: SdContext
             do {
                 // ObjC methods whose last parameter is NSError** import into
@@ -127,11 +133,6 @@ final class SdEngine: ObservableObject {
             }
             await MainActor.run {
                 guard let self else { return }
-                // Same file the app log uses, so a native abort lands next to
-                // the Swift lines that bracket it.
-                let logPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("pocketllm.log").path
-                ctx.setLogFile(logPath)
                 self.context = ctx
                 self.phase = .idle
                 appLog("sd loaded · \(URL(fileURLWithPath: model).lastPathComponent)", source: "sd")

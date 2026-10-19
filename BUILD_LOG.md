@@ -41,16 +41,17 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | MLX backend + model browser | working |
 | TTFT / tokens-per-second metrics | built |
 | Logs tab (persistent, crash-surviving) | working |
-| Image generation (stable-diffusion.cpp) | built — generation never succeeded |
+| Image generation (stable-diffusion.cpp) | runs on Metal — but ~10 s/step trips the GPU watchdog |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
-Latest artifact: `PocketLLM-device-unsigned` from run `39031612592` (`0138da2`).
+Latest artifact: `PocketLLM-device-unsigned` from run `39207506905`.
 
 ### Known-open
 
-1. **iOS image generation** — the Anima conditioner aborts at graph reservation; the
-   `te=cpu` fix moved the failure into compute, then the duplicate-ggml collision was
-   identified but the shared-library fix made it worse and was reverted.
+1. **iOS image generation** — no longer collides on ggml, no longer CPU-only (§2.13); the diffusion
+   model now runs on Metal. It dies under the iOS GPU watchdog (`progress timeout`) because a step
+   takes ~10 s. The engine's own log (auto-fit plan, segment count, CPU fallbacks) was being
+   dropped and is now captured (§2.14); the placement fix follows from it.
 2. **iOS vision** — the pipeline reaches the model, produces a single space. The native
    stage logs are not appearing at all, which is the current investigation.
 3. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
@@ -344,6 +345,56 @@ so they are excluded from the check.
 **Not verified:** whether the hand-off actually prevents the crash at runtime. If llama's
 context creation still dies alongside SD's Metal, the fallback is the one-ggml rename in §6.
 
+### 2.14 Image generation on Metal, round two: the watchdog (2026-10-19)
+
+Device run of the §2.13 build answered the open question: **the hand-off works.** The
+ggml-Metal collision is gone and stable-diffusion.cpp executes the diffusion model on the GPU.
+One 512×512, 10-step image went from ~39 s/step (CPU) to ~10 s/step. But it still fails, and now
+for a different reason.
+
+| run (device log) | sampling | outcome |
+|---|---|---|
+| 2026-10-19 00:01 (CPU build) | ~39 s/step | succeeded, 422 s total |
+| 2026-10-19 14:48 (Metal build) | 15 s, then a 3.5 min gap at step 3 | killed |
+| 2026-10-19 15:05 (Metal build) | ~10 s/step | killed at step 7/10 |
+
+The kill is `gpuEvent-...txt`: `bug_type 284`, `restart_reason_desc = "progress timeout"`. That is
+the iOS GPU watchdog, not a memory or CPU-time kill — a Metal command buffer that makes no
+progress for ~10 s gets the process terminated. At 10 s/step the per-step graph sits right on
+that budget, so the crash lands mid-sampling (step 3, then step 7) and is timing-dependent, not
+deterministic. The step time has to come down well under the budget, not the watchdog raised.
+
+Where the time actually goes is not yet known, because the engine's own explanation never
+reached anyone. Two independent defects hid it:
+
+- `setLogFile:` ran **after** `new_sd_ctx`, so anything the engine logged while creating the
+  context — and the first Metal graph — went nowhere.
+- Even the lines that were written were raw (`ggml_runner` text, no timestamp), and
+  `LogStore.loadFromDisk` drops any line that does not start with `yyyy-MM-dd HH:mm:ss.SSS`, so
+  they vanished on the next launch and never appeared in an export.
+
+Fixed in `SdBridge`:
+
+| change | reason |
+|---|---|
+| `+setLogPath:` (class method), called in `SdEngine.load` **before** `new_sd_ctx` | the file is open before the call that aborts |
+| `sd_log_cb` re-formats every line to LogStore's exact shape (`timestamp  [native]  [sd/LEVEL] …`) | parses back on reload; no second timestamp (logNative adds its own) |
+| hand-rolled `gettimeofday`/`strftime` timestamp, not `NSDateFormatter` | a formatter per line is measurable next to a run already racing the watchdog |
+| DEBUG/VERBOSE go to the file only; INFO+ also mirror to the live tab | the sampler can emit them in bursts; a main-actor hop for each is too much |
+
+With the callback installed, `sd_log_dispatch` forwards **every** level (it has no filter), so the
+file now gets the auto-fit plan (`auto-fit plan:` / `components (params: compute device -> RAM ->
+…)`), any ggml "unsupported op" fallbacks, and ggml_runner's
+`compute buffer size: … MB(VRAM) on … (peak across N segment)`. Those three lines are what
+separate "the step is slow because diffusion weights are staged from RAM/disk" from "the step is
+slow because part of the graph runs on the CPU", and the next placement fix depends on which it
+is.
+
+**Not verified:** whether the gathered log explains the 10 s/step — it needs a device run of this
+build. `diffusion_flash_attn` was deliberately **not** enabled: `performance.md` says flash
+attention *slows down* most non-CUDA backends (Metal included), which is the wrong direction when
+the goal is to get under a time watchdog.
+
 ---
 
 
@@ -396,6 +447,9 @@ and for the ggml guard.
 | iOS vision linked | 6 `mtmd_*` symbols in the shipped `.ipa` |
 | iOS ggml duplication | `llvm-nm` on the shipped binary: 1299 defined, 9 duplicated |
 | iOS dylib isolation + Metal | run `39207506905`: app binary 1201 ggml defs, 0 duplicated; dylib has the Metal backend, exports the SD API, ggml local |
+| iOS SD runs on Metal | device log (Metal build): sampling 10 s/step vs 39 s/step CPU build, i.e. the diffusion model is on the GPU |
+| iOS SD GPU watchdog | `gpuEvent-...` `bug_type 284`, `restart_reason_desc = "progress timeout"`, killed at step 3 and step 7 |
+| iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
 | Converter correctness | round-trip through the official `gguf` reader |
@@ -456,10 +510,14 @@ replaced the single dual-ABI APK.
 1. **iOS vision logging** — determine whether `describeImage` is reached at all, or whether
    the native writer fails. The probe is `bridge: loading mmproj`, emitted from a call already
    confirmed to succeed.
-2. **iOS image generation on Metal** — the engine hand-off (§2.13) is built and green; the open
-   question is whether it survives at runtime. If llama's context creation still dies next to
-   SD's Metal, fall back to renaming sd's ggml symbols (`llvm-objcopy --redefine-syms`) so one
-   process has one ggml namespace. Verify the rename applies to Mach-O archives first.
+2. **iOS image generation under the GPU watchdog** — §2.13 (hand-off) is proven; §2.14 (logging)
+   now exposes the engine's own reasoning. Run the logging build once, then read the auto-fit plan
+   and the `compute buffer … (peak across N segment)` line: if diffusion weights are being staged
+   from RAM/disk, pin them to the compute device (`params_backend`, or `auto_fit=false`); if ops
+   are falling back to the CPU, that is a kernel-coverage problem. Target: per-step time well under
+   the ~10 s watchdog budget. Fallback if the timing cannot be met is to stop sampling on Metal.
+   The one-ggml rename (`llvm-objcopy --redefine-syms`) is no longer needed — the hand-off removes
+   the collision.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.

@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <cstdio>
+#include <ctime>
 #include <string>
+#include <sys/time.h>
 #include <vector>
 
 #include "stable-diffusion.h"
@@ -21,12 +23,60 @@ static void progress_cb(int step, int steps, float /*time*/, void * /*data*/) {
 /// process dies. Writing straight to the persistent log with an immediate flush
 /// is the only way that reason survives the crash - a buffered write, or one
 /// that only lands in an in-memory ring, is lost with the process.
+///
+/// The line is timestamped to match LlamaBridge's bridgeLog. Without that the
+/// Logs tab parses it away on reload and the export skips it, which is exactly
+/// how the Metal failure stayed invisible: the engine's own reason was in the
+/// file but not in the fragment anyone could see.
 static FILE * g_log_file = nullptr;
 
-static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /*data*/) {
-    if (text == nullptr || g_log_file == nullptr) return;
-    fputs(text, g_log_file);
-    fflush(g_log_file);
+// Implemented in Swift (LogStore.swift); extern "C" because this is a C++ TU.
+extern "C" void PocketLLMNativeLog(const char *msg);
+
+static const char * sd_level_name(enum sd_log_level_t level) {
+    switch (level) {
+        case SD_LOG_DEBUG:   return "DEBUG";
+        case SD_LOG_VERBOSE: return "VERBOSE";
+        case SD_LOG_INFO:    return "INFO";
+        case SD_LOG_WARN:    return "WARN";
+        case SD_LOG_ERROR:   return "ERROR";
+    }
+    return "?";
+}
+
+static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*data*/) {
+    if (text == nullptr) return;
+    std::string msg(text);
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) msg.pop_back();
+    if (msg.empty()) return;
+
+    char body[4096];
+    snprintf(body, sizeof(body), "[sd/%s] %s", sd_level_name(level), msg.c_str());
+
+    // A hand-rolled timestamp, not NSDateFormatter: the sampler can emit a burst
+    // of these, and allocating a formatter per line is measurable next to work
+    // this app is already fighting to keep under the GPU watchdog.
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    struct tm tmv;
+    localtime_r(&tv.tv_sec, &tmv);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tmv);
+
+    if (g_log_file != nullptr) {
+        // Exact shape of LogStore's lines (timestamp  [source]  message) so the
+        // Logs tab parses it back on relaunch; a bare line is dropped on reload.
+        fprintf(g_log_file, "%s.%03d  [native]  %s\n", stamp, (int)(tv.tv_usec / 1000), body);
+        fflush(g_log_file);
+    }
+    // Live mirror. logNative adds the timestamp and the [native] tag itself, so
+    // this carries only the source-qualified message, never a second timestamp.
+    // DEBUG/VERBOSE stay file-only: the sampler can emit them in bursts, and a
+    // main-actor hop per line is too much to add to a run already racing the GPU
+    // watchdog. The file still has every line.
+    if (level >= SD_LOG_INFO) {
+        PocketLLMNativeLog(body);
+    }
 }
 
 // Read-write here, read-only in the header: the public surface cannot mutate an
@@ -45,7 +95,7 @@ static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /
     sd_ctx_t *_ctx;
 }
 
-- (void)setLogFile:(NSString *)path {
++ (void)setLogPath:(NSString *)path {
     if (g_log_file != nullptr) {
         fclose(g_log_file);
         g_log_file = nullptr;
@@ -87,8 +137,10 @@ static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /
     // ggml_backend_sched_reserve_size. The diffusion model and VAE, which dominate
     // the runtime, go to Metal -- which is why the app now frees the LLM and its
     // Metal context before this call (ComputeCoordinator), so the two ggml-Metal
-    // copies never coexist. params_backend is left at its default so those
-    // weights are placed on the compute (GPU) backend.
+    // copies never coexist. params_backend is left at its default so auto-fit
+    // places those weights; the engine logs that plan (see sd_log_cb), which is
+    // what identifies a step that is slow because its weights are being staged
+    // instead of staying resident.
     p.backend = "te=cpu";
 
     if (!sModel.empty())     p.model_path = sModel.c_str();
