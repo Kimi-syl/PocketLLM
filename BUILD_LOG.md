@@ -607,6 +607,7 @@ and for the ggml guard.
 | iOS dylib isolation + Metal | run `39207506905`: app binary 1201 ggml defs, 0 duplicated; dylib has the Metal backend, exports the SD API, ggml local |
 | iOS SD runs on Metal | device log (Metal build): sampling 10 s/step vs 39 s/step CPU build, i.e. the diffusion model is on the GPU |
 | iOS SD GPU watchdog | `gpuEvent-...` `bug_type 284`, `restart_reason_desc = "progress timeout"`, killed at step 3 and step 7 |
+| iOS SD even graph split builds | run `39273582227`: patch + both guards (`ggml-metal.cpp`, `ggml-metal-context.m`) pass; artifact 29.4 MB |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
@@ -655,7 +656,7 @@ the local clone and `LLAMA_COMMIT` in both workflows — and they must move toge
 | artifact | location |
 |---|---|
 | `arm64-pocketllm-v0.6.1-rc7.apk` | `/sdcard/Download/`, `~/downloads/` |
-| `PocketLLM-device-unsigned` | run `39207506905` artifacts (29.4 MB) |
+| `PocketLLM-device-unsigned` | run `39273582227` artifacts (29.4 MB) |
 | `prerelease-20261006-1309` | `arm64-` and `x86_64-pocketllm-v0.6.0-beta.apk` |
 
 Note: the `v0.6.0` **git tag** exists but its release was deleted when the split-ABI pair
@@ -668,15 +669,17 @@ replaced the single dual-ABI APK.
 1. **iOS vision logging** — determine whether `describeImage` is reached at all, or whether
    the native writer fails. The probe is `bridge: loading mmproj`, emitted from a call already
    confirmed to succeed.
-2. **iOS image generation under the GPU watchdog** — §2.13 (hand-off) is proven; §2.14 (logging)
-   exposed that a step is a single ~10 s Metal command buffer, and §2.15 splits it (`n_cb = 4`,
-   patched into the fetched SD checkout) and fixes the tab-switch kill. §2.16 found the split
-   enough for the watchdog at 1024×768 (two ~31–38 s steps ran) but a step-3 Metal status-5 error
-   remains, and gives the on-device knobs to chase it (`n_cb`, concurrency, fusion) plus working
-   single-file SD1.5/SDXL loading. Next device run: try `n_cb = 8`, then concurrency off, then
-   fusion off; if the step is still slow, the §2.14 log distinguishes staged weights
-   (`params_backend` / `auto_fit=false`) from CPU fallbacks (kernel coverage). Last resort is to
-   stop sampling on Metal.
+2. **iOS image generation under the GPU watchdog** — §2.13 (hand-off) and §2.14 (logging) are
+   proven. §2.15 split the step into `n_cb = 4` command buffers and fixed the tab-switch kill;
+   §2.16 added the on-device knobs (`n_cb`, concurrency, fusion), single-file SD1.5/SDXL loading and
+   the full sampler table. §2.17 read the GPU event log and corrected §2.16: the step-3 status-5 was
+   the watchdog, not a Metal fault, and it persisted because the split gave the calling thread
+   `MAX(64, 10 %)` of the nodes instead of an even share. The fix splits the graph evenly across
+   `n_cb + 1` buffers, logs the per-shape node counts, and defaults `n_cb` to 8 (9 buffers). The
+   build is CI-green; the device run has not happened. Next: the per-shape split line in the log
+   names the buffer that dies, if one still does — then concurrency off, then fusion off. If the step
+   is still slow, the §2.14 log distinguishes staged weights (`params_backend` / `auto_fit=false`)
+   from CPU fallbacks (kernel coverage). Last resort is to stop sampling on Metal.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
