@@ -604,6 +604,61 @@ that one large op runs long. It stays the plan for speed; `vae=cpu` is the plan 
 ---
 
 
+### 2.19 The MLX VAE decoder, fed by a latent dump (2026-10-19)
+
+The `vae=cpu` escape hatch is the crash fix; this round builds the *fast* decoder. The two cannons
+(mm and Swift) are already in the app, and `mlx-swift` can read the user's `.safetensors` directly,
+so the VAE can be decoded in MLX without converting anything. The obstacle was purely one of
+hand-off: the latent never leaves `stable-diffusion.cpp`, which decodes it in the same call.
+
+So the engine grew a dump hook. With `SD_LATENTS_DUMP` set, `decode_image_outputs` writes the final
+latents to `<path>[.i]` (magic `PLLV`, version 1, `i32` ndim, dims fastest-first, `f32`) and
+returns without decoding: `num_images_out = 0`, and the bridge accepts that only when the MLX path
+is on (`free_sd_images(images, 0)`). That keeps the probability path — sampling, the DiT, the
+schedule — in exactly the engine that already works; only the last stage moves.
+
+`MLXVae.swift` is a decoder-only port of `wan_vae.hpp`, checked against both the C++ and diffusers
+`autoencoder_kl_wan.py`: undo the latent stats, `conv2` (= `post_quant_conv`), `decoder.conv1`,
+middle (`Residual`, single-head `Attention`, `Residual`), three `upsamples.N` stages of three
+residuals plus a nearest-2× resample between them (8× total), then `head.0` RMS + SiLU and
+`head.2` conv, clamped to [-1, 1]. Two details decide correctness:
+
+| detail | why |
+|---|---|
+| NHWC throughout | `mlx-swift`'s `conv2d` is channels-last (`MLX/Ops.swift:614`); weights are transposed `OIHW → OHWI` and 5D `[O,I,kt,kh,kw]` takes the last temporal tap after `3`-wide causal geometry |
+| one `eval` per stage | a whole-graph `eval` would submit the same giant Metal work that trips the watchdog; per-stage evaluation breaks it into the same-sized chunks the working 128 px tile path already survives |
+
+Because the dumped latent is `T=1` and the causal pad contributes two zero frames, the last
+temporal tap of every `kt=3` conv is exact — the stage is a 2D decoder with no approximation. The
+latent constants (16-channel `mean`/`std`) live in `MLXVae.latentsMean/latentsStd`, copied from
+`wan_vae.hpp:1127`.
+
+Plumbing: `generatePrompt:` took `mlxVae:` (sets/unsets `SD_LATENTS_DUMP` around `generate_image`),
+`SdEngine.vaeOnMLX` suppresses tiling, and the image view has an off-by-default
+**VAE 用 MLX 解碼（實驗）** toggle mutually exclusive with the CPU one. The MLX path needs a
+separate VAE file, so an all-in-one checkpoint logs a clear message instead of failing obscurely.
+
+The first push failed to compile on exactly one line — `conv2d(…, padding: padding)` with an `Int`
+variable; Swift's `IntOrPair` only converts integer *literals*. Wrapped as `.init(padding)`.
+Run `39341146470` is green and produced the usual `PocketLLM-device-unsigned` artifact.
+
+| change | reason |
+|---|---|
+| `ios-app/PocketLLM/MLXVae.swift` | decoder port, latent blob reader, NHWC ↔ `MLXArray` |
+| `ios-app/patches/stable-diffusion-latents-dump.patch` | `SD_LATENTS_DUMP` hunk for `src/pipeline/image.cpp`; applied by CI with a `SD_LATENTS_DUMP` guard |
+| `SdBridge.mm` | `mlxVae:` parameter, `+latentsDumpPath`, `-removeLatentsDump`, `num <= 0` accepted only on this path |
+| `SdEngine.swift` | `vaeOnMLX`, decode branch, `bitmap(from: MLXArray)` (NHWC → `UIImage`) |
+| `ImageGenView.swift` | MLX toggle, mutual exclusion, tiling disabled |
+| `project.yml` | `MLXNN` product from the already-pinned `mlx-swift` |
+
+**Not proven:** compile and link only. Whether MLX's Metal path is fast enough, whether the port
+matches the engine bit-for-bit, and whether the tensor-key names in a real
+`qwen_image_vae.safetensors` cover every lookup are all device-run questions. If the MLX path
+produces a wrong image, the first suspect is the attention reshape (`[N,1,3C,HW]` split), the second
+is `nearest2x`'s reshape order — both are covered by the `decode` comment.
+
+---
+
 ## 3. Recurring failure patterns
 
 These account for the large majority of the session's bugs and are worth stating explicitly.
@@ -658,6 +713,8 @@ and for the ggml guard.
 | iOS SD even graph split builds | run `39273582227`: patch + both guards (`ggml-metal.cpp`, `ggml-metal-context.m`) pass; artifact 29.4 MB |
 | iOS SD decode is the long pole | device logs: sampling 5 steps 134 s vs decode 1035 s (1024×576, tile 128, 21 tiles); tile 256 dies at tile 4 `status 5` |
 | iOS `vae=cpu` escape hatch builds | run `39291045148`: `stable-diffusion.cpp` (device) and the app both build with the `vaeOnCPU:` init and the backend spec; artifact 29.4 MB |
+| iOS MLX VAE decoder builds | run `39341146470`: `MLXVae.swift` + `MLXNN` link, latent-dump patch + guard pass; artifact `PocketLLM-device-unsigned` |
+| iOS MLX VAE decode is correct/fast | not yet run on device — no image, no timing |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
@@ -734,8 +791,10 @@ replaced the single dual-ABI APK.
    cannot be made watchdog-safe by any tile size because `n_cb` divides a graph by node and the cost
    sits in single large convolutions. The shipped escape hatch is **VAE 用 CPU 解碼** (`vae=cpu`);
    next device run is 1024×576 with it on *and* off, to get the CPU decode time against the 17-minute
-   GPU baseline. If CPU decode is also too slow, the follow-up is the `MLXVae` port (§2.18 notes its
-   `MLXNN`/`.safetensors` support and its one caveat — faster Metal, not watchdog-proof).
+   GPU baseline. §2.19 built the `MLXVae` port; the next device run should be 1024×576 with
+   **VAE 用 MLX 解碼** on, and its `sd: mlx vae decoded … in Xs` line compared with the CPU and
+   1035 s GPU numbers. If it is both correct and fast, make it the default; if only fast, keep
+   `vae=cpu` as the safe mode; if it is wrong, debug attention first, then `nearest2x`.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
