@@ -82,13 +82,14 @@ static void sd_log_cb(enum sd_log_level_t /*level*/, const char * text, void * /
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
-    // AnimaConditioner is the text encoder and a full 0.6B LLM. Reserving its
-    // graph on the GPU is what aborted inside ggml_backend_sched_reserve_size,
-    // so pin the text encoder to the CPU. The engine's CLI expresses exactly
-    // this as te=cpu and "*=cpu" backend assignments; --offload-to-cpu keeps the
-    // weights in RAM and loads them on demand.
+    // The text encoder (Anima's 0.6B LLM, or Qwen2.5-VL for Qwen-Image) stays on
+    // the CPU: reserving its graph on the GPU aborted inside
+    // ggml_backend_sched_reserve_size. The diffusion model and VAE, which dominate
+    // the runtime, go to Metal -- which is why the app now frees the LLM and its
+    // Metal context before this call (ComputeCoordinator), so the two ggml-Metal
+    // copies never coexist. params_backend is left at its default so those
+    // weights are placed on the compute (GPU) backend.
     p.backend = "te=cpu";
-    p.params_backend = "*=cpu";
 
     if (!sModel.empty())     p.model_path = sModel.c_str();
     if (!sClipL.empty())     p.clip_l_path = sClipL.c_str();

@@ -240,6 +240,13 @@ jobs:
           # (SIGSEGV mid-generation). Android is safe because sdcpp ships as
           # libsdcpp.so; this is the iOS equivalent. SD_BUILD_SHARED_GGML_LIB is
           # OFF so ggml is static *inside* that one dylib, not a second image.
+          #
+          # Metal is ON now: the diffusion model and VAE, which dominate the
+          # runtime, run on the GPU. Two ggml-Metal copies used to abort llama at
+          # context creation, so the app frees the LLM and its Metal context
+          # before sdcpp builds its own (ComputeCoordinator). The hidden-visibility
+          # preset keeps this dylib's ggml symbols out of the global namespace, so
+          # they cannot interpose against llama.cpp's copy either.
           test -d ci-sd/.git || git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp ci-sd
           git -C ci-sd fetch --depth 1 origin "$SD_COMMIT" || true
           git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
@@ -251,8 +258,11 @@ jobs:
             -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_SHARED_LIBS=ON \
             -DSD_BUILD_SHARED_GGML_LIB=OFF \
             -DCMAKE_INSTALL_NAME_DIR=@rpath -DCMAKE_BUILD_WITH_INSTALL_NAME_DIR=ON \
-            -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=OFF -DSD_VULKAN=OFF \
-            -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+            -DCMAKE_C_VISIBILITY_PRESET=hidden \
+            -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
+            -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+            -DSD_WEBP=OFF -DSD_WEBM=OFF -DSD_METAL=ON -DSD_VULKAN=OFF \
+            -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_NATIVE=OFF
           cmake --build build-sd-dev -j3
           mkdir -p ios-app/sd-libs-device ios-app/sd-headers
           SD_DYLIB=$(find build-sd-dev -name "libstable-diffusion*.dylib" | head -1)
@@ -328,6 +338,24 @@ jobs:
           "$NM" "$APP/Frameworks/libsdcpp_ios.dylib" | grep -q '^.*_ggml_new_tensor_impl' \
             && echo "sdcpp dylib carries its own ggml" \
             || { echo "sdcpp dylib does not define ggml"; exit 1; }
+
+          SD="$APP/Frameworks/libsdcpp_ios.dylib"
+          # SD_METAL must actually be compiled in, or the GPU hand-off is moot.
+          "$NM" "$SD" | grep -q 'ggml_backend_metal' \
+            && echo "sdcpp dylib has the Metal backend" \
+            || { echo "sdcpp dylib has no Metal backend — SD_METAL did not take"; exit 1; }
+          # The SD API must stay exported for the app to link against it.
+          "$NM" -gU "$SD" | grep -q '_new_sd_ctx' \
+            && echo "sdcpp dylib exports the SD API" \
+            || { echo "sdcpp dylib does not export new_sd_ctx"; exit 1; }
+          # ggml must be local (hidden): an exported copy could interpose on
+          # llama.cpp's in the executable and reintroduce the tensor corruption.
+          if "$NM" -gU "$SD" | grep -q '_ggml_'; then
+            echo "ERROR: sdcpp dylib exports ggml symbols — hidden visibility did not hold"
+            "$NM" -gU "$SD" | grep '_ggml_' | head -10 | sed 's/^/  /'
+            exit 1
+          fi
+          echo "sdcpp ggml symbols are local; no interposition possible"
 
       - name: Upload device .ipa artifact
         uses: actions/upload-artifact@v4

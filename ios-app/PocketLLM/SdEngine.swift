@@ -49,6 +49,17 @@ final class SdEngine: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var lastLoggedStep = -1
 
+    init() {
+        // The LLM frees us before it builds its own Metal context (see
+        // ComputeCoordinator). The coordinator calls this on the main thread,
+        // which is why assumeIsolated is safe here.
+        ComputeCoordinator.shared.registerSDTeardown { [weak self] in
+            MainActor.assumeIsolated {
+                self?.unload()
+            }
+        }
+    }
+
     var isReady: Bool { context != nil }
 
     // MARK: - Loading
@@ -81,6 +92,10 @@ final class SdEngine: ObservableObject {
         }
         phase = .loading
         appLogMemory("sd pre-load", source: "sd")
+        // Free the LLM and its ggml-Metal context before sdcpp builds its own.
+        // Two live Metal backends abort llama at context creation, so the
+        // hand-off is a hard requirement, not an optimisation.
+        ComputeCoordinator.shared.freeLLM()
 
         // Weight loading reads gigabytes. On the main actor that alone is enough
         // to trip the watchdog, so the whole call happens off-main.
@@ -125,6 +140,9 @@ final class SdEngine: ObservableObject {
     }
 
     func unload() {
+        if context != nil {
+            appLog("sd unloaded so the LLM can take the GPU", source: "sd")
+        }
         context = nil
         phase = .idle
     }

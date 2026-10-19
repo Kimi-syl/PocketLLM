@@ -37,6 +37,31 @@ final class LocalEngine: ObservableObject {
         securedURL = nil
     }
 
+    init() {
+        // The image engine frees us before it builds its own Metal context, so
+        // the two ggml instances never hold a GPU at the same time.
+        ComputeCoordinator.shared.registerLLMTeardown { [weak self] in
+            self?.unload()
+        }
+    }
+
+    /// Drops the context and, with it, llama's Metal buffers and model weights.
+    /// Called from the coordinator under the hand-off lock, so it must actually
+    /// release the GPU before returning rather than scheduling the free.
+    func unload() {
+        guard context != nil else { return }
+        context = nil
+        releaseSecurityScope()
+        appLog("unloaded so the image engine can take the GPU", source: "llama")
+        // @Published mutations must reach SwiftUI on the main thread; the free
+        // itself has already happened synchronously above.
+        DispatchQueue.main.async {
+            self.supportsVision = false
+            self.mmprojName = nil
+            self.state = "no model loaded"
+        }
+    }
+
     /// `gpuLayers` is 0 for CPU-only, `allLayers` for Metal. The bridge clamps it
     /// to what the build actually supports, so asking for Metal on the simulator
     /// (which has no Metal backend) silently yields a CPU load rather than a
@@ -50,6 +75,10 @@ final class LocalEngine: ObservableObject {
         mmprojName = nil
         appLog("loading…", source: "llama")
         LlamaGlobalInit()
+        // Release the image engine first: its ggml-Metal copy must be gone before
+        // llama builds its context, or llama_init_from_model aborts in
+        // ggml_metal_buffer_is_shared.
+        ComputeCoordinator.shared.freeSD()
         releaseSecurityScope() // drop the previous model's scope, if any
         let securityScoped = url.startAccessingSecurityScopedResource()
         securedURL = url
