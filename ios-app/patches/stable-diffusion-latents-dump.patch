@@ -1,0 +1,68 @@
+diff --git a/src/pipeline/image.cpp b/src/pipeline/image.cpp
+index d3d25c8..62ef9a4 100644
+--- a/src/pipeline/image.cpp
++++ b/src/pipeline/image.cpp
+@@ -2,8 +2,11 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdint>
++#include <cstdio>
+ #include <cstdlib>
+ #include <optional>
++#include <string>
+ 
+ #include "core/rng.hpp"
+ #include "diffusion_engine.h"
+@@ -544,6 +547,51 @@ namespace sd::pipeline {
+             LOG_ERROR("no latent images to decode");
+             return nullptr;
+         }
++
++        // Hand the final latents to an external decoder (the iOS app's MLX VAE)
++        // instead of decoding here. This exists because the decode is a single
++        // long op chain that can outrun the iOS GPU watchdog and tiling only makes
++        // it slower; nothing inside this process can cut one big convolution short.
++        // The blob is a tiny header (magic, version, ndim, dims in this tensor's
++        // shape order) followed by the contiguous f32 data, which is already in
++        // [batch, channel, ...] memory order because shape()[0] is the fastest
++        // axis. An empty (but non-null) image array keeps generate_image from
++        // reporting the run as failed.
++        const char* latents_dump = std::getenv("SD_LATENTS_DUMP");
++        if (latents_dump != nullptr && latents_dump[0] != '\0') {
++            bool ok = true;
++            for (size_t i = 0; i < final_latents.size(); i++) {
++                const std::string path = i == 0 ? std::string(latents_dump)
++                                                : std::string(latents_dump) + "." + std::to_string(i);
++                FILE* f = std::fopen(path.c_str(), "wb");
++                if (f == nullptr) {
++                    LOG_ERROR("SD_LATENTS_DUMP: cannot open %s", path.c_str());
++                    ok = false;
++                    break;
++                }
++                const uint32_t magic   = 0x564C4C50;  // "PLLV"
++                const int32_t version  = 1;
++                const int32_t ndim     = static_cast<int32_t>(final_latents[i].dim());
++                std::fwrite(&magic, sizeof(magic), 1, f);
++                std::fwrite(&version, sizeof(version), 1, f);
++                std::fwrite(&ndim, sizeof(ndim), 1, f);
++                for (int32_t d = 0; d < ndim; d++) {
++                    const int32_t dim = static_cast<int32_t>(final_latents[i].shape()[static_cast<size_t>(d)]);
++                    std::fwrite(&dim, sizeof(dim), 1, f);
++                }
++                std::fwrite(final_latents[i].data(), sizeof(float), static_cast<size_t>(final_latents[i].numel()), f);
++                std::fclose(f);
++            }
++            if (ok) {
++                LOG_INFO("SD_LATENTS_DUMP: wrote %zu latent(s) to %s; VAE decode skipped",
++                         final_latents.size(), latents_dump);
++                if (num_images_out != nullptr) {
++                    *num_images_out = 0;
++                }
++                return static_cast<sd_image_t*>(std::calloc(1, sizeof(sd_image_t)));
++            }
++        }
++
+         if (final_latents.size() > static_cast<size_t>(request.batch_count)) {
+             LOG_ERROR("expected at most %d latents, got %zu", request.batch_count, final_latents.size());
+             return nullptr;

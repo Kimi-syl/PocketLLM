@@ -263,16 +263,26 @@ struct ImageGenView: View {
 
     private var vaeTilingRows: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Toggle("VAE 用 MLX 解碼（實驗）", isOn: $engine.vaeOnMLX)
+                .onChange(of: engine.vaeOnMLX) { _, on in
+                    if on { engine.vaeOnCPU = false }
+                }
+            Text("引擎只取樣並輸出 latent，解碼交給 MLX，用同一份 safetensors 逐段執行（每次 Metal 提交較短）。比引擎內解碼快，但仍走 GPU；若被 watchdog 中斷，改用 CPU 解碼。需重新載入模型。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Toggle("VAE 用 CPU 解碼", isOn: $engine.vaeOnCPU)
+                .onChange(of: engine.vaeOnCPU) { _, on in
+                    if on { engine.vaeOnMLX = false }
+                }
             Text("把 VAE 解碼整段搬到 CPU，完全不經過 GPU watchdog：大圖解碼跑到一半被中斷（進度條停在解碼階段後重啟）時用這個。擴散模型仍在 GPU。代價是 CPU 時間；開啟後分塊解碼無意義。改動需重新載入模型。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Toggle("VAE 分塊解碼", isOn: $engine.vaeTiling)
-                .disabled(engine.vaeOnCPU)
+                .disabled(engine.vaeOnCPU || engine.vaeOnMLX)
             Text("大圖解碼時把 VAE 切成重疊小塊，降低尖峰記憶體。注意：分塊越小 → 塊數越多，每塊都要整跑一次 VAE，解碼時間成倍上升（1024×576 用 128 px 會切成 120 塊）。除非不加分塊會爆記憶體，否則關掉最快；要開就用塞得下的最大塊。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if engine.vaeTiling && !engine.vaeOnCPU {
+            if engine.vaeTiling && !engine.vaeOnCPU && !engine.vaeOnMLX {
                 HStack {
                     Text("分塊大小")
                     Spacer()

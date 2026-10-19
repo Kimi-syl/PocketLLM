@@ -46,6 +46,8 @@ targets:
         product: MarkdownUI
       - package: mlx-swift
         product: MLX
+      - package: mlx-swift
+        product: MLXNN
       - package: mlx-swift-lm
         product: MLXVLM
       - package: mlx-swift-lm

@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import SwiftUI
 
 // The bridge context is an opaque C++ handle. It is never used by two
@@ -61,6 +62,12 @@ final class SdEngine: ObservableObject {
     /// component that trips the iOS GPU watchdog no matter how the graph is
     /// split. CPU decode cannot time out the GPU at all; tiling stops mattering.
     @Published var vaeOnCPU = false
+    /// Decode the VAE in MLX instead of the engine. The engine skips its decode
+    /// and writes the final latents (`SD_LATENTS_DUMP`); MLX loads the same
+    /// safetensors the user imported and runs the decoder stage by stage, so
+    /// every Metal submission stays short. This is the faster Metal path; it
+    /// still runs on the GPU, so `vaeOnCPU` remains the watchdog-proof floor.
+    @Published var vaeOnMLX = false
 
     /// Metal backend tuning, applied once when the context is created (the
     /// backend reads these environment knobs at init, not per graph). Kept
@@ -240,7 +247,10 @@ final class SdEngine: ObservableObject {
         let (s0, b) = (seed, batch)
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
         let loraSpec = loras
-        let (tile, tileSize) = (vaeTiling && !vaeOnCPU, vaeTileSize)
+        // MLX owns the decode, so the engine's own tiling must be off.
+        let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !vaeOnMLX, vaeTileSize)
+        let mlxVae = vaeOnMLX
+        let vaePathForMLX = vae
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()
@@ -258,6 +268,7 @@ final class SdEngine: ObservableObject {
                     sampleMethod: Int32(sm), scheduler: Int32(sc),
                     clipSkip: Int32(cs2),
                     vaeTiling: tile, vaeTileSize: Int32(tileSize),
+                    mlxVae: mlxVae,
                     loras: loraSpec.isEmpty ? nil : loraSpec)
             } catch {
                 await MainActor.run {
@@ -277,6 +288,26 @@ final class SdEngine: ObservableObject {
                           LogStore.memoryDescription()), source: "sd")
 
             var decoded: [UIImage] = []
+            if mlxVae && vaePathForMLX.isEmpty {
+                appLog("sd: mlx vae needs a separate VAE .safetensors (all-in-one checkpoints are not supported)", source: "sd")
+            } else if mlxVae {
+                // The engine wrote the latents and skipped its decode; run the
+                // MLX decoder on them. Any existing images are ignored because
+                // this path is defined by the latents file.
+                let url = URL(fileURLWithPath: SdContext.latentsDumpPath())
+                let t0 = Date()
+                do {
+                    let latents = try MLXVae.latents(from: url)
+                    let vae = try MLXVae(vaePath: vaePathForMLX)
+                    let pixels = try vae.decode(latents: latents)
+                    appLog(String(format: "sd: mlx vae decoded %@ in %.1fs · %@",
+                                  String(describing: pixels.shape), Date().timeIntervalSince(t0),
+                                  LogStore.memoryDescription()), source: "sd")
+                    if let ui = SdEngine.bitmap(from: pixels) { decoded.append(ui) }
+                } catch {
+                    appLog("sd: mlx vae failed: \(error.localizedDescription)", source: "sd")
+                }
+            }
             for (i, img) in (result ?? []).enumerated() {
                 appLog("sd: decoding image \(i) \(img.width)x\(img.height)x\(img.channel)", source: "sd")
                 if let ui = SdEngine.bitmap(from: img) { decoded.append(ui) }
@@ -315,6 +346,37 @@ final class SdEngine: ObservableObject {
             rgba[d + 1] = bytes[s + 1]
             rgba[d + 2] = bytes[s + 2]
             rgba[d + 3] = c == 4 ? bytes[s + 3] : 255
+        }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 8,
+                               bitsPerPixel: 32, bytesPerRow: w * 4,
+                               space: cs,
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                               provider: provider, decode: nil,
+                               shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
+    /// MLX decoder output is NHWC `[N, H, W, 3]` in `[-1, 1]` (mlx-swift's
+    /// convolution is channels-last). Converts off-main like the `SdImage` path.
+    nonisolated static func bitmap(from pixels: MLXArray) -> UIImage? {
+        var x = pixels
+        if x.ndim == 4 { x = x.squeezed(axis: 0) }
+        guard x.ndim == 3 else { return nil }
+        let h = x.shape[0], w = x.shape[1], c = x.shape[2]
+        guard c >= 3, w > 0, h > 0 else { return nil }
+        let scaled = clip((x + 1.0) * 127.5, min: 0.0, max: 255.0)
+        let floats = scaled.asArray(Float.self)
+        guard floats.count >= w * h * c else { return nil }
+
+        var rgba = [UInt8](repeating: 255, count: w * h * 4)
+        for i in 0..<(w * h) {
+            let s = i * c, d = i * 4
+            rgba[d]     = UInt8(floats[s])
+            rgba[d + 1] = UInt8(floats[s + 1])
+            rgba[d + 2] = UInt8(floats[s + 2])
         }
         let cs = CGColorSpaceCreateDeviceRGB()
         guard let provider = CGDataProvider(data: Data(rgba) as CFData),

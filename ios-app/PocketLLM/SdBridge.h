@@ -52,6 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
                                        clipSkip:(int32_t)clipSkip
                                       vaeTiling:(BOOL)vaeTiling
                                     vaeTileSize:(int32_t)vaeTileSize
+                                         mlxVae:(BOOL)mlxVae
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error;
 
@@ -69,6 +70,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// the Android bridge's `nativeSampleMethods`/`nativeSchedulers`.
 + (NSArray<NSString *> *)sampleMethodNames;
 + (NSArray<NSString *> *)schedulerNames;
+
+/// Where a `mlxVae:YES` run writes its final latents for the Swift MLX decoder.
+/// Separate files (`…`, `….1`, `…`) are written when batch > 1.
++ (NSString *)latentsDumpPath;
 
 /// Sets the environment knobs the vendored ggml-Metal backend reads once, at
 /// backend creation, so this must be called *before* the context is created.

@@ -124,6 +124,19 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     return names;
 }
 
++ (NSString *)latentsDumpPath {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"pocketllm_latents.bin"];
+}
+
+- (void)removeLatentsDump {
+    NSString *base = [SdContext latentsDumpPath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtPath:base error:nil];
+    for (int i = 1; i < 64; i++) {
+        [fm removeItemAtPath:[base stringByAppendingFormat:@".%d", i] error:nil];
+    }
+}
+
 + (void)configureMetalCommandBuffers:(int32_t)nCB
                               fusion:(BOOL)fusion
                          concurrency:(BOOL)concurrency {
@@ -240,6 +253,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                        clipSkip:(int32_t)clipSkip
                                       vaeTiling:(BOOL)vaeTiling
                                     vaeTileSize:(int32_t)vaeTileSize
+                                         mlxVae:(BOOL)mlxVae
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error {
     if (_ctx == nullptr) return nil;
@@ -301,9 +315,24 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     g_step.store(0);
     g_steps.store(0);
 
+    // MLX VAE: the engine writes the final latents and skips its own decode
+    // (see the SD_LATENTS_DUMP hunk in pipeline/image.cpp). The dump path is
+    // removed first so a stale file from an earlier run cannot be mistaken for
+    // this run's output.
+    std::string sLatentsPath;
+    if (mlxVae) {
+        [self removeLatentsDump];
+        sLatentsPath = [SdContext latentsDumpPath].UTF8String;
+        setenv("SD_LATENTS_DUMP", sLatentsPath.c_str(), 1);
+    }
+
     sd_image_t *images = nullptr;
     int num = 0;
-    if (!generate_image(_ctx, &gp, &images, &num) || images == nullptr || num <= 0) {
+    bool generated = generate_image(_ctx, &gp, &images, &num);
+    if (mlxVae) {
+        unsetenv("SD_LATENTS_DUMP");
+    }
+    if (!generated || images == nullptr || (num <= 0 && !mlxVae)) {
         if (error) {
             *error = [NSError errorWithDomain:@"SdContext"
                                          code:2
@@ -311,6 +340,12 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                                     @"generate_image produced no output"}];
         }
         return nil;
+    }
+    // With mlxVae there are no images by design; an empty array tells the caller
+    // the latents file is the result.
+    if (num <= 0) {
+        free_sd_images(images, 0);
+        return @[];
     }
 
     NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)num];

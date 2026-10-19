@@ -269,6 +269,12 @@ jobs:
             || { echo "metal command-buffer patch did not apply (cpp)"; exit 1; }
           grep -q 'gf->n_nodes/(ctx->n_cb + 1)' ci-sd/ggml/src/ggml-metal/ggml-metal-context.m \
             || { echo "metal command-buffer patch did not apply (context)"; exit 1; }
+          # Optional latent hand-off: with SD_LATENTS_DUMP set, decode_image_outputs
+          # writes the final latents and skips the VAE decode, so the app can decode
+          # them with MLX instead. The guard checks both the env read and the write.
+          patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-latents-dump.patch"
+          grep -q 'SD_LATENTS_DUMP' ci-sd/src/pipeline/image.cpp \
+            || { echo "latents-dump patch did not apply"; exit 1; }
           cmake -S ci-sd -B build-sd-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
