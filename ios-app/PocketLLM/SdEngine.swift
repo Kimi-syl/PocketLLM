@@ -62,9 +62,11 @@ final class SdEngine: ObservableObject {
     /// user-visible because a full-resolution diffusion graph is exactly the
     /// workload the backend's defaults were not tuned for: a step that outruns
     /// the GPU watchdog needs more command buffers, and a GPU error under
-    /// concurrency is worth ruling out by turning it off. n_cb defaults to 4
-    /// (1 is the library's own value, tuned for llama's small graphs).
-    @Published var metalCommandBuffers = 4
+    /// concurrency is worth ruling out by turning it off. n_cb defaults to 8
+    /// (the backend's max; 1 is the library's own value, tuned for llama's
+    /// small graphs) so a 1024x768 step is split into 9 evenly sized buffers,
+    /// each well under the watchdog budget.
+    @Published var metalCommandBuffers = 8
     @Published var metalFusion = true
     @Published var metalConcurrency = true
 

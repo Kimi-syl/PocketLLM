@@ -252,19 +252,23 @@ jobs:
           git -C ci-sd checkout "$SD_COMMIT" 2>/dev/null || git -C ci-sd checkout -f FETCH_HEAD
           git -C ci-sd submodule update --init --recursive --depth 1 || true
           # One denoise step at 1024x768 is a single Metal command buffer by
-          # default (n_cb = 1), which runs ~8 s on an M2 and trips the iOS GPU
-          # watchdog (the app dies with kIOGPUCommandBufferCallbackErrorInnocent
-          # Victim, not a compute error). The patch raises the graph split so
-          # each command buffer is shorter; GGML_METAL_N_CB tunes it. It is
-          # applied to the fresh clone because SD is fetched on demand rather
-          # than vendored (see build-sd.sh), and ci-sd is not cached, so this
-          # runs exactly once per build.
+          # default (n_cb = 1), and the main thread's buffer could hold most of
+          # the graph's nodes, so a step ran ~8 s on an M2 and tripped the iOS
+          # GPU progress watchdog (the app dies with kIOGPUCommandBufferCallback
+          # ErrorInnocentVictim, not a compute error). The patch (a) raises the
+          # graph split, tunable with GGML_METAL_N_CB, and (b) splits the nodes
+          # evenly across the main thread and the n_cb helpers so no single
+          # buffer is the long pole. It is applied to the fresh clone because SD
+          # is fetched on demand rather than vendored (see build-sd.sh), and
+          # ci-sd is not cached, so this runs exactly once per build.
           #
           # `patch`, not `git apply`: the target lives inside the ggml
           # submodule, and git refuses cleanly to apply against a gitlink.
           patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-metal-command-buffers.patch"
           grep -q ggml_backend_metal_preferred_n_cb ci-sd/ggml/src/ggml-metal/ggml-metal.cpp \
-            || { echo "metal command-buffer patch did not apply"; exit 1; }
+            || { echo "metal command-buffer patch did not apply (cpp)"; exit 1; }
+          grep -q 'gf->n_nodes/(ctx->n_cb + 1)' ci-sd/ggml/src/ggml-metal/ggml-metal-context.m \
+            || { echo "metal command-buffer patch did not apply (context)"; exit 1; }
           cmake -S ci-sd -B build-sd-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
