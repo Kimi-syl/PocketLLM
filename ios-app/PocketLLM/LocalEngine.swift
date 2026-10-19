@@ -51,6 +51,10 @@ final class LocalEngine: ObservableObject {
     func unload() {
         guard context != nil else { return }
         context = nil
+        // The context free releases the model's buffers; the backend free
+        // releases the ggml-Metal device itself, which is what the image engine
+        // needs gone before it creates its own.
+        LlamaBackendFree()
         releaseSecurityScope()
         appLog("unloaded so the image engine can take the GPU", source: "llama")
         // @Published mutations must reach SwiftUI on the main thread; the free

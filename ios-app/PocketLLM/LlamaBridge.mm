@@ -13,8 +13,19 @@ BOOL LlamaSupportsGpuOffload(void) {
     return llama_supports_gpu_offload() ? YES : NO;
 }
 
+// llama_backend_init/free are refcounted by hand here because the backend is a
+// process-global: loading twice must not init twice, and the image engine's
+// hand-off must be able to free it exactly once.
+static std::atomic<bool> g_backendInited{false};
+
 void LlamaGlobalInit(void) {
+    if (g_backendInited.exchange(true)) return;
     llama_backend_init();
+}
+
+void LlamaBackendFree(void) {
+    if (!g_backendInited.exchange(false)) return;
+    llama_backend_free();
 }
 
 namespace {

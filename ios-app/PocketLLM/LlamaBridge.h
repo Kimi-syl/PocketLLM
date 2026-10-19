@@ -11,6 +11,10 @@ extern "C" {
 #endif
 BOOL LlamaSupportsGpuOffload(void);
 void LlamaGlobalInit(void);
+/// Tears down the global llama backend, including the ggml-Metal device, so the
+/// GPU is genuinely free for stable-diffusion. The reverse of LlamaGlobalInit;
+/// safe to call when nothing is loaded.
+void LlamaBackendFree(void);
 #if defined(__cplusplus)
 }
 #endif
