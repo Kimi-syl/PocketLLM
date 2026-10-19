@@ -312,7 +312,40 @@ The governing constraint: **the Hub ANDs repeated filters, and a repository carr
 one `pipeline_tag`**, so `text-generation` and `image-text-to-text` cannot be combined in one
 request. The union is two requests merged and re-sorted.
 
+### 2.13 iOS image generation on Metal via an engine hand-off (2026-10-18 → 2026-10-19)
+
+The ggml-collision fix (§2.10) left image generation working but **CPU-only**: a single photo
+took ~7 minutes on an M2 iPad. Metal stayed off because two live ggml-Metal copies abort llama
+at `llama_context` creation (`ggml_metal_buffer_is_shared`), and the one-ggml rename
+(`llvm-objcopy --redefine-syms`) is a real change, not a flag.
+
+The chosen route avoids both: **only one engine holds the GPU at a time**. `ComputeCoordinator`
+is a lock-guarded registry of teardown closures that the per-tab `StateObject`s — which never
+see each other — register into. `SdEngine.load` frees the LLM first; `LocalEngine.load` frees
+the image engine first. The key correction over a naive "deinit the context" is that
+`unload()` also calls a new `LlamaBackendFree()` (`llama_backend_free`, refcounted against
+`LlamaGlobalInit`): freeing the context releases the model's buffers but leaves llama's
+ggml-Metal *device* alive, so without it the GPU would never actually have been handed over.
+
+Build-side (`ios.yml`):
+
+| change | reason |
+|---|---|
+| `SD_METAL=ON`, `GGML_METAL=ON`, `GGML_METAL_EMBED_LIBRARY=ON` | diffusion model + VAE on the GPU; embedded shaders, same as llama |
+| `CMAKE_CXX_VISIBILITY_PRESET=hidden` (+ C, inlines) | this dylib is built static-ggml, so `GGML_API` is plain `extern` and the preset hides it — the dylib's ggml cannot interpose on llama's |
+| `te=cpu` kept, `params_backend` left default | the text encoder's graph reservation still aborts on the GPU; only diffusion/VAE move to Metal |
+
+CI run `39207506905` is green (14m47s). The verify step now also asserts the dylib has the
+Metal backend, still exports the SD API, and does not export ggml — the last one caught its own
+first false positive: the embed step emits `ggml_metallib_start`/`_end` with default visibility
+on purpose (shader-source pointers, not the code symbols whose duplication broke generation),
+so they are excluded from the check.
+
+**Not verified:** whether the hand-off actually prevents the crash at runtime. If llama's
+context creation still dies alongside SD's Metal, the fallback is the one-ggml rename in §6.
+
 ---
+
 
 ## 3. Recurring failure patterns
 
@@ -362,6 +395,7 @@ and for the ggml guard.
 | Android vision symbols | 3 JNI entries + 314 `mtmd_*` symbols |
 | iOS vision linked | 6 `mtmd_*` symbols in the shipped `.ipa` |
 | iOS ggml duplication | `llvm-nm` on the shipped binary: 1299 defined, 9 duplicated |
+| iOS dylib isolation + Metal | run `39207506905`: app binary 1201 ggml defs, 0 duplicated; dylib has the Metal backend, exports the SD API, ggml local |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
 | Converter correctness | round-trip through the official `gguf` reader |
@@ -409,7 +443,7 @@ the local clone and `LLAMA_COMMIT` in both workflows — and they must move toge
 | artifact | location |
 |---|---|
 | `arm64-pocketllm-v0.6.1-rc7.apk` | `/sdcard/Download/`, `~/downloads/` |
-| `PocketLLM-device-unsigned` | run `39031612592` artifacts |
+| `PocketLLM-device-unsigned` | run `39207506905` artifacts (29.4 MB) |
 | `prerelease-20261006-1309` | `arm64-` and `x86_64-pocketllm-v0.6.0-beta.apk` |
 
 Note: the `v0.6.0` **git tag** exists but its release was deleted when the split-ABI pair
@@ -422,9 +456,10 @@ replaced the single dual-ABI APK.
 1. **iOS vision logging** — determine whether `describeImage` is reached at all, or whether
    the native writer fails. The probe is `bridge: loading mmproj`, emitted from a call already
    confirmed to succeed.
-2. **iOS image generation** — implement sd's ggml symbol renaming
-   (`llvm-objcopy --redefine-syms`) so one process has one ggml namespace. Verify the rename
-   applies to Mach-O archives before committing to it.
+2. **iOS image generation on Metal** — the engine hand-off (§2.13) is built and green; the open
+   question is whether it survives at runtime. If llama's context creation still dies next to
+   SD's Metal, fall back to renaming sd's ggml symbols (`llvm-objcopy --redefine-syms`) so one
+   process has one ggml namespace. Verify the rename applies to Mach-O archives first.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
