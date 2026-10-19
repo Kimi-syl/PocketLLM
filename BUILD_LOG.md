@@ -49,9 +49,10 @@ Latest artifact: `PocketLLM-device-unsigned` from run `39207506905`.
 ### Known-open
 
 1. **iOS image generation** — no longer collides on ggml, no longer CPU-only (§2.13); the diffusion
-   model now runs on Metal. It dies under the iOS GPU watchdog (`progress timeout`) because a step
-   takes ~10 s. The engine's own log (auto-fit plan, segment count, CPU fallbacks) was being
-   dropped and is now captured (§2.14); the placement fix follows from it.
+   model now runs on Metal. It dies under the iOS GPU watchdog (`progress timeout`) because the whole
+   step is one ~10 s Metal command buffer (§2.15 pins `n_cb` to 4 so a step splits into several
+   shorter buffers). A separate tab-switch kill is fixed by generalizing `ComputeCoordinator` to all
+   engines (§2.15). Both await a device run.
 2. **iOS vision** — the pipeline reaches the model, produces a single space. The native
    stage logs are not appearing at all, which is the current investigation.
 3. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
@@ -397,6 +398,72 @@ the goal is to get under a time watchdog.
 
 ---
 
+### 2.15 Three fixes off the round-two log: command buffers, tab switch, VAE tiling (2026-10-19)
+
+The §2.14 build's captured log finally made the 10 s/step legible, and it named a second,
+unrelated failure the user hit separately: switching between a chat and the image tab killed the
+app outright. Both are fixed here, plus the tunables the log showed were missing.
+
+**1. The 10 s/step is one Metal command buffer, not slow math.** `ggml_runner` reports the
+diffusion graph as a single segment (`executing segment 1/1`) and the step time is ~10 s, which is
+exactly the watchdog's "no progress for ~10 s" budget: the whole step is encoded into *one*
+command buffer, so the GPU gets one 10 s unit of work the watchdog refuses to let finish. SD's
+vendored ggml-Metal backend is built with `n_cb = 1` — the split that would break the step into
+several shorter, independently-committed buffers is tuned for llama.cpp's many tiny per-token
+graphs, not a diffusion graph.
+
+The backend already supports up to `GGML_METAL_MAX_COMMAND_BUFFERS` (8) and splits a graph into
+`n_cb + 1` buffers (`n_nodes` spread as `MAX(64, 10%)` on the calling thread, the rest across the
+helper threads). The only thing wrong is the hard-coded `1`. Because `third_party/sd` is fetched
+fresh on every build (it is not a submodule), the change ships as a patch, applied to the `ci-sd`
+clone in the workflow rather than kept in the tree:
+
+| change | reason |
+|---|---|
+| `ios-app/patches/stable-diffusion-metal-command-buffers.patch` | new file; carries the fix without tracking the fetched SD checkout |
+| `ggml_backend_metal_preferred_n_cb()` in `ggml-metal.cpp` (`getenv("GGML_METAL_N_CB")`, default 4, clamp 0..8, `GGML_LOG_INFO`) | one place to read the split; logs the value so a device run confirms it took |
+| both `ggml_backend_metal_set_n_cb(backend, 1)` → `…, preferred_n_cb())` | the two init paths; 4 buffers means each is ~¼ of the step, under the watchdog |
+| workflow: `patch -p1 -d ci-sd …` then `grep -q ggml_backend_metal_preferred_n_cb` | `patch`, not `git apply`: the target is inside the fetched ggml submodule; the grep fails the build if the patch silently did not land |
+
+`n_cb` is deliberately not raised to 8: more buffers means more encoder overhead per step, and 4
+already divides a ~10 s step into units the watchdog tolerates with margin. `n_main` (the calling
+thread's `MAX(64, 10%)` slice) is left alone — for a graph this size the 10 % term dominates, so
+the main buffer is short without touching the floor.
+
+**2. The tab-switch crash is a second resource the hand-off never covered.** `ComputeCoordinator`
+was built in §2.13 to move the GPU between llama.cpp and SD, but MLX and the VLM hold Metal
+directly, and neither registered. Loading one of them while SD still owned several GB of VRAM
+jetsam-killed the app on the switch. The coordinator is now a general registry of *text* engines
+(`.llama`, `.mlx`, `.vlm`) with a single *image* engine, and any load starts by tearing down the
+other class:
+
+| change | reason |
+|---|---|
+| `ComputeCoordinator`: `enum Kind { llama, mlx, vlm }`; `registerTextEngine`, `registerImageEngine`, `freeTextEngines`, `freeImageEngine` | any number of text engines, exactly one image engine — the real shape, not llama-vs-SD |
+| `LocalEngine` / `MLXEngine` / `VLMEngine` register as text engines; each `load` calls `freeImageEngine()` | loading a chat/vision model frees SD first |
+| `SdEngine` registers the image teardown; `load` calls `freeTextEngines()` | and the reverse |
+| `MLXEngine.unload()` (new): drop the container, `GPU.clearCache()` | MLX had no unload at all; without it "freeing" MLX freed nothing |
+
+`registerImageEngine` closes over `MainActor.assumeIsolated { unload() }`, so the teardown runs on
+the actor that owns the engine without the coordinator having to know about actors.
+
+**3. VAE tiling and a size menu.** The log also showed the decoded-resolution path had no knob:
+1024×768 peaked at ~3.1 GB resident, and VAE decode of a large latent is a separate memory spike
+after sampling. `SdEngine` gained `vaeTiling` / `vaeTileSize`, threaded through `SdBridge` into
+`sd_img_gen_params_t.vae_tiling_params` (`enabled`, `tile_size_w/h`, `target_overlap 0.5`), the
+documented setting (`--vae-tiling --vae-tile-size 256x256 --vae-tile-overlap 0.5`). `ImageGenView`
+exposes the toggle, a tile-size picker (128…512), and a size dropdown (`sizePresets`) that writes
+the width/height fields directly — a preset is matched back to them, never stored alongside, so
+the menu can't drift from what the engine reads.
+
+**Not verified:** the `n_cb` fix and the coordinator both need a device run. The patch is confirmed
+to apply cleanly against a pristine `ggml-metal.cpp` (`patch -p1`), and CI guards that it landed,
+but the step-time drop and the absence of the tab-switch kill are device facts. `GGML_METAL_N_CB`
+is read once at backend init; the default of 4 is what the app will use since a sideloaded build
+has no environment to set it.
+
+---
+
 
 ## 3. Recurring failure patterns
 
@@ -511,13 +578,12 @@ replaced the single dual-ABI APK.
    the native writer fails. The probe is `bridge: loading mmproj`, emitted from a call already
    confirmed to succeed.
 2. **iOS image generation under the GPU watchdog** — §2.13 (hand-off) is proven; §2.14 (logging)
-   now exposes the engine's own reasoning. Run the logging build once, then read the auto-fit plan
-   and the `compute buffer … (peak across N segment)` line: if diffusion weights are being staged
-   from RAM/disk, pin them to the compute device (`params_backend`, or `auto_fit=false`); if ops
-   are falling back to the CPU, that is a kernel-coverage problem. Target: per-step time well under
-   the ~10 s watchdog budget. Fallback if the timing cannot be met is to stop sampling on Metal.
-   The one-ggml rename (`llvm-objcopy --redefine-syms`) is no longer needed — the hand-off removes
-   the collision.
+   exposed that a step is a single ~10 s Metal command buffer, and §2.15 splits it (`n_cb = 4`,
+   patched into the fetched SD checkout) and fixes the tab-switch kill. Next is a device run of that
+   build: confirm the logged `n_cb` took effect, that per-step time is well under the watchdog
+   budget, and that 1024×768 (with VAE tiling on) survives. If the step is still slow, the §2.14 log
+   distinguishes staged weights (`params_backend` / `auto_fit=false`) from CPU fallbacks
+   (kernel coverage). Last resort is to stop sampling on Metal.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
