@@ -657,7 +657,7 @@ and for the ggml guard.
 | iOS SD GPU watchdog | `gpuEvent-...` `bug_type 284`, `restart_reason_desc = "progress timeout"`, killed at step 3 and step 7 |
 | iOS SD even graph split builds | run `39273582227`: patch + both guards (`ggml-metal.cpp`, `ggml-metal-context.m`) pass; artifact 29.4 MB |
 | iOS SD decode is the long pole | device logs: sampling 5 steps 134 s vs decode 1035 s (1024×576, tile 128, 21 tiles); tile 256 dies at tile 4 `status 5` |
-| iOS `vae=cpu` escape hatch builds | pending this commit's CI run (does `SdBridge.mm`'s backend spec + `vaeOnCPU:` selector compile and link?) |
+| iOS `vae=cpu` escape hatch builds | run `39291045148`: `stable-diffusion.cpp` (device) and the app both build with the `vaeOnCPU:` init and the backend spec; artifact 29.4 MB |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
@@ -706,7 +706,7 @@ the local clone and `LLAMA_COMMIT` in both workflows — and they must move toge
 | artifact | location |
 |---|---|
 | `arm64-pocketllm-v0.6.1-rc7.apk` | `/sdcard/Download/`, `~/downloads/` |
-| `PocketLLM-device-unsigned` | run `39273582227` artifacts (29.4 MB) |
+| `PocketLLM-device-unsigned` | run `39291045148` artifacts (29.4 MB) |
 | `prerelease-20261006-1309` | `arm64-` and `x86_64-pocketllm-v0.6.0-beta.apk` |
 
 Note: the `v0.6.0` **git tag** exists but its release was deleted when the split-ABI pair
