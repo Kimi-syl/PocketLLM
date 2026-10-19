@@ -263,20 +263,26 @@ struct ImageGenView: View {
 
     private var vaeTilingRows: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("VAE 分塊解碼", isOn: $engine.vaeTiling)
-            Text("大圖解碼時把 VAE 切成重疊小塊，降低尖峰記憶體；開太大會變慢，太大塊可能出現接縫。")
+            Toggle("VAE 用 CPU 解碼", isOn: $engine.vaeOnCPU)
+            Text("把 VAE 解碼整段搬到 CPU，完全不經過 GPU watchdog：大圖解碼跑到一半被中斷（進度條停在解碼階段後重啟）時用這個。擴散模型仍在 GPU。代價是 CPU 時間；開啟後分塊解碼無意義。改動需重新載入模型。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if engine.vaeTiling {
+            Toggle("VAE 分塊解碼", isOn: $engine.vaeTiling)
+                .disabled(engine.vaeOnCPU)
+            Text("大圖解碼時把 VAE 切成重疊小塊，降低尖峰記憶體。注意：分塊越小 → 塊數越多，每塊都要整跑一次 VAE，解碼時間成倍上升（1024×576 用 128 px 會切成 120 塊）。除非不加分塊會爆記憶體，否則關掉最快；要開就用塞得下的最大塊。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if engine.vaeTiling && !engine.vaeOnCPU {
                 HStack {
                     Text("分塊大小")
                     Spacer()
-                    Picker("分塊大小", selection: $engine.vaeTileSize) {
-                        ForEach([128, 192, 256, 384, 512], id: \.self) {
-                            Text("\($0) px").tag($0)
-                        }
-                    }
-                    .pickerStyle(.menu)
+                    TextField("256", value: $engine.vaeTileSize, format: .number)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: 72)
+                    Text("px")
+                        .foregroundStyle(.secondary)
                 }
             }
         }

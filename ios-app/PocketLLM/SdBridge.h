@@ -28,6 +28,7 @@ NS_ASSUME_NONNULL_BEGIN
                                    vae:(nullable NSString *)vae
                                  taesd:(nullable NSString *)taesd
                                threads:(int32_t)threads
+                              vaeOnCPU:(BOOL)vaeOnCPU
                                  error:(NSError * _Nullable * _Nullable)error;
 
 /// loras: "path|multiplier;path|multiplier", or nil. Each LoRA is applied to the

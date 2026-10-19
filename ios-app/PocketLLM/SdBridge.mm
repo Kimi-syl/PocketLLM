@@ -156,6 +156,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                    vae:(nullable NSString *)vae
                                  taesd:(nullable NSString *)taesd
                                threads:(int32_t)threads
+                              vaeOnCPU:(BOOL)vaeOnCPU
                                  error:(NSError * _Nullable * _Nullable)error {
     self = [super init];
     if (!self) return nil;
@@ -183,7 +184,15 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     // places those weights; the engine logs that plan (see sd_log_cb), which is
     // what identifies a step that is slow because its weights are being staged
     // instead of staying resident.
-    p.backend = "te=cpu";
+    //
+    // The VAE decode is the one component whose graph can outrun the iOS GPU
+    // watchdog: it is a single long chain whose cost grows with the canvas, and
+    // tiling only helps by multiplying that chain (120 tiles at 1024x576/128px).
+    // Moving just the decode to the CPU is the watchdog-proof escape hatch, at
+    // the cost of CPU time; the diffusion model stays on Metal either way.
+    std::string backendSpec = "te=cpu";
+    if (vaeOnCPU) backendSpec += ",vae=cpu";
+    p.backend = backendSpec.c_str();
 
     if (!sModel.empty())     p.model_path = sModel.c_str();
     if (!sClipL.empty())     p.clip_l_path = sClipL.c_str();

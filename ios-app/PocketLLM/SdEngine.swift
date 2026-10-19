@@ -56,6 +56,11 @@ final class SdEngine: ObservableObject {
     /// Tile edge in image pixels. The engine rounds it down to a multiple of the
     /// VAE scale factor, so any of these is safe for every checkpoint.
     @Published var vaeTileSize = 256
+    /// Decode the VAE on the CPU instead of Metal. The decode graph is one long
+    /// chain whose length grows with the canvas, so on a big image it is the
+    /// component that trips the iOS GPU watchdog no matter how the graph is
+    /// split. CPU decode cannot time out the GPU at all; tiling stops mattering.
+    @Published var vaeOnCPU = false
 
     /// Metal backend tuning, applied once when the context is created (the
     /// backend reads these environment knobs at init, not per graph). Kept
@@ -139,6 +144,7 @@ final class SdEngine: ObservableObject {
         let clipLPath = clipL, clipGPath = clipG
         let full = isFullCheckpoint
         let (ncb, fuse, concurrent) = (metalCommandBuffers, metalFusion, metalConcurrency)
+        let vaeCPU = vaeOnCPU
         let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
         // Opened before the context is created, not after: new_sd_ctx is where a
         // Metal load aborts, so a log file opened afterwards would miss the only
@@ -151,9 +157,9 @@ final class SdEngine: ObservableObject {
             // The Metal backend reads these at init, so they must be set before
             // new_sd_ctx. Logged because the effect is invisible otherwise.
             SdContext.configureMetalCommandBuffers(Int32(ncb), fusion: fuse, concurrency: concurrent)
-            appLog(String(format: "sd: metal n_cb=%d fusion=%@ concurrency=%@ · fullCheckpoint=%@",
+            appLog(String(format: "sd: metal n_cb=%d fusion=%@ concurrency=%@ vae=%@ · fullCheckpoint=%@",
                           ncb, fuse ? "on" : "off", concurrent ? "on" : "off",
-                          full ? "yes" : "no"), source: "sd")
+                          vaeCPU ? "cpu" : "metal", full ? "yes" : "no"), source: "sd")
             let ctx: SdContext
             do {
                 // ObjC methods whose last parameter is NSError** import into
@@ -168,7 +174,8 @@ final class SdEngine: ObservableObject {
                     diffusion: full ? nil : (model.isEmpty ? nil : model),
                     vae: vaePath.isEmpty ? nil : vaePath,
                     taesd: nil,
-                    threads: threadCount)
+                    threads: threadCount,
+                    vaeOnCPU: vaeCPU)
             } catch {
                 await MainActor.run {
                     self?.phase = .failed(error.localizedDescription)
@@ -233,7 +240,7 @@ final class SdEngine: ObservableObject {
         let (s0, b) = (seed, batch)
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
         let loraSpec = loras
-        let (tile, tileSize) = (vaeTiling, vaeTileSize)
+        let (tile, tileSize) = (vaeTiling && !vaeOnCPU, vaeTileSize)
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()

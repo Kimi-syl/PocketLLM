@@ -555,6 +555,54 @@ the culprit rather than the aggregate node count.
 
 ---
 
+### 2.18 The split cannot subdivide one op: the decode is the long pole (2026-10-19)
+
+The round-four device runs answered it, and refuted the split as the fix for decode. On Anima at
+1024×576 with `vaeTile 128`, sampling finishes in **134 s for 5 steps** and the VAE decode takes
+**1034.70 s** — 17 minutes, 21 tiles of 128 px, ~8.6 s each. The whole generation is ~19.5 min. At
+tile 256 (run *PocketLLM 4*) the decode instead dies at tile 4 with `status 5`; that is the same
+watchdog (`bug_type 284`, `progress timeout`), just reached sooner because the per-tile graph is
+bigger. The `command buffers = 8` line in both logs confirms the even split took effect, and the
+`tensor API disabled for pre-M5 and pre-A19 devices` line explains the cost: with no Metal tensor
+API every big convolution runs on the plain path.
+
+The split theory was structurally wrong for this stage. `n_cb` divides a graph by **node**, and the
+decode's cost is concentrated in a handful of very large convolutions; no node count can cut a
+single 3D-conv op below the watchdog budget. So the two ends are both bad and no tile size escapes
+them:
+
+| tile | per-tile graph | outcome |
+|---|---|---|
+| 256 px | large | watchdog at tile 4 (`status 5`) |
+| 128 px | small enough to survive | survives, but 120 tiles × ~8.6 s = 17 min |
+
+Smaller tiles only survive because each op stays small; they pay roughly 3.3× the pixels for the 50 %
+overlap plus per-tile overhead. That is the observed 17 min, not a tuning miss.
+
+**The escape hatch, implemented this round:** decode the VAE on the **CPU**, moving only that module
+with `vae=cpu` in the backend spec (`te=cpu` already keeps the conditioner on CPU; the diffusion model
+stays on Metal). CPU decode cannot trip the GPU watchdog at all, and tiling stops mattering — the app
+disables it when the toggle is on. Added as a first-class app option (**VAE 用 CPU 解碼**) beside the
+tiling controls; it requires a model reload because the backend spec is read when the context is
+created. Whether CPU decode is *fast* on this VAE (bf16 194 tensors, 242 MB, handled as F32 by
+`WanVAE`) is exactly what the next device run measures; it is the guaranteed-safe floor, not a
+guaranteed-fast one.
+
+| change | reason |
+|---|---|
+| `SdBridge.h` / `.mm` `initWithModel:…vaeOnCPU:` | build `p.backend = "te=cpu"` + `",vae=cpu"`; the spec string now outlives `new_sd_ctx` as a local `std::string` |
+| `SdEngine.vaeOnCPU` | thread the flag through, force `vaeTiling` off when set, and log `vae=cpu|metal` in the load line |
+| `ImageGenView` | `VAE 用 CPU 解碼` toggle; the tiling toggle is disabled while it is on |
+| `ImageGenView` custom tile size (was a 5-preset picker) | any tile edge is now typeable; the earlier caption had the cost backwards and is fixed (smaller tile = slower) |
+
+MLX is the other candidate and was checked this round rather than assumed: `MLXNN` ships `Conv1d/2d/3d`,
+`ConvTransposed1d/2d/3d`, `GroupNorm` and `Upsample`, and `MLX.loadArrays(url:)` reads `.safetensors`
+directly at runtime, so a user-imported VAE needs no conversion. The catch is that MLX submits the same
+Metal work: it is a *faster* decoder, not a watchdog-proof one, because it does not change the fact
+that one large op runs long. It stays the plan for speed; `vae=cpu` is the plan for the crash.
+
+---
+
 
 ## 3. Recurring failure patterns
 
@@ -608,6 +656,8 @@ and for the ggml guard.
 | iOS SD runs on Metal | device log (Metal build): sampling 10 s/step vs 39 s/step CPU build, i.e. the diffusion model is on the GPU |
 | iOS SD GPU watchdog | `gpuEvent-...` `bug_type 284`, `restart_reason_desc = "progress timeout"`, killed at step 3 and step 7 |
 | iOS SD even graph split builds | run `39273582227`: patch + both guards (`ggml-metal.cpp`, `ggml-metal-context.m`) pass; artifact 29.4 MB |
+| iOS SD decode is the long pole | device logs: sampling 5 steps 134 s vs decode 1035 s (1024×576, tile 128, 21 tiles); tile 256 dies at tile 4 `status 5` |
+| iOS `vae=cpu` escape hatch builds | pending this commit's CI run (does `SdBridge.mm`'s backend spec + `vaeOnCPU:` selector compile and link?) |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
@@ -680,6 +730,12 @@ replaced the single dual-ABI APK.
    names the buffer that dies, if one still does — then concurrency off, then fusion off. If the step
    is still slow, the §2.14 log distinguishes staged weights (`params_backend` / `auto_fit=false`)
    from CPU fallbacks (kernel coverage). Last resort is to stop sampling on Metal.
+   §2.18 then measured the decode directly: it is the long pole (1035 s vs 134 s sampling), and it
+   cannot be made watchdog-safe by any tile size because `n_cb` divides a graph by node and the cost
+   sits in single large convolutions. The shipped escape hatch is **VAE 用 CPU 解碼** (`vae=cpu`);
+   next device run is 1024×576 with it on *and* off, to get the CPU decode time against the 17-minute
+   GPU baseline. If CPU decode is also too slow, the follow-up is the `MLXVae` port (§2.18 notes its
+   `MLXNN`/`.safetensors` support and its one caveat — faster Metal, not watchdog-proof).
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
