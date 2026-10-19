@@ -49,10 +49,13 @@ Latest artifact: `PocketLLM-device-unsigned` from run `39207506905`.
 ### Known-open
 
 1. **iOS image generation** — no longer collides on ggml, no longer CPU-only (§2.13); the diffusion
-   model now runs on Metal. It dies under the iOS GPU watchdog (`progress timeout`) because the whole
-   step is one ~10 s Metal command buffer (§2.15 pins `n_cb` to 4 so a step splits into several
-   shorter buffers). A separate tab-switch kill is fixed by generalizing `ComputeCoordinator` to all
-   engines (§2.15). Both await a device run.
+   model now runs on Metal. The `n_cb = 4` split (§2.15) took effect and survives the watchdog at
+   1024×768 for the first steps, but a step at that size is ~31–38 s and step 3 died with a Metal
+   command-buffer error (status 5, `InnocentVictim`). All-in-one single-file checkpoints (SD1.5/SDXL)
+   failed to load entirely — they were handed to `diffusion_model_path`, which strips the model
+   prefix and misses the embedded text encoder; fixed in §2.16 by routing them to `model_path`.
+   §2.16 also exposes the Metal backend's read-at-init knobs (n_cb, concurrency, fusion) and the
+   engine's full sampler/scheduler tables so the 1024×768 fault can be iterated on-device.
 2. **iOS vision** — the pipeline reaches the model, produces a single space. The native
    stage logs are not appearing at all, which is the current investigation.
 3. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
@@ -464,6 +467,62 @@ has no environment to set it.
 
 ---
 
+### 2.16 All-in-one checkpoints, the full sampler table, and Metal read-at-init knobs (2026-10-19)
+
+The next device log (a 1024×768 run of the §2.15 build) confirmed the command-buffer split took
+effect (`ggml_backend_metal_preferred_n_cb: command buffers = 4`) and was enough for the watchdog:
+the first two steps ran for ~31 s and ~38 s without the process being killed. It failed on step 3
+with `ggml_metal_synchronize: error: command buffer 3 failed with status 5` /
+`kIOGPUCommandBufferCallbackErrorInnocentVictim` — a Metal *error*, not the watchdog, arriving
+~20 s into a step, so neither the split nor the earlier fixes explain it. The same log opened with
+a second, unrelated failure the user reported separately: an all-in-one checkpoint refused to load.
+
+**1. All-in-one checkpoints (single-file SD1.5/SDXL) never loaded.** The `sd load failed` line is
+preceded by hundreds of `Conditioner model tensor 'cond_stage_model.transformer.text_model.…' not in
+model metadata`, then `model metadata validation failed`. The app mapped its main-model slot to
+`diffusion_model_path`, and `diffusion_model_path` is loaded with the prefix `model.diffusion_model.`
+(`diffusion_engine.cpp:733`) — a prefix-*strip* that imports the UNet alone. An all-in-one
+checkpoint keeps its text encoder under `cond_stage_model.*`/`conditioner.*`, so the conditioner
+builds against a file that contributes no tensors to it and the load is rejected. Only `model_path`
+is read without a prefix and sees every component.
+
+| change | reason |
+|---|---|
+| `SdEngine`: route the main model to `model_path` when no separate text encoder, CLIP-L/G or T5 is supplied, else to `diffusion_model_path` | one slot, both layouts: an all-in-one file is the whole checkpoint, a DiT-only file (Anima/Qwen) still gets the prefix strip |
+| new slots `clipL` / `clipG` / `t5` in `SdEngine` and `ImageGenView` | SDXL's two encoders and SD3/Flux's T5 were reachable in the bridge but had no UI; `clipG` was hard-coded `nil` |
+| `sd: metal … fullCheckpoint=…` stage log | the routing decision is otherwise invisible; the log says which path a load took |
+
+**2. The sampler and scheduler tables were not exposed at all.** The iOS UI had no sampler,
+scheduler or clip-skip control — `SdEngine` carried the values but nothing bound them, so every run
+was `euler` / `discrete` / clip-skip 1. Android already listed the engine's own tables
+(`sample_method_to_str` / `scheduler_to_str`); iOS did not.
+
+| change | reason |
+|---|---|
+| `SdBridge`: `+sampleMethodNames` / `+schedulerNames` over `sample_method_to_str` / `scheduler_to_str`, bounded by `SAMPLE_METHOD_COUNT` / `SCHEDULER_COUNT` | the menu offers exactly what the build supports — lcm, tcd, ddim_trailing, the cfg-pp and sde variants included — and the index is the enum value |
+| `ImageGenView`: sampler + scheduler pickers, clip-skip stepper | binds the values to the run |
+
+**3. The Metal backend knobs are read-at-init, so they are now settable before `new_sd_ctx`.**
+`GGML_METAL_N_CB`, `GGML_METAL_CONCURRENCY_DISABLE` and `GGML_METAL_FUSION_DISABLE` are `getenv`
+calls in the backend, so a user setting has to exist in the environment when the context is built —
+and the `n_cb` value was otherwise only reachable by editing the build patch's default.
+
+| change | reason |
+|---|---|
+| `SdBridge`: `+configureMetalCommandBuffers:fusion:concurrency:` (`setenv`/`unsetenv`) | applied from `SdEngine.load` before the context; unsetting restores the backend default instead of leaving a stale value |
+| `ImageGenView`: a collapsed "Metal 進階" group — n_cb (1…8), fusion, concurrency | `n_cb` divides a long step into shorter command buffers; concurrency/fusion are the two suspects for the status-5 error, so both can be turned off |
+
+**Not verified:** which knob clears the status-5 fault. The error is `InnocentVictim` — the GPU was
+reset by a fault elsewhere and the buffer was discarded — and it lands ~20 s into step 3 after two
+clean steps, which fits either a resource ceiling at 1024×768 or the backend's multi-command-buffer
+path (the reason it warns against `n_cb > 2`). The knobs exist so the device run can distinguish
+them: try `n_cb = 8`, then concurrency off, then fusion off. The `compute buffer … MB(VRAM)` line
+that would show whether the DiT activations spill is `LOG_VERBOSE`, which the app writes to the
+native file but the Logs export drops (the in-memory store mirrors INFO+ only), so it is not in any
+shared log yet.
+
+---
+
 
 ## 3. Recurring failure patterns
 
@@ -579,11 +638,13 @@ replaced the single dual-ABI APK.
    confirmed to succeed.
 2. **iOS image generation under the GPU watchdog** — §2.13 (hand-off) is proven; §2.14 (logging)
    exposed that a step is a single ~10 s Metal command buffer, and §2.15 splits it (`n_cb = 4`,
-   patched into the fetched SD checkout) and fixes the tab-switch kill. Next is a device run of that
-   build: confirm the logged `n_cb` took effect, that per-step time is well under the watchdog
-   budget, and that 1024×768 (with VAE tiling on) survives. If the step is still slow, the §2.14 log
-   distinguishes staged weights (`params_backend` / `auto_fit=false`) from CPU fallbacks
-   (kernel coverage). Last resort is to stop sampling on Metal.
+   patched into the fetched SD checkout) and fixes the tab-switch kill. §2.16 found the split
+   enough for the watchdog at 1024×768 (two ~31–38 s steps ran) but a step-3 Metal status-5 error
+   remains, and gives the on-device knobs to chase it (`n_cb`, concurrency, fusion) plus working
+   single-file SD1.5/SDXL loading. Next device run: try `n_cb = 8`, then concurrency off, then
+   fusion off; if the step is still slow, the §2.14 log distinguishes staged weights
+   (`params_backend` / `auto_fit=false`) from CPU fallbacks (kernel coverage). Last resort is to
+   stop sampling on Metal.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
