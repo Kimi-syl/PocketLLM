@@ -110,7 +110,7 @@ final class MLXVae {
 
     private func conv(_ x: MLXArray, _ name: String, padding: Int) throws -> MLXArray {
         let w = try convWeight(name + ".weight")
-        var y = conv2d(x, w, stride: 1, padding: padding)
+        var y = conv2d(x, w, stride: 1, padding: .init(padding))
         if let b = weights[prefix + name + ".bias"] {
             y = y + b.asType(.float32).reshaped([1, 1, 1, b.size])
         }
