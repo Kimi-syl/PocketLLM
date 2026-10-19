@@ -476,6 +476,7 @@ with `ggml_metal_synchronize: error: command buffer 3 failed with status 5` /
 `kIOGPUCommandBufferCallbackErrorInnocentVictim` — a Metal *error*, not the watchdog, arriving
 ~20 s into a step, so neither the split nor the earlier fixes explain it. The same log opened with
 a second, unrelated failure the user reported separately: an all-in-one checkpoint refused to load.
+(§2.17 corrects the status-5 reading below: the GPU event log shows it *was* the watchdog.)
 
 **1. All-in-one checkpoints (single-file SD1.5/SDXL) never loaded.** The `sd load failed` line is
 preceded by hundreds of `Conditioner model tensor 'cond_stage_model.transformer.text_model.…' not in
@@ -520,6 +521,37 @@ them: try `n_cb = 8`, then concurrency off, then fusion off. The `compute buffer
 that would show whether the DiT activations spill is `LOG_VERBOSE`, which the app writes to the
 native file but the Logs export drops (the in-memory store mirrors INFO+ only), so it is not in any
 shared log yet.
+
+---
+
+### 2.17 The watchdog after all: an even graph split (2026-10-19)
+
+The GPU event log settled the §2.16 question and corrected it. `gpuEvent-unknown-…txt` is a
+`bug_type 284` record whose `restart_reason_desc` is `"progress timeout"` — the OS GPU **watchdog**,
+exactly the failure §2.15 was meant to fix. So the `status 5` /
+`kIOGPUCommandBufferCallbackErrorInnocentVictim` that the app printed was not a separate Metal
+fault: it is what an in-flight command buffer reports after the GPU firmware resets, and the reset
+was the watchdog killing a step that had run past its ~10 s budget. The §2.16 note ("a Metal
+*error*, not the watchdog") was wrong — the two are the same event seen from different sides.
+
+The reason `n_cb = 4` was not enough is the shape of the split, not the count. `ggml_metal_graph_compute`
+gave the calling thread `MAX(64, 0.1*n_nodes)` nodes and divided the *remainder* across the `n_cb`
+helper buffers, so with `n_cb = 4` each helper buffer carried ~22.5 % of the graph against the main
+thread's 10 % — every buffer but the main one was still a long pole, and a heavy node inside one of
+them could outrun the budget on its own. Raising the count only ever shrank the helpers by
+`90 %/n_cb`; it never balanced against the fixed 10 % main-thread chunk.
+
+| change | reason |
+|---|---|
+| `ggml-metal-context.m`: `n_main = MAX(1, gf->n_nodes/(ctx->n_cb + 1))` (was `MAX(64, 0.1*gf->n_nodes)`) | split the graph *evenly* across the calling thread and the `n_cb` helpers, so no buffer is the long pole; with `n_cb = 0` it still collapses to the whole graph on the calling thread, as before |
+| `ggml-metal-context.m`: one `n_nodes = … main thread … x … per command buffer` line per distinct graph shape | the per-buffer node count is the number that decides whether a step can outrun the watchdog, and it was invisible; it is now in the device log |
+| `SdEngine.metalCommandBuffers` default `4 → 8` | the backend's max: 9 evenly sized buffers put ~11 % of a step in each, roughly a third of the §2.15 time even before the split was balanced |
+| `ios.yml`: a second patch guard on `gf->n_nodes/(ctx->n_cb + 1)` | the guard only checked the `ggml-metal.cpp` half; the context change would have failed silently |
+
+**Not verified:** that `n_cb = 8` with the even split clears the watchdog at 1024×768 on device —
+this is a CI-compiled fix with the standard runtime gap. The per-shape split line is what will show
+it: if a step still dies, the line names the buffer that did it, and whether a single heavy node is
+the culprit rather than the aggregate node count.
 
 ---
 
