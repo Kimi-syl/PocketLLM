@@ -39,6 +39,11 @@ final class MLXVae {
     private(set) var weights: [String: MLXArray]
     private let prefix: String
 
+    /// Compute dtype. The engine decodes in f32 (bf16 files are converted on
+    /// load) and the widest stage is only ~230 MB, so match it instead of
+    /// introducing a bf16 path the Metal kernels may or may not cover.
+    static let compute: DType = .float32
+
     let zDim: Int
     let dim: Int
     let dimMult: [Int]
@@ -97,9 +102,8 @@ final class MLXVae {
     /// collapses to the last tap (two zero frames are padded on the left).
     private func convWeight(_ name: String) throws -> MLXArray {
         var w = try tensor(name)
-        // The safetensors are bf16; MLX convolutions want one dtype throughout,
-        // and the dumped latents are f32.
-        w = w.asType(.float32)
+        // MLX convolutions want one dtype throughout.
+        w = w.asType(Self.compute)
         if w.ndim == 5 {
             w = w[0..., 0..., w.shape[2] - 1, 0..., 0...]
         }
@@ -112,8 +116,13 @@ final class MLXVae {
         let w = try convWeight(name + ".weight")
         var y = conv2d(x, w, stride: 1, padding: .init(padding))
         if let b = weights[prefix + name + ".bias"] {
-            y = y + b.asType(.float32).reshaped([1, 1, 1, b.size])
+            y = y + b.asType(Self.compute).reshaped([1, 1, 1, b.size])
         }
+        // Evaluate per convolution. MLX is lazy, so without this the whole
+        // stage would fuse into one graph and hold every intermediate alive at
+        // once - both the memory spike and the long Metal submission this path
+        // is meant to avoid.
+        eval(y)
         return y
     }
 
@@ -124,7 +133,7 @@ final class MLXVae {
         let meanSq = (x * x).mean(axis: -1, keepDims: true)
         var y = x / sqrt(meanSq + 1e-12)
         if let gamma {
-            y = y * gamma.asType(.float32).reshaped([1, 1, 1, gamma.size])
+            y = y * gamma.asType(Self.compute).reshaped([1, 1, 1, gamma.size])
         }
         return y
     }
@@ -184,6 +193,16 @@ final class MLXVae {
     /// - Parameter latents: `[N, C, 1, H, W]` or `[N, C, H, W]` diffusion latents.
     /// - Returns: `[N, H*8, W*8, 3]` (NHWC) in the range `[-1, 1]`.
     func decode(latents: MLXArray) throws -> MLXArray {
+        // MLX reports errors through a process-wide handler whose default is
+        // `fatalError`. Scoping it converts them into a thrown Swift error, so
+        // a bad tensor name or an allocation failure lands in the app log
+        // instead of killing the process.
+        try withError { _ in
+            try decodeChecked(latents: latents)
+        }
+    }
+
+    private func decodeChecked(latents: MLXArray) throws -> MLXArray {
         var z = latents
         if z.ndim == 5 {
             guard z.shape[2] == 1 else {
@@ -203,40 +222,56 @@ final class MLXVae {
         var x = z.transposed(0, 2, 3, 1)
         let mean = MLXArray(Self.latentsMean).reshaped([1, 1, 1, zDim])
         let std = MLXArray(Self.latentsStd).reshaped([1, 1, 1, zDim])
-        x = x * std + mean
+        x = (x * std + mean).asType(Self.compute)
 
         // post_quant_conv is the engine's `conv2` block.
         x = try conv(x, "conv2", padding: 0)
-        eval(x)
         x = try conv(x, "decoder.conv1", padding: 1)
-        eval(x)
 
         x = try residualBlock(x, "decoder.middle.0.")
         x = try attention(x, "decoder.middle.1.")
         x = try residualBlock(x, "decoder.middle.2.")
         eval(x)
 
+        // Mirror Decoder3d::Decoder3d in wan_vae.hpp, which is what wrote the
+        // tensor names. Its `dims` list starts with `dim_mult.last * dim`
+        // repeated, so for dim=96, dim_mult={1,2,4,4} it is
+        // [384, 384, 384, 192, 96, 96] and there are five groups, not four:
+        //
+        //   upsamples.0-2   Residual(384)         upsamples.3  Resample(384)
+        //   upsamples.4-6   Residual(192->384)    upsamples.7  Resample(384)
+        //   upsamples.8-10  Residual(192)         upsamples.11 Resample(192)
+        //   upsamples.12-14 Residual(96)
+        //   upsamples.15-17 Residual(96)
+        //
+        // The channel change sits on the *first* residual of a group; the
+        // engine's `in_dim / 2` quirk for i in 1...3 is already baked into
+        // those weights, so this loop only walks indices and resample slots.
+        let dims = [dimMult[dimMult.count - 1] * dim] + dimMult.reversed().map { dim * $0 }
+
         var index = 0
-        let stages = dimMult.count
-        for i in 0..<stages {
+        let t0 = Date()
+        for i in 0..<(dims.count - 1) {
             for _ in 0...numResBlocks {
                 x = try residualBlock(x, "decoder.upsamples.\(index).")
                 index += 1
             }
-            if i != stages - 1 {
+            if i != dimMult.count - 1 {
                 x = try upsampleBlock(x, "decoder.upsamples.\(index).")
                 index += 1
             }
-            // Evaluate per stage so each Metal submission stays short; lazy MLX
-            // would otherwise fuse the entire decoder into one long command
-            // buffer, which is the very thing this path exists to avoid.
+            // Group markers: if MLX throws or the process dies, the last line
+            // in the log names where.
             eval(x)
+            appLogMemory(String(format: "sd: mlx vae group %d/%d %dx%d %dch in %.2fs",
+                                i + 1, dims.count - 1, x.shape[2], x.shape[1], x.shape[3],
+                                Date().timeIntervalSince(t0)), source: "sd")
         }
 
         x = rmsNorm(x, try? tensor("decoder.head.0.gamma"))
         x = silu(x)
         x = try conv(x, "decoder.head.2", padding: 1)
-        x = clip(x, min: -1.0, max: 1.0)
+        x = clip(x, min: -1.0, max: 1.0).asType(.float32)
         eval(x)
         return x
     }

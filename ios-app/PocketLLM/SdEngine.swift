@@ -297,11 +297,18 @@ final class SdEngine: ObservableObject {
                 let url = URL(fileURLWithPath: SdContext.latentsDumpPath())
                 let t0 = Date()
                 do {
+                    // MLX's buffer pool otherwise grows to a large fraction of
+                    // the GPU working set and counts against jetsam next to the
+                    // engine's weights.
+                    GPU.set(cacheLimit: 64 * 1024 * 1024)
+                    GPU.resetPeakMemory()
                     let latents = try MLXVae.latents(from: url)
+                    appLog("sd: mlx vae latents \(latents.shape)", source: "sd")
                     let vae = try MLXVae(vaePath: vaePathForMLX)
                     let pixels = try vae.decode(latents: latents)
-                    appLog(String(format: "sd: mlx vae decoded %@ in %.1fs · %@",
+                    appLog(String(format: "sd: mlx vae decoded %@ in %.1fs · peak %d MB · %@",
                                   String(describing: pixels.shape), Date().timeIntervalSince(t0),
+                                  GPU.peakMemory / 1_048_576,
                                   LogStore.memoryDescription()), source: "sd")
                     if let ui = SdEngine.bitmap(from: pixels) { decoded.append(ui) }
                 } catch {

@@ -659,6 +659,62 @@ is `nearest2x`'s reshape order — both are covered by the `decode` comment.
 
 ---
 
+### 2.20 The first MLX decode died on the upsample groups (2026-10-20)
+
+The first device run trapped. It was not the watchdog and not the GPU: the crash report is
+`bug_type 309`, `EXC_BREAKPOINT`, faulting thread on a Swift cooperative queue, with
+`_assertionFailure` at the top and `MLX.errorHandlerTrampoline` → `MLX.ErrorHandler.dispatch` →
+`_mlx_error` in between. That is MLX's default handler calling `fatalError` after an op failed.
+
+The report is enough to name the exact op even without a message. `usedImages[2]` carries the app
+UUID `af1ca2f0-…`, which matches the `PocketLLM-device-unsigned` artifact from run `39341146470`
+byte for byte, so the symbols in that artifact apply:
+
+```
+0x12b86c  MLX.ErrorHandler.dispatch          (the fatalError)
+0x12b6fc  MLX.errorHandlerTrampoline
+0x1b7ea4  _mlx_error
+0x1e911c  _mlx_eval
+0x188638  MLX.eval(MLXArray)
+0x4cfb8   MLXVae.decode + 0xad4              <- return address of the 4th `bl MLX.eval`
+0x724c4   SdEngine.generate closure
+```
+
+`decode` has five `eval` calls; the fourth is the per-stage one. Disassembly of `decode` puts the
+`conv`/`resample` call immediately before it, i.e. the failure is in the upsample stage loop, and
+stage 0 had already evaluated. The port had modelled the decoder as **four** groups of three
+residuals, one resample between groups. The engine has **five**:
+
+| `dims` from `Decoder3d::Decoder3d` | indices |
+|---|---|
+| `[384, 384, 384, 192, 96, 96]` | `upsamples.0-2` R(384), `3` Resample(384) |
+| | `4-6` R(192→384), `7` Resample(384) |
+| | `8-10` R(192), `11` Resample(192) |
+| | `12-14` R(96) |
+| | `15-17` R(96) |
+
+`dims` starts with `dim_mult.last * dim` *and then* repeats `dim * dim_mult.reversed()`, so the
+last multiplier appears twice and the channel halving lands on the first residual of the next
+group. The four-group version read `upsamples.4` (a 192→384 shortcut block) with a 384-channel
+input, which is where the conv failed. The index mistake also explains why the error came from the
+stage `eval` and not from a lookup: the keys existed, the shapes did not.
+
+Fixed by reproducing the engine's `dims` construction and walking `dims.count - 1` groups. Three
+hardening changes go with it:
+
+| change | reason |
+|---|---|
+| `withError { … }` around the decode | an MLX error becomes a thrown `MLXError` and reaches the app log (`sd: mlx vae failed: …`) instead of `fatalError` |
+| `eval` inside `conv`, not per stage | keeps each lazy graph (and each Metal submission) to one conv; MLX frees intermediates as they go |
+| `MLX.GPU.set(cacheLimit: 64 MB)` before decoding | MLX's pool otherwise grows toward the working-set size next to the engine's 1.4 GB of VRAM; this is the documented iOS mitigation |
+
+`compute` is f32: the widest live tensor is 512×288×384 (~226 MB), so bf16 buys nothing worth a
+new kernel-coverage risk. The group log now prints resolution, channels and elapsed time per group,
+and the decoded line prints `GPU.peakMemory`, so the next run has both a completion trace and a
+speed number for every stage.
+
+---
+
 ## 3. Recurring failure patterns
 
 These account for the large majority of the session's bugs and are worth stating explicitly.
@@ -714,6 +770,7 @@ and for the ggml guard.
 | iOS SD decode is the long pole | device logs: sampling 5 steps 134 s vs decode 1035 s (1024×576, tile 128, 21 tiles); tile 256 dies at tile 4 `status 5` |
 | iOS `vae=cpu` escape hatch builds | run `39291045148`: `stable-diffusion.cpp` (device) and the app both build with the `vaeOnCPU:` init and the backend spec; artifact 29.4 MB |
 | iOS MLX VAE decoder builds | run `39341146470`: `MLXVae.swift` + `MLXNN` link, latent-dump patch + guard pass; artifact `PocketLLM-device-unsigned` |
+| MLX VAE first device run | crash `bug_type 309`; symbolication: `_mlx_error` from the stage-loop `eval`, caused by the four-vs-five upsample groups |
 | iOS MLX VAE decode is correct/fast | not yet run on device — no image, no timing |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
