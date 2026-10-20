@@ -419,7 +419,7 @@ struct RepoFilesView: View {
                 {
                     Text("\(Int((state.progress) * 100))%")
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(state.failure == nil ? .secondary : .red)
+                        .foregroundStyle(state.failure == nil ? Color.secondary : Color.red)
                 }
             }
             Button {
