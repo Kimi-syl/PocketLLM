@@ -63,6 +63,10 @@ targets:
       # xcodegen REGENERATES this plist on every run, so keys belong here;
       # hand-edits to PocketLLM/Info.plist are overwritten and lost.
       properties:
+        # xcodegen writes the plist from here and falls back to 1.0/1 otherwise,
+        # so the release version has to be stated in this block.
+        CFBundleShortVersionString: "0.6.0"
+        CFBundleVersion: "2"
         # LAN servers are plain http:// by default, so ATS must allow
         # arbitrary loads or remote-server mode cannot connect.
         NSAppTransportSecurity:
