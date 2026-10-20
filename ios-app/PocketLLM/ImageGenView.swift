@@ -263,11 +263,11 @@ struct ImageGenView: View {
 
     private var vaeTilingRows: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("VAE 用 MLX 解碼（實驗）", isOn: $engine.vaeOnMLX)
+            Toggle("VAE 用 MLX 解碼", isOn: $engine.vaeOnMLX)
                 .onChange(of: engine.vaeOnMLX) { _, on in
                     if on { engine.vaeOnCPU = false }
                 }
-            Text("引擎只取樣並輸出 latent，解碼交給 MLX，用同一份 safetensors 逐段執行（每次 Metal 提交較短）。比引擎內解碼快，但仍走 GPU；若被 watchdog 中斷，改用 CPU 解碼。需重新載入模型。")
+            Text("引擎只取樣並輸出 latent，解碼交給 MLX，用同一份 safetensors 逐段執行。實測 512×512 約 2 秒（引擎內 GPU 解碼要十幾分鐘，還會被 watchdog 中斷）。需要獨立載入的 VAE 檔；單檔模型會自動退回 CPU 解碼。需重新載入模型。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Toggle("VAE 用 CPU 解碼", isOn: $engine.vaeOnCPU)

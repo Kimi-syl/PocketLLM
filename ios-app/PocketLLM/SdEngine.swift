@@ -67,7 +67,7 @@ final class SdEngine: ObservableObject {
     /// safetensors the user imported and runs the decoder stage by stage, so
     /// every Metal submission stays short. This is the faster Metal path; it
     /// still runs on the GPU, so `vaeOnCPU` remains the watchdog-proof floor.
-    @Published var vaeOnMLX = false
+    @Published var vaeOnMLX = true
 
     /// Metal backend tuning, applied once when the context is created (the
     /// backend reads these environment knobs at init, not per graph). Kept
@@ -151,7 +151,11 @@ final class SdEngine: ObservableObject {
         let clipLPath = clipL, clipGPath = clipG
         let full = isFullCheckpoint
         let (ncb, fuse, concurrent) = (metalCommandBuffers, metalFusion, metalConcurrency)
-        let vaeCPU = vaeOnCPU
+        // MLX decode needs a separate VAE file. With an all-in-one checkpoint
+        // there is nothing for it to read, so fall back to a CPU decode rather
+        // than leaving the GPU decode path (and its watchdog) armed.
+        let mlxOn = vaeOnMLX
+        let vaeCPU = vaeOnCPU || (mlxOn && vae.isEmpty)
         let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
         // Opened before the context is created, not after: new_sd_ctx is where a
         // Metal load aborts, so a log file opened afterwards would miss the only
@@ -164,9 +168,10 @@ final class SdEngine: ObservableObject {
             // The Metal backend reads these at init, so they must be set before
             // new_sd_ctx. Logged because the effect is invisible otherwise.
             SdContext.configureMetalCommandBuffers(Int32(ncb), fusion: fuse, concurrency: concurrent)
-            appLog(String(format: "sd: metal n_cb=%d fusion=%@ concurrency=%@ vae=%@ · fullCheckpoint=%@",
+            appLog(String(format: "sd: metal n_cb=%d fusion=%@ concurrency=%@ vae=%@ mlx=%@ · fullCheckpoint=%@",
                           ncb, fuse ? "on" : "off", concurrent ? "on" : "off",
-                          vaeCPU ? "cpu" : "metal", full ? "yes" : "no"), source: "sd")
+                          vaeCPU ? "cpu" : "metal", mlxOn ? "on" : "off",
+                          full ? "yes" : "no"), source: "sd")
             let ctx: SdContext
             do {
                 // ObjC methods whose last parameter is NSError** import into
@@ -248,8 +253,10 @@ final class SdEngine: ObservableObject {
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
         let loraSpec = loras
         // MLX owns the decode, so the engine's own tiling must be off.
-        let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !vaeOnMLX, vaeTileSize)
-        let mlxVae = vaeOnMLX
+        // Only an actual separate VAE file can be handed to MLX; the engine then
+        // leaves the latents untouched for it.
+        let mlxVae = vaeOnMLX && !vae.isEmpty
+        let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !mlxVae, vaeTileSize)
         let vaePathForMLX = vae
 
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -288,9 +295,7 @@ final class SdEngine: ObservableObject {
                           LogStore.memoryDescription()), source: "sd")
 
             var decoded: [UIImage] = []
-            if mlxVae && vaePathForMLX.isEmpty {
-                appLog("sd: mlx vae needs a separate VAE .safetensors (all-in-one checkpoints are not supported)", source: "sd")
-            } else if mlxVae {
+            if mlxVae {
                 // The engine wrote the latents and skipped its decode; run the
                 // MLX decoder on them. Any existing images are ignored because
                 // this path is defined by the latents file.

@@ -713,6 +713,15 @@ new kernel-coverage risk. The group log now prints resolution, channels and elap
 and the decoded line prints `GPU.peakMemory`, so the next run has both a completion trace and a
 speed number for every stage.
 
+**Device result:** the next run decoded 512×512 in **~2 s**, image correct. That ends the decode
+story: the 1035 s figure in §2.18 was the engine's tiled Metal decode at 1024×576, which is ~2.25×
+the pixels of 512², so the same work should land around 4-5 s here. Nothing else in the pipeline is
+within two orders of magnitude of the old decode.
+
+MLX is now the default (`vaeOnMLX = true`). It needs a separate VAE file, so when the user loads an
+all-in-one checkpoint the app creates the context with `vae=cpu` instead of leaving the Metal decode
+armed; that configuration still decodes slowly, but safely. `vae=cpu` remains the manual fallback.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -771,7 +780,7 @@ and for the ggml guard.
 | iOS `vae=cpu` escape hatch builds | run `39291045148`: `stable-diffusion.cpp` (device) and the app both build with the `vaeOnCPU:` init and the backend spec; artifact 29.4 MB |
 | iOS MLX VAE decoder builds | run `39341146470`: `MLXVae.swift` + `MLXNN` link, latent-dump patch + guard pass; artifact `PocketLLM-device-unsigned` |
 | MLX VAE first device run | crash `bug_type 309`; symbolication: `_mlx_error` from the stage-loop `eval`, caused by the four-vs-five upsample groups |
-| iOS MLX VAE decode is correct/fast | not yet run on device — no image, no timing |
+| iOS MLX VAE decode on device | 512×512 in ~2 s, image correct (user device run, build `39452756882`) |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
@@ -848,10 +857,9 @@ replaced the single dual-ABI APK.
    cannot be made watchdog-safe by any tile size because `n_cb` divides a graph by node and the cost
    sits in single large convolutions. The shipped escape hatch is **VAE 用 CPU 解碼** (`vae=cpu`);
    next device run is 1024×576 with it on *and* off, to get the CPU decode time against the 17-minute
-   GPU baseline. §2.19 built the `MLXVae` port; the next device run should be 1024×576 with
-   **VAE 用 MLX 解碼** on, and its `sd: mlx vae decoded … in Xs` line compared with the CPU and
-   1035 s GPU numbers. If it is both correct and fast, make it the default; if only fast, keep
-   `vae=cpu` as the safe mode; if it is wrong, debug attention first, then `nearest2x`.
+   GPU baseline. §2.19 built the `MLXVae` port, §2.20 fixed its group walk, and the device run
+   decodes 512×512 in ~2 s, so MLX is now the default decoder. Remaining: a 1024×576 run to confirm
+   the ~4-5 s extrapolation and that peak memory stays clear of jetsam at the largest canvas.
 3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
