@@ -10,9 +10,13 @@ import UniformTypeIdentifiers
 /// alone; the engine detects that case and loads it as a full checkpoint.
 struct ImageGenView: View {
     @StateObject private var engine = SdEngine()
+    @EnvironmentObject private var store: ModelStore
     @State private var picking: Slot?
     @State private var isPickerPresented = false
     @State private var importNote: String?
+    /// The bundle id last written into the slots. Guards against overwriting
+    /// hand-picked paths every time this tab reappears.
+    @State private var mirroredBundleId: String?
 
     private enum Slot: String, Identifiable {
         case textEncoder, mainModel, clipL, clipG, t5, vae, lora
@@ -54,6 +58,13 @@ struct ImageGenView: View {
                 .padding()
             }
             .navigationTitle("圖片生成")
+            // The engine belongs to this view, so the Models tab cannot set its
+            // slots directly; it records the choice and the change lands here.
+            .onAppear { mirrorAppliedBundle() }
+            .onChange(of: store.appliedBundleId) { _, _ in mirrorAppliedBundle() }
+            // The id is published before the library refresh that makes the
+            // bundle itself visible, so listen for the list too.
+            .onChange(of: store.bundles) { _, _ in mirrorAppliedBundle() }
             // isPresented is its own state, NOT derived from `picking`. Deriving
             // it meant SwiftUI cleared `picking` as the sheet dismissed, so the
             // completion below read nil and silently assigned nothing.
@@ -102,6 +113,22 @@ struct ImageGenView: View {
         } catch {
             return .failure(error)
         }
+    }
+
+    /// Copies a bundle's files into every slot in one move, clearing slots the
+    /// bundle does not use so a companion from a previous model cannot leak in.
+    private func mirrorAppliedBundle() {
+        guard let id = store.appliedBundleId, id != mirroredBundleId,
+            let bundle = store.bundles.first(where: { $0.id == id })
+        else { return }
+        engine.textEncoder = bundle.textEncoder?.path ?? ""
+        engine.mainModel = bundle.mainModel.path
+        engine.clipL = bundle.clipL?.path ?? ""
+        engine.clipG = bundle.clipG?.path ?? ""
+        engine.t5 = bundle.t5?.path ?? ""
+        engine.vae = bundle.vae?.path ?? ""
+        mirroredBundleId = id
+        importNote = "已自動配置：\(bundle.name)"
     }
 
     private func assign(_ path: String, to slot: Slot) {

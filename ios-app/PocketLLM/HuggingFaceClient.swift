@@ -43,7 +43,8 @@ struct HuggingFaceClient {
         /// length in `lfs.size`; sorting on the wrong one buries the small
         /// quantisations at the top of the list.
         var realSize: Int { lfs?.size ?? size ?? 0 }
-        var isFile: Bool { (type ?? "file") == "file" }
+        var isDirectory: Bool { type == "directory" }
+        var isFile: Bool { !isDirectory }
         var id: String { path }
     }
 
@@ -175,19 +176,29 @@ struct HuggingFaceClient {
 
     // MARK: - Repository listing
 
+    /// The repository's whole tree from `/tree/<revision>?recursive=true`, so the
+    /// browser can show folders and files in one pass. A recursive response is a
+    /// flat list of files whose paths carry the folder segments; directory rows
+    /// are dropped and rebuilt into a hierarchy by the view, which works whether
+    /// or not the Hub includes them.
+    func tree(repoId: String, revision: String = "main") async throws -> [FileEntry] {
+        let url = URL(string: "\(Self.api)/\(repoId)/tree/\(revision)?recursive=true")
+        guard let url else { throw ClientError.badURL(repoId) }
+        let data = try await get(url)
+        let all = try Self.decoder.decode([FileEntry].self, from: data)
+        return all
+            .filter { $0.isFile && !$0.path.isEmpty }
+            .sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
+    }
+
     /// Lists the files in a repository, keeping those whose path ends in one of
     /// `extensions`, smallest first.
     func listFiles(
         repoId: String, revision: String = "main", extensions: [String]
     ) async throws -> [FileEntry] {
-        let url = URL(string: "\(Self.api)/\(repoId)/tree/\(revision)?recursive=false")
-        guard let url else { throw ClientError.badURL(repoId) }
-        let data = try await get(url)
-        let all = try Self.decoder.decode([FileEntry].self, from: data)
-        return all
+        try await tree(repoId: repoId, revision: revision)
             .filter { entry in
-                entry.isFile
-                    && extensions.contains { entry.path.lowercased().hasSuffix($0.lowercased()) }
+                extensions.contains { entry.path.lowercased().hasSuffix($0.lowercased()) }
             }
             .sorted { $0.realSize < $1.realSize }
     }

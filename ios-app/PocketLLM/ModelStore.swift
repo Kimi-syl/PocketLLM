@@ -17,6 +17,10 @@ final class ModelStore: ObservableObject {
     enum Kind: String, Hashable, CaseIterable {
         case gguf
         case mlx
+        /// Text-to-image repositories. Not a file format: the browser still shows
+        /// the repository as a tree, but only weight files are offered, and the
+        /// bundle matcher decides which slot each one takes.
+        case image
 
         /// Hub library tags narrowing a search by format. Several are sent
         /// together and the Hub ANDs them: MLX repositories are converted from
@@ -26,6 +30,7 @@ final class ModelStore: ObservableObject {
             switch self {
             case .gguf: return ["gguf"]
             case .mlx: return ["mlx", "transformers"]
+            case .image: return []
             }
         }
 
@@ -37,13 +42,33 @@ final class ModelStore: ObservableObject {
         /// because llama.cpp and MLX load text and vision models alike; the
         /// vision-only switch drops the text tag rather than switching category.
         var pipelineTags: [String] {
-            ["text-generation", "image-text-to-text"]
+            switch self {
+            case .gguf, .mlx: return ["text-generation", "image-text-to-text"]
+            case .image: return ["text-to-image"]
+            }
         }
 
         var label: String {
             switch self {
             case .gguf: return "GGUF (llama.cpp)"
             case .mlx: return "MLX (Apple)"
+            case .image: return "Image"
+            }
+        }
+
+        /// What the browser should offer from a repository. Image repos are
+        /// filtered to weights: configs and READMEs are not slots the engine reads.
+        func accepts(path: String) -> Bool {
+            let lower = path.lowercased()
+            switch self {
+            case .gguf:
+                return lower.hasSuffix(".gguf")
+            case .mlx:
+                return ModelStore.mlxExtensions.contains { lower.hasSuffix($0) }
+            case .image:
+                return [".gguf", ".safetensors", ".sft"].contains {
+                    lower.hasSuffix($0)
+                }
             }
         }
     }
@@ -66,6 +91,10 @@ final class ModelStore: ObservableObject {
     }
 
     @Published private(set) var installed: [InstalledModel] = []
+    /// Repositories whose downloaded files matched a loadable slot set.
+    @Published private(set) var bundles: [ModelBundle] = []
+    /// Which bundle was last applied to the image engine, so the row can say so.
+    @Published private(set) var appliedBundleId: String?
     @Published private(set) var downloads: [ActiveDownload] = []
     @Published private(set) var results: [HuggingFaceClient.SearchResult] = []
     /// Narrows results to vision models; the plain search covers both tags.
@@ -82,15 +111,22 @@ final class ModelStore: ObservableObject {
 
     /// What an MLX model directory needs to load: weights plus the config and
     /// tokenizer files that go with them.
-    private static let mlxExtensions = [
+    static let mlxExtensions = [
         ".safetensors", ".json", ".model", ".txt", ".jinja",
     ]
+
+    private static let appliedBundleKey = "models.appliedBundle"
+
+    /// How many files of a repository are still in flight. Used to fire the
+    /// bundle scan exactly once, after the last one lands.
+    private var pendingByRepo: [String: Int] = [:]
 
     private init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         root = documents.appendingPathComponent("Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        appliedBundleId = UserDefaults.standard.string(forKey: Self.appliedBundleKey)
         refresh()
     }
 
@@ -202,6 +238,7 @@ final class ModelStore: ObservableObject {
     func refresh() {
         let fileManager = FileManager.default
         var found: [InstalledModel] = []
+        var foundBundles: [ModelBundle] = []
 
         let entries = (try? fileManager.contentsOfDirectory(
             at: root,
@@ -228,8 +265,52 @@ final class ModelStore: ObservableObject {
             }
         }
 
+        // A repository folder is a bundle candidate unless it is an MLX model
+        // (config.json inside) — that one is already an installed entry.
+        for entry in entries {
+            let values = try? entry.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else { continue }
+            if fileManager.fileExists(
+                atPath: entry.appendingPathComponent("config.json").path) { continue }
+            if let bundle = ModelInspector.bundle(in: entry) { foundBundles.append(bundle) }
+        }
+
         found.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         installed = found
+        bundles = foundBundles.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// Records which bundle the image tab should use. The engine itself lives
+    /// with `ImageGenView`, so the view mirrors this id into its slots when it
+    /// changes — a publish from here would mean a second engine instance.
+    func apply(_ bundle: ModelBundle) {
+        configure(bundle, automatic: false)
+    }
+
+    private func configure(_ bundle: ModelBundle, automatic: Bool) {
+        appliedBundleId = bundle.id
+        UserDefaults.standard.set(bundle.id, forKey: Self.appliedBundleKey)
+        notice = automatic ? "已自動配置 \(bundle.name)" : "已套用 \(bundle.name)"
+        appLog(
+            "bundle \(automatic ? "auto-configured" : "applied"): \(bundle.name) "
+                + "(\(bundle.companionSummary))",
+            source: "models")
+    }
+
+    func delete(_ bundle: ModelBundle) {
+        do {
+            try FileManager.default.removeItem(at: bundle.folder)
+            if appliedBundleId == bundle.id {
+                appliedBundleId = nil
+                UserDefaults.standard.removeObject(forKey: Self.appliedBundleKey)
+            }
+            notice = "deleted \(bundle.name)"
+        } catch {
+            notice = "could not delete \(bundle.name): \(error.localizedDescription)"
+        }
+        refresh()
     }
 
     func delete(_ model: InstalledModel) {
@@ -250,11 +331,15 @@ final class ModelStore: ObservableObject {
         let client = self.client
         Task {
             do {
+                // The vision toggle is a text-model narrowing; an image search
+                // carries its own pipeline tag and must not inherit it.
+                let tags: [String] =
+                    (kind != .image && visionOnly) ? ["image-text-to-text"] : kind.pipelineTags
                 let found = try await client.search(
                     query,
                     filters: kind.searchFilters,
                     sort: sort,
-                    pipelineTags: visionOnly ? ["image-text-to-text"] : kind.pipelineTags)
+                    pipelineTags: tags)
                 DispatchQueue.main.async {
                     self.results = found
                     self.isSearching = false
@@ -271,46 +356,51 @@ final class ModelStore: ObservableObject {
         }
     }
 
-    func listFiles(repoId: String, kind: Kind) async throws -> [HuggingFaceClient.FileEntry] {
-        try await client.listFiles(
-            repoId: repoId,
-            extensions: kind == .gguf ? [".gguf"] : Self.mlxExtensions)
+    /// The repository's whole tree; the browser builds folders from the paths.
+    func tree(repoId: String) async throws -> [HuggingFaceClient.FileEntry] {
+        try await client.tree(repoId: repoId)
     }
 
     // MARK: - Downloads
 
-    func downloadGGUF(repoId: String, file: HuggingFaceClient.FileEntry) {
-        guard let url = HuggingFaceClient.downloadURL(repoId: repoId, path: file.path) else {
-            notice = "could not build a download URL for \(file.path)"
-            return
-        }
-        let name = (file.path as NSString).lastPathComponent
-        begin(
-            id: Self.downloadId(repoId: repoId, path: file.path),
-            label: name,
-            request: client.request(for: url),
-            destination: uniqueDestination(named: name))
-    }
-
-    /// Downloads every file of an MLX repository into its own directory, since a
-    /// MLX model is the whole folder rather than a single weight file.
-    func downloadMLX(repoId: String, files: [HuggingFaceClient.FileEntry]) {
-        let directoryName = repoId.replacingOccurrences(of: "/", with: "--")
-        let directory = root.appendingPathComponent(directoryName, isDirectory: true)
+    /// Downloads the chosen files into `Models/<repo>/`, preserving the
+    /// repository's own paths. When the last file of a repository lands, the
+    /// folder is scanned and a matching bundle appears in the library.
+    func download(repoId: String, paths: [String]) {
+        let folderName = Self.repoFolderName(repoId)
+        let folder = root.appendingPathComponent(folderName, isDirectory: true)
         var queued = 0
-        for file in files {
-            guard let url = HuggingFaceClient.downloadURL(repoId: repoId, path: file.path) else {
-                continue
-            }
-            let name = (file.path as NSString).lastPathComponent
+        for rawPath in paths {
+            guard let path = Self.safeRelativePath(rawPath),
+                let url = HuggingFaceClient.downloadURL(repoId: repoId, path: path)
+            else { continue }
+            pendingByRepo[repoId, default: 0] += 1
             begin(
-                id: Self.downloadId(repoId: repoId, path: file.path),
-                label: "\(directoryName)/\(name)",
+                id: Self.downloadId(repoId: repoId, path: path),
+                label: "\(folderName)/\(path)",
                 request: client.request(for: url),
-                destination: directory.appendingPathComponent(name))
+                destination: folder.appendingPathComponent(path),
+                repoId: repoId)
             queued += 1
         }
-        notice = queued == 0 ? "nothing to download in \(repoId)" : "downloading \(queued) file(s)"
+        notice = queued == 0 ? "nothing to download" : "downloading \(queued) file(s)"
+    }
+
+    /// One directory per repository. Repo ids contain a slash, so it becomes
+    /// the same `--` separator `downloadMLX` used before this tree existed.
+    static func repoFolderName(_ repoId: String) -> String {
+        repoId.replacingOccurrences(of: "/", with: "--")
+    }
+
+    /// Rejects absolute paths and `..` so an API response cannot write outside
+    /// the repository's folder.
+    static func safeRelativePath(_ path: String) -> String? {
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard !components.isEmpty,
+            !components.contains(where: { $0 == ".." || $0 == "." })
+        else { return nil }
+        return components.joined(separator: "/")
     }
 
     func downloadState(id: String) -> ActiveDownload? {
@@ -323,7 +413,10 @@ final class ModelStore: ObservableObject {
 
     // MARK: - Internals
 
-    private func begin(id: String, label: String, request: URLRequest, destination: URL) {
+    private func begin(
+        id: String, label: String, request: URLRequest, destination: URL,
+        repoId: String? = nil
+    ) {
         upsert(ActiveDownload(id: id, label: label))
         FileDownloader.shared.download(
             request,
@@ -337,9 +430,13 @@ final class ModelStore: ObservableObject {
                     case .success:
                         self.downloads.removeAll { $0.id == id }
                         self.notice = "downloaded \(label)"
+                        if let repoId { self.finishRepo(repoId: repoId) }
                         self.refresh()
                     case .failure(let error):
                         self.setFailure(id: id, message: error.localizedDescription)
+                        // Still dec the count: a retry would otherwise push it
+                        // past zero and the auto-configuration never fires.
+                        if let repoId { self.finishRepo(repoId: repoId) }
                     }
                 }
             })
@@ -359,6 +456,23 @@ final class ModelStore: ObservableObject {
             if !FileManager.default.fileExists(atPath: alternative.path) { return alternative }
             index += 1
         }
+    }
+
+    /// Decrements the repository's in-flight count; at zero the scan has
+    /// everything it needs, so the auto-configuration is decided once.
+    private func finishRepo(repoId: String) {
+        let remaining = max(0, (pendingByRepo[repoId] ?? 1) - 1)
+        if remaining > 0 {
+            pendingByRepo[repoId] = remaining
+            return
+        }
+        pendingByRepo[repoId] = nil
+        let folderName = Self.repoFolderName(repoId)
+        let folder = root.appendingPathComponent(folderName, isDirectory: true)
+        guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else { return }
+        // The repository the user just finished downloading is the one they
+        // want to generate with, so the slots follow it without another tap.
+        configure(bundle, automatic: true)
     }
 
     private func upsert(_ download: ActiveDownload) {

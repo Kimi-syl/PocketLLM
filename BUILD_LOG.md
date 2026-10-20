@@ -58,10 +58,12 @@ Latest artifact: `PocketLLM-device-unsigned` from run `39207506905`.
    engine's full sampler/scheduler tables so the 1024×768 fault can be iterated on-device.
 2. **iOS vision** — the pipeline reaches the model, produces a single space. The native
    stage logs are not appearing at all, which is the current investigation.
-3. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
+3. **iOS tree browser and auto-configuration** (§2.21) — compiled only. On device: browse an image
+   repo, check a quant plus the `split_files` folder, then confirm the bundle row and the slots.
+4. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
    which the Android CMake does not build.
-4. **iOS LoRA / decision model** — not started.
-5. **Release signing** — every APK is signed with a generated debug key; no release key exists
+5. **iOS LoRA / decision model** — not started.
+6. **Release signing** — every APK is signed with a generated debug key; no release key exists
    in the repo or as secrets.
 
 ---
@@ -722,6 +724,47 @@ MLX is now the default (`vaeOnMLX = true`). It needs a separate VAE file, so whe
 all-in-one checkpoint the app creates the context with `vae=cpu` instead of leaving the Metal decode
 armed; that configuration still decodes slowly, but safely. `vae=cpu` remains the manual fallback.
 
+### 2.21 The model browser becomes a tree, and image models configure themselves (2026-10-20)
+
+The browser listed one flat page of files, and the format picker was really a file-extension
+filter. With image models arriving as repositories of three or four parts, that shape no longer
+matches what a user downloads. Four changes, all in the iOS app:
+
+| change | detail |
+|---|---|
+| **Image** category | `ModelStore.Kind.image`, searching `pipeline_tag=text-to-image` with no format filter; the vision toggle is hidden there because it would narrow an image search to nothing |
+| tree browser | one request to `/api/models/<repo>/tree/main?recursive=true`, rebuilt into folders with `OutlineGroup`; a checkbox per folder (all its files) and per file, tri-state for partial |
+| per-repository folders | downloads land in `Models/<repo>/` with the repository's own paths kept, so `split_files/text_encoders/…` stays recognisable |
+| auto-configuration | when the last file of a repository finishes, `ModelInspector.bundle(in:repoId:)` matches the folder and the slots are set without another tap |
+
+The recursive listing *does* return directory rows, but they carry no sizes and are not needed:
+`HuggingFaceClient.tree` keeps only files and the view rebuilds the directories from the paths.
+Verified against `vanes430/Anima-Turbo-V1.1-GGUF` — 14 rows, three directories and 11 files.
+
+Matching is by name, against the same slots `SdEngine` takes. The first version had two bugs that
+this repository exposed before any device run:
+
+1. the text-encoder folder test looked for `text_encoder/`, but these repos spell it
+   `text_encoders/`, so `qwen_3_06b_base.safetensors` was counted as a *main* candidate and the
+   bundle never completed — the test is now on the prefix without the slash;
+2. the largest weight was treated as the main model, which is right inside one folder but wrong
+   as a *default selection*: a GGUF repo holds every quantisation, and preselecting them all would
+   have queued 7.5 GB. The tree now starts with nothing checked and the user (or a folder
+   checkbox) says what to fetch.
+
+`ModelBundle` is complete when a main model is joined by a text encoder and a VAE, or when the
+folder holds a single checkpoint and no companions — the all-in-one case `SdEngine` already
+detects as `textEncoder.isEmpty && clipL.isEmpty && clipG.isEmpty && t5.isEmpty`. An incomplete
+folder yields no bundle rather than one that cannot load; the files remain visible in the browser.
+Video checkpoints are excluded through `SdEngine.isVideoCheckpoint`, so a Wan repository cannot
+auto-configure an engine that refuses it.
+
+The engine is owned by `ImageGenView` as a `@StateObject`, so `ModelStore` cannot write its slots
+directly without creating a second instance. Instead the store persists `appliedBundleId` and
+publishes it; `ImageGenView` mirrors that id into the six slots, remembering the id it last wrote
+so hand-picked paths survive a tab switch. The mirror listens to both the id and the bundle list,
+because the id is set before the refresh that publishes the bundle.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -782,6 +825,7 @@ and for the ggml guard.
 | MLX VAE first device run | crash `bug_type 309`; symbolication: `_mlx_error` from the stage-loop `eval`, caused by the four-vs-five upsample groups |
 | iOS MLX VAE decode on device | 512×512 in ~2 s, image correct (user device run, build `39452756882`) |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
+| HF `/tree?recursive=true` shape | live request to `vanes430/Anima-Turbo-V1.1-GGUF`: 14 rows, 3 directories + 11 files, `split_files/{text_encoders,vae}` layout as expected |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
 | Converter correctness | round-trip through the official `gguf` reader |
@@ -860,13 +904,17 @@ replaced the single dual-ABI APK.
    GPU baseline. §2.19 built the `MLXVae` port, §2.20 fixed its group walk, and the device run
    decodes 512×512 in ~2 s, so MLX is now the default decoder. Remaining: a 1024×576 run to confirm
    the ~4-5 s extrapolation and that peak memory stays clear of jetsam at the largest canvas.
-3. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
+3. **iOS tree browser and auto-configuration** — compiled only. On device: browse an image repo,
+   check a quant plus the `split_files` folder, confirm the progress rows, then check that the
+   bundle row appears with 「已自動配置」 and that the image tab's slots follow it without
+   opening the browser again.
+4. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
-4. **iOS LoRA and the decision model** — mirror `setLoras` in `LlamaBridge.mm`; the decision
+5. **iOS LoRA and the decision model** — mirror `setLoras` in `LlamaBridge.mm`; the decision
    model has the same singleton constraint as Android.
-5. **Release signing** — add `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
+6. **Release signing** — add `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
    `KEY_PASSWORD` as secrets and replace the generated debug keystore in the workflow. Until
    then every CI prerelease has a different signature and cannot upgrade in place.
-6. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
+7. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).

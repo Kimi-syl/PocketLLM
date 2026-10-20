@@ -9,6 +9,86 @@ struct RepoSelection: Hashable {
     let kind: ModelStore.Kind
 }
 
+/// A folder or file in a repository, rebuilt from the flat recursive listing so
+/// the browser can offer folders as well as individual files.
+private struct RepoNode: Identifiable, Hashable {
+    let name: String
+    let path: String
+    let isDirectory: Bool
+    let size: Int
+    var children: [RepoNode]
+
+    var id: String { path }
+
+    /// OutlineGroup stops drawing a chevron on `nil`; an empty array still gets one.
+    var childNodes: [RepoNode]? { children.isEmpty ? nil : children }
+
+    /// Every file under this node, itself included. Folder checkboxes act on it.
+    var filePaths: [String] {
+        isDirectory ? children.flatMap(\.filePaths) : [path]
+    }
+}
+
+/// Builds the hierarchy in one pass over the flat paths.
+private enum RepoTree {
+
+    private final class Builder {
+        let name: String
+        let path: String
+        var file: HuggingFaceClient.FileEntry?
+        var children: [String: Builder] = [:]
+
+        init(name: String, path: String) {
+            self.name = name
+            self.path = path
+        }
+
+        /// Folders first, then files, both by name — the order a file manager uses.
+        func nodes() -> [RepoNode] {
+            children.values
+                .map { child in
+                    if let file = child.file, child.children.isEmpty {
+                        return RepoNode(
+                            name: child.name, path: child.path, isDirectory: false,
+                            size: file.realSize, children: [])
+                    }
+                    let kids = child.nodes()
+                    return RepoNode(
+                        name: child.name, path: child.path, isDirectory: true,
+                        size: 0, children: kids)
+                }
+                .sorted { lhs, rhs in
+                    if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+        }
+    }
+
+    static func build(from files: [HuggingFaceClient.FileEntry]) -> [RepoNode] {
+        let root = Builder(name: "", path: "")
+        for file in files {
+            let parts = file.path.split(separator: "/").map(String.init)
+            guard let leaf = parts.last else { continue }
+            var cursor = root
+            for segment in parts.dropLast() {
+                let path = cursor.path.isEmpty ? segment : cursor.path + "/" + segment
+                if let next = cursor.children[segment] {
+                    cursor = next
+                } else {
+                    let next = Builder(name: segment, path: path)
+                    cursor.children[segment] = next
+                    cursor = next
+                }
+            }
+            let path = cursor.path.isEmpty ? leaf : cursor.path + "/" + leaf
+            let node = Builder(name: leaf, path: path)
+            node.file = file
+            cursor.children[leaf] = node
+        }
+        return root.nodes()
+    }
+}
+
 /// The model library: what is installed, what is in flight, and the Hugging Face
 /// browser that fills it.
 struct ModelsView: View {
@@ -21,6 +101,7 @@ struct ModelsView: View {
     var body: some View {
         NavigationStack {
             List {
+                if kind == .image { bundlesSection }
                 installedSection
                 if !store.downloads.isEmpty {
                     downloadsSection
@@ -57,6 +138,48 @@ struct ModelsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var bundlesSection: some View {
+        Section {
+            if store.bundles.isEmpty {
+                Text("No image models yet. Pick Image below; a download that comes with its text encoder and VAE is matched automatically when the last file lands.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(store.bundles) { bundle in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(bundle.name).font(.body).lineLimit(2)
+                    Text(bundle.companionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        Text(humanReadableBytes(Int(bundle.size)))
+                        if store.appliedBundleId == bundle.id {
+                            Label("已自動配置", systemImage: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { store.apply(bundle) }
+                .swipeActions {
+                    Button(role: .destructive) {
+                        store.delete(bundle)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        } header: {
+            Text("Image models")
+        } footer: {
+            Text("Tap a bundle to point every image-engine slot at its files. Matching is by filename: a main model plus a text encoder and a VAE, or a single all-in-one checkpoint.")
+                .font(.footnote)
         }
     }
 
@@ -127,8 +250,10 @@ struct ModelsView: View {
             // The default search asks for text-generation and image-text-to-text
             // together, since both loaders handle text and vision models. This
             // narrows the result set rather than being a third format.
-            Toggle("Only vision models", isOn: $store.visionOnly)
-                .font(.footnote)
+            if kind != .image {
+                Toggle("Only vision models", isOn: $store.visionOnly)
+                    .font(.footnote)
+            }
 
             Picker("Sort by", selection: sortBinding) {
                 ForEach(HuggingFaceClient.Sort.allCases) { option in
@@ -178,7 +303,11 @@ struct ModelsView: View {
     }
 
     private var placeholder: String {
-        kind == .gguf ? "Search GGUF models" : "Search MLX models"
+        switch kind {
+        case .gguf: return "Search GGUF models"
+        case .mlx: return "Search MLX models"
+        case .image: return "Search image models"
+        }
     }
 
     private func runSearch() {
@@ -187,18 +316,20 @@ struct ModelsView: View {
     }
 }
 
-/// The files inside one repository, each downloadable. For MLX the unit is the
-/// whole folder, so the individual rows are read-only and one button takes all of
-/// them.
+/// The repository's tree, with a checkbox per folder and per file. The unit is
+/// the file: checking a folder checks everything under it. Downloads keep their
+/// repository paths inside `Models/<repo>/`, so a bundle folder ends up shaped
+/// like the repo it came from.
 struct RepoFilesView: View {
     let selection: RepoSelection
     @EnvironmentObject var store: ModelStore
     @State private var files: [HuggingFaceClient.FileEntry] = []
+    @State private var roots: [RepoNode] = []
+    @State private var selected: Set<String> = []
     @State private var failure: String?
     @State private var isLoading = true
 
     private var repoId: String { selection.repoId }
-    private var kind: ModelStore.Kind { selection.kind }
 
     var body: some View {
         List {
@@ -210,16 +341,14 @@ struct RepoFilesView: View {
             if let failure {
                 Text(failure).font(.footnote).foregroundStyle(.red)
             }
-            if kind == .mlx && !files.isEmpty {
-                Button("Download all \(files.count) file(s)") {
-                    store.downloadMLX(repoId: repoId, files: files)
-                }
+            if !files.isEmpty {
+                selectionBar
             }
-            ForEach(files) { file in
-                fileRow(file)
+            OutlineGroup(roots, children: \.childNodes) { node in
+                row(node)
             }
             if !isLoading && files.isEmpty && failure == nil {
-                Text("No downloadable files in this repository.")
+                Text("No files of the selected format in this repository.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -229,50 +358,96 @@ struct RepoFilesView: View {
         .task { await load() }
     }
 
-    /// Isolated to the main actor: `.task` hands its closure to the generic
-    /// executor, and assigning `@State` from there is what produces SwiftUI's
-    /// "publishing changes from background threads" warnings.
+    private var selectionBar: some View {
+        Section {
+            HStack {
+                Button("Select all") { selected = Set(files.map(\.path)) }
+                Spacer()
+                Button("Clear") { selected.removeAll() }
+                Spacer()
+                Button("Download \(selected.count)") { download() }
+                    .disabled(selected.isEmpty)
+            }
+            .font(.callout)
+            .buttonStyle(.borderless)
+        } footer: {
+            Text("Files land in Models/\(ModelStore.repoFolderName(repoId))/ keeping the repository's folders. When the last file of the repository arrives, a matching model appears under Image models.")
+                .font(.footnote)
+        }
+    }
+
+    /// One request for the whole tree, then the same format filter the flat
+    /// listing used, so the tree only offers what the loader can take.
     @MainActor
     private func load() async {
         isLoading = true
         failure = nil
         do {
-            files = try await store.listFiles(repoId: repoId, kind: kind)
+            let all = try await store.tree(repoId: repoId)
+            let accepted = all.filter { selection.kind.accepts(path: $0.path) }
+            files = accepted
+            roots = RepoTree.build(from: accepted)
+            // Nothing preselected: a GGUF repo holds every quantisation, and
+            // selecting them all by default would queue several gigabytes.
+            selected = []
+            if accepted.isEmpty && !all.isEmpty {
+                failure = "Every file here is outside the \(selection.kind.label) filter."
+            }
         } catch {
             failure = error.localizedDescription
         }
         isLoading = false
     }
 
-    private func fileRow(_ file: HuggingFaceClient.FileEntry) -> some View {
-        let state = store.downloadState(
-            id: ModelStore.downloadId(repoId: repoId, path: file.path))
-        let inFlight = state != nil && state?.failure == nil
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(file.path).font(.callout).lineLimit(2)
-                Spacer()
-                Text(humanReadableBytes(file.realSize))
+    private func download() {
+        store.download(repoId: repoId, paths: selected.sorted())
+    }
+
+    private func row(_ node: RepoNode) -> some View {
+        let mark = symbol(for: node)
+        return HStack(spacing: 10) {
+            Image(systemName: node.isDirectory ? "folder" : "doc")
+                .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
+            Text(node.name).font(.callout).lineLimit(1)
+            Spacer()
+            if !node.isDirectory {
+                Text(humanReadableBytes(node.size))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                if kind == .gguf {
-                    if inFlight {
-                        Text("\(Int((state?.progress ?? 0) * 100))%")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button("Get") { store.downloadGGUF(repoId: repoId, file: file) }
-                            .buttonStyle(.bordered)
-                    }
+                if let state = store.downloadState(
+                    id: ModelStore.downloadId(repoId: repoId, path: node.path))
+                {
+                    Text("\(Int((state.progress) * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(state.failure == nil ? .secondary : .red)
                 }
             }
-            if let state {
-                ProgressView(value: state.progress)
-                if let downloadFailure = state.failure {
-                    Text(downloadFailure).font(.caption).foregroundStyle(.red).lineLimit(3)
-                }
+            Button {
+                toggle(node)
+            } label: {
+                Image(systemName: mark)
+                    .foregroundStyle(mark == "circle" ? Color.secondary : Color.accentColor)
             }
+            .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
+    }
+
+    private func toggle(_ node: RepoNode) {
+        let paths = node.filePaths
+        if paths.allSatisfy({ selected.contains($0) }) {
+            selected.subtract(paths)
+        } else {
+            selected.formUnion(paths)
+        }
+    }
+
+    /// Checked, unchecked, or partly checked for a folder with only some of its
+    /// files selected.
+    private func symbol(for node: RepoNode) -> String {
+        let paths = node.filePaths
+        let count = paths.filter { selected.contains($0) }.count
+        if count == 0 { return "circle" }
+        return count == paths.count ? "checkmark.circle.fill" : "minus.circle.fill"
     }
 }
