@@ -832,6 +832,7 @@ and for the ggml guard.
 | iOS MLX VAE decoder builds | run `39341146470`: `MLXVae.swift` + `MLXNN` link, latent-dump patch + guard pass; artifact `PocketLLM-device-unsigned` |
 | MLX VAE first device run | crash `bug_type 309`; symbolication: `_mlx_error` from the stage-loop `eval`, caused by the four-vs-five upsample groups |
 | iOS MLX VAE decode on device | 512×512 in ~2 s, image correct (user device run, build `39452756882`) |
+| iOS tree browser + auto-config builds | run `39465503482`: compile, link, ggml guard and artifact upload all green |
 | iOS native SD log reaches the file | not yet run on device (this build); the format is asserted against `LogStore.loadFromDisk` |
 | HF `/tree?recursive=true` shape | live request to `vanes430/Anima-Turbo-V1.1-GGUF`: 14 rows, 3 directories + 11 files, `split_files/{text_encoders,vae}` layout as expected |
 | iOS simulator slice removed | workflow step list: 26 → 21 steps |
