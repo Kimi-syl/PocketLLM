@@ -44,7 +44,7 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | Image generation (stable-diffusion.cpp) | runs on Metal — but ~10 s/step trips the GPU watchdog |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
-Latest artifact: `PocketLLM-device-unsigned` from run `39207506905`.
+Latest artifact: `PocketLLM-device-unsigned` from run `39472414846`, released as **v0.6.0**.
 
 ### Known-open
 
@@ -847,6 +847,20 @@ compile-and-link evidence only.
 ---
 
 ## 5. Build and release reference
+
+### Release v0.6.0 (2026-10-20)
+
+`v0.6.0` was moved from the unreleased 2026-10-06 snapshot (`50bbfdc`) to `f9a2d88`, and the
+release was cut from run `39472414846`:
+
+| item | value |
+|---|---|
+| tag | `v0.6.0` → `f9a2d88` |
+| asset | `PocketLLM-v0.6.0-unsigned.ipa` (29 765 545 bytes, unsigned, arm64, iOS 17+) |
+| sha256 | `2461d870acced3d0a864eccd199f94b48d0127d437690335e8f07fca06021253` |
+| version metadata | `CFBundleShortVersionString 0.6.0`, `CFBundleVersion 2` — set in `project.yml`, because xcodegen regenerates the plist and falls back to `1.0/1` |
+| Android | `versionCode 21`, `versionName 0.6.0`; the APK is built on the device and is not attached |
+
 
 ### Local Android build
 
