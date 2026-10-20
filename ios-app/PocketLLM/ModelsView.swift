@@ -400,7 +400,7 @@ struct RepoFilesView: View {
     }
 
     private func download() {
-        store.download(repoId: repoId, paths: selected.sorted())
+        store.download(repoId: repoId, paths: selected.sorted(), kind: selection.kind)
     }
 
     private func row(_ node: RepoNode) -> some View {

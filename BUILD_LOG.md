@@ -752,6 +752,14 @@ this repository exposed before any device run:
    have queued 7.5 GB. The tree now starts with nothing checked and the user (or a folder
    checkbox) says what to fetch.
 
+Moving every download under a repository folder broke the installed list, which had only ever
+looked at the top level for `.gguf` files — a text model downloaded after this change would have
+vanished from the chat picker. `refresh` now walks the tree, and skips files inside a recognised
+bundle folder so an image quant is not offered as a chat model. A folder holding one lone weight
+file is a text model unless it was downloaded under the Image category (the folder names are kept
+in `models.imageRepos`); otherwise downloading any single-file GGUF would have auto-configured it
+as an image model.
+
 `ModelBundle` is complete when a main model is joined by a text encoder and a VAE, or when the
 folder holds a single checkpoint and no companions — the all-in-one case `SdEngine` already
 detects as `textEncoder.isEmpty && clipL.isEmpty && clipG.isEmpty && t5.isEmpty`. An incomplete

@@ -116,10 +116,16 @@ final class ModelStore: ObservableObject {
     ]
 
     private static let appliedBundleKey = "models.appliedBundle"
+    private static let imageReposKey = "models.imageRepos"
 
     /// How many files of a repository are still in flight. Used to fire the
     /// bundle scan exactly once, after the last one lands.
     private var pendingByRepo: [String: Int] = [:]
+    private var kindByRepo: [String: Kind] = [:]
+    /// Folder names downloaded under the Image category. A folder holding one
+    /// weight file is otherwise indistinguishable from a text model, and only
+    /// these are allowed to become a bundle on the strength of that file alone.
+    private var imageRepos: Set<String> = []
 
     private init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -127,6 +133,7 @@ final class ModelStore: ObservableObject {
         root = documents.appendingPathComponent("Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         appliedBundleId = UserDefaults.standard.string(forKey: Self.appliedBundleKey)
+        imageRepos = Set(UserDefaults.standard.stringArray(forKey: Self.imageReposKey) ?? [])
         refresh()
     }
 
@@ -235,6 +242,12 @@ final class ModelStore: ObservableObject {
     // MARK: - Installed models
 
     /// Rescans the model directory. Main thread only.
+    ///
+    /// Downloads now live in `Models/<repo>/`, so GGUF files are found by
+    /// walking the tree rather than by looking at the top level. A file inside a
+    /// recognised image bundle is left out of `installed`: its weights are
+    /// catalogued as a bundle, and offering a Qwen-Image quant as a chat model
+    /// would only lead to a load failure.
     func refresh() {
         let fileManager = FileManager.default
         var found: [InstalledModel] = []
@@ -247,32 +260,49 @@ final class ModelStore: ObservableObject {
 
         for entry in entries {
             let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            if values?.isDirectory == true {
-                // An MLX model is a directory of weights plus a config.json.
-                // Requiring at least one weight file too keeps a directory that
-                // is still downloading out of the list — its config arrives
-                // early, and loading a half-fetched model fails confusingly.
-                let config = entry.appendingPathComponent("config.json")
-                guard fileManager.fileExists(atPath: config.path),
-                    hasWeights(in: entry)
-                else { continue }
-                found.append(
-                    InstalledModel(url: entry, kind: .mlx, size: directorySize(entry)))
-            } else if entry.pathExtension.lowercased() == "gguf" {
-                found.append(
-                    InstalledModel(
-                        url: entry, kind: .gguf, size: Int64(values?.fileSize ?? 0)))
-            }
+            guard values?.isDirectory == true else { continue }
+            // An MLX model is a directory of weights plus a config.json.
+            // Requiring at least one weight file too keeps a directory that
+            // is still downloading out of the list — its config arrives
+            // early, and loading a half-fetched model fails confusingly.
+            let config = entry.appendingPathComponent("config.json")
+            guard fileManager.fileExists(atPath: config.path),
+                hasWeights(in: entry)
+            else { continue }
+            found.append(InstalledModel(url: entry, kind: .mlx, size: directorySize(entry)))
         }
 
         // A repository folder is a bundle candidate unless it is an MLX model
-        // (config.json inside) — that one is already an installed entry.
+        // (config.json at its root) — that one is already an installed entry.
         for entry in entries {
             let values = try? entry.resourceValues(forKeys: [.isDirectoryKey])
             guard values?.isDirectory == true else { continue }
             if fileManager.fileExists(
                 atPath: entry.appendingPathComponent("config.json").path) { continue }
-            if let bundle = ModelInspector.bundle(in: entry) { foundBundles.append(bundle) }
+            guard let bundle = ModelInspector.bundle(in: entry) else { continue }
+            // A lone GGUF is only an image bundle if it came from that category;
+            // otherwise it is a text model that merely sits in its own folder.
+            guard bundle.isComplete, !bundle.isAllInOne || imageRepos.contains(bundle.id) else {
+                continue
+            }
+            foundBundles.append(bundle)
+        }
+
+        let bundleFolders = Set(foundBundles.map { $0.folder.standardizedFileURL.path })
+        if let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles])
+        {
+            for case let url as URL in enumerator {
+                guard url.pathExtension.lowercased() == "gguf" else { continue }
+                let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values?.isRegularFile == true else { continue }
+                let parent = url.deletingLastPathComponent().standardizedFileURL.path
+                guard !bundleFolders.contains(parent) else { continue }
+                found.append(
+                    InstalledModel(url: url, kind: .gguf, size: Int64(values?.fileSize ?? 0)))
+            }
         }
 
         found.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -366,8 +396,13 @@ final class ModelStore: ObservableObject {
     /// Downloads the chosen files into `Models/<repo>/`, preserving the
     /// repository's own paths. When the last file of a repository lands, the
     /// folder is scanned and a matching bundle appears in the library.
-    func download(repoId: String, paths: [String]) {
+    func download(repoId: String, paths: [String], kind: Kind) {
         let folderName = Self.repoFolderName(repoId)
+        kindByRepo[repoId] = kind
+        if kind == .image {
+            imageRepos.insert(folderName)
+            UserDefaults.standard.set(Array(imageRepos), forKey: Self.imageReposKey)
+        }
         let folder = root.appendingPathComponent(folderName, isDirectory: true)
         var queued = 0
         for rawPath in paths {
@@ -467,6 +502,8 @@ final class ModelStore: ObservableObject {
             return
         }
         pendingByRepo[repoId] = nil
+        let kind = kindByRepo.removeValue(forKey: repoId)
+        guard kind == .image else { return }
         let folderName = Self.repoFolderName(repoId)
         let folder = root.appendingPathComponent(folderName, isDirectory: true)
         guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else { return }
