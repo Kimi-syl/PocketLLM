@@ -39,6 +39,11 @@ targets:
     platform: iOS
     sources:
       - PocketLLM
+      # Kept outside the source folder so xcodegen does not also compile them.
+      # The ESRGAN weights are a bundled fallback: upscaling works on first run
+      # without a download. Real-ESRGAN's BSD-3 text ships alongside them.
+      - path: Resources
+        buildPhase: resources
     dependencies:
       - framework: Frameworks/PocketLLMKit.xcframework
         embed: true

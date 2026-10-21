@@ -58,6 +58,7 @@ struct ImageGenView: View {
                     promptCard
                     paramsCard
                     generateButton
+                    upscaleCard
                     resultSection
                 }
                 .padding()
@@ -232,6 +233,9 @@ struct ImageGenView: View {
                 slotRow(.lora, value: engine.loras)
                 Toggle("放大用 GPU", isOn: $engine.upscaleOnGPU)
                     .font(.callout)
+                Text("放大的模型與倍率在「放大」區塊設定。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             .padding(.top, 6)
         } label: {
@@ -533,6 +537,118 @@ struct ImageGenView: View {
         }
     }
 
+    /// One entry in the display-image dropdown: either the bundled model or an
+    /// ESRGAN file that arrived with a bundle.
+    private struct UpscaleOption: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let isBundled: Bool
+    }
+
+    /// The bundled model comes first so a fresh install has something selected;
+    /// anything a downloaded bundle carried is appended after it.
+    private var upscaleOptions: [UpscaleOption] {
+        var options: [UpscaleOption] = []
+        var seen: Set<String> = []
+
+        func add(_ path: String, _ name: String, bundled: Bool) {
+            guard !path.isEmpty, seen.insert(path).inserted else { return }
+            options.append(UpscaleOption(id: path, name: name, isBundled: bundled))
+        }
+
+        if let bundled = SdEngine.bundledUpscalerPath {
+            add(bundled, "內建 Real-ESRGAN 4x（anime 6B）", bundled: true)
+        }
+        for bundle in store.bundles {
+            if let upscaler = bundle.upscaler {
+                add(upscaler.path, upscaler.lastPathComponent, bundled: false)
+            }
+        }
+        if !engine.upscaler.isEmpty {
+            add(engine.upscaler,
+                URL(fileURLWithPath: engine.upscaler).lastPathComponent,
+                bundled: SdEngine.bundledUpscalerPath == engine.upscaler)
+        }
+        return options
+    }
+
+    private var upscaleCard: some View {
+        GroupBox("放大") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("模型", selection: $engine.upscaler) {
+                    if upscaleOptions.isEmpty {
+                        Text("沒有可用的放大模型").tag("")
+                    }
+                    ForEach(upscaleOptions) { option in
+                        Text(option.name).tag(option.id)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                HStack {
+                    Text("倍率")
+                    Picker("倍率", selection: $engine.upscaleScale) {
+                        ForEach([2, 3, 4], id: \.self) { Text("\($0)×").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                Text(upscaleHint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Toggle("用 GPU", isOn: $engine.upscaleOnGPU)
+                    .font(.callout)
+
+                HStack {
+                    Button("放大最後一張") {
+                        if let last = engine.images.last { engine.upscale(last) }
+                    }
+                    .disabled(engine.images.isEmpty || engine.upscaler.isEmpty || engine.isUpscaling)
+                    if engine.isUpscaling {
+                        ProgressView()
+                        Text("放大中…").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
+                // A separate path: Core AI runs converted .aimodel graphs on the
+                // Neural Engine and only exists from iOS 27, so the button stays
+                // grey everywhere else rather than disappearing.
+                HStack {
+                    Button("用 Core AI 放大（神經引擎）") {
+                        if let last = engine.images.last { engine.coreAIUpscale(last) }
+                    }
+                    .disabled(!CoreAIUpscaler.canRun || engine.images.isEmpty)
+                    Spacer()
+                    Text(CoreAIUpscaler.status)
+                        .font(.caption2)
+                        .foregroundStyle(CoreAIUpscaler.isAvailable ? .secondary : .tertiary)
+                }
+                if let error = engine.coreAIUpscaleError {
+                    Text(error).font(.caption2).foregroundStyle(.secondary)
+                }
+                if let error = engine.upscaleError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    /// The model has one native factor (4x for the bundled one); a smaller
+    /// choice resamples that result down rather than running another network.
+    private var upscaleHint: String {
+        let model = engine.upscaler.isEmpty
+            ? "尚未選擇放大模型"
+            : URL(fileURLWithPath: engine.upscaler).lastPathComponent
+        if engine.upscaleScale == 4 {
+            return "\(model) · 原生 4×，輸出為原圖四倍"
+        }
+        return "\(model) · 原生 4×，先放大再縮回 \(engine.upscaleScale)×"
+    }
+
     private var isRunning: Bool {
         if case .running = engine.phase { return true }
         return false
@@ -558,22 +674,16 @@ struct ImageGenView: View {
                                 Button {
                                     engine.upscale(img)
                                 } label: {
-                                    Label("放大", systemImage: "arrow.up.left.and.arrow.down.right")
+                                    Label("放大 \(engine.upscaleScale)×",
+                                          systemImage: "arrow.up.left.and.arrow.down.right")
                                 }
                                 .disabled(engine.upscaler.isEmpty || engine.isUpscaling)
                                 if engine.isUpscaling {
                                     ProgressView()
                                     Text("放大中…").font(.caption2).foregroundStyle(.secondary)
-                                } else if engine.upscaler.isEmpty {
-                                    Text("在進階選擇 ESRGAN 模型即可放大")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
-                    }
-                    if let error = engine.upscaleError {
-                        Text(error).font(.caption).foregroundStyle(.red)
                     }
                 }
             }

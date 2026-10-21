@@ -76,8 +76,19 @@ final class SdEngine: ObservableObject {
 
     /// ESRGAN weights for the standalone upscaler. Independent of the diffusion
     /// context, so it can be picked and used without reloading the model.
-    @Published var upscaler = SdEngine.restore("sd.upscaler") {
+    ///
+    /// Defaults to the bundled Real-ESRGAN model, so 放大 works on a fresh
+    /// install; the key is still written once the user picks something else.
+    @Published var upscaler = SdEngine.restoreUpscaler() {
         didSet { SdEngine.store(upscaler, "sd.upscaler", oldValue) }
+    }
+    /// Final enlargement factor. The model's own factor is 4; a smaller choice
+    /// resamples the 4x result down, which keeps the synthesised detail.
+    @Published var upscaleScale = SdEngine.restoreScale() {
+        didSet {
+            guard upscaleScale != oldValue else { return }
+            UserDefaults.standard.set(upscaleScale, forKey: "sd.upscaleScale")
+        }
     }
     /// Run the ESRGAN graph on Metal rather than on the CPU. The graph is tiled
     /// at `upscaleTileSize`, which is what keeps a 4x pass under the watchdog.
@@ -87,9 +98,31 @@ final class SdEngine: ObservableObject {
     @Published var upscaleTileSize = 128
     @Published private(set) var isUpscaling = false
     @Published private(set) var upscaleError: String?
+    /// Set when the Core AI path is asked for but cannot run yet. Kept apart
+    /// from `upscaleError` because the ESRGAN path is unaffected.
+    @Published private(set) var coreAIUpscaleError: String?
+
+    /// Shipped in the app bundle (iOS only; Android has no upscaler yet).
+    static let bundledUpscalerName = "RealESRGAN_x4plus_anime_6B"
+
+    static var bundledUpscalerPath: String? {
+        Bundle.main.url(forResource: bundledUpscalerName, withExtension: "pth")?.path
+    }
 
     private static func restore(_ key: String) -> String {
         UserDefaults.standard.string(forKey: key) ?? ""
+    }
+
+    /// An explicit clear (stored "") must stick, so only fall back to the bundled
+    /// model when the key has never been written.
+    private static func restoreUpscaler() -> String {
+        if let stored = UserDefaults.standard.string(forKey: "sd.upscaler") { return stored }
+        return bundledUpscalerPath ?? ""
+    }
+
+    private static func restoreScale() -> Int {
+        let stored = UserDefaults.standard.integer(forKey: "sd.upscaleScale")
+        return (2...4).contains(stored) ? stored : 4
     }
 
     private static func store(_ value: String, _ key: String, _ old: String) {
@@ -392,6 +425,7 @@ final class SdEngine: ObservableObject {
         upscaleError = nil
         let model = upscaler
         let gpu = upscaleOnGPU
+        let target = max(2, min(4, upscaleScale))
         let tile = Int32(max(32, upscaleTileSize))
         let threads = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
 
@@ -404,9 +438,19 @@ final class SdEngine: ObservableObject {
                     model: model, tileSize: tile, threads: threads, useGPU: gpu)
                 let images: [SdImage]? = try upscaler.upscaleImage(input, factor: 4)
                 if let first = images?.first, let bitmap = Self.bitmap(from: first) {
-                    output = bitmap
-                    appLog(String(format: "sd: upscaled %dx%d -> %dx%d in %.1fs (gpu=%@ tile=%d) · %@",
+                    // The model's factor is fixed (4 here). Asking for 2x or 3x
+                    // means resampling that result down instead of running a
+                    // different network.
+                    let native = Double(first.width) / Double(max(1, input.width))
+                    if abs(native - Double(target)) > 0.01,
+                       let shrunk = Self.resized(bitmap, factor: Double(target) / native) {
+                        output = shrunk
+                    } else {
+                        output = bitmap
+                    }
+                    appLog(String(format: "sd: upscaled %dx%d -> %dx%d (native %@x, asked %dx) in %.1fs (gpu=%@ tile=%d) · %@",
                                   input.width, input.height, first.width, first.height,
+                                  String(format: "%.0f", native), target,
                                   Date().timeIntervalSince(started), gpu ? "on" : "off",
                                   Int(tile), LogStore.memoryDescription()), source: "sd")
                 } else {
@@ -424,6 +468,39 @@ final class SdEngine: ObservableObject {
                 }
                 if let output { self.images.append(output) }
             }
+        }
+    }
+
+    /// Resamples by `factor` with high interpolation, for a requested scale that
+    /// is below the model's native one. Runs off-main like the rest of the pass.
+    nonisolated static func resized(_ image: UIImage, factor: Double) -> UIImage? {
+        guard factor > 0, abs(factor - 1) > 0.01, let cg = image.cgImage else { return nil }
+        let w = max(1, Int((Double(cg.width) * factor).rounded()))
+        let h = max(1, Int((Double(cg.height) * factor).rounded()))
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let out = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: out)
+    }
+
+    // MARK: - Core AI
+
+    /// Runs the optional Core AI upscaler on the last image. The gate is inside
+    /// `CoreAIUpscaler`; this only surfaces the outcome, so an iOS 17 device
+    /// gets a sentence instead of a crash.
+    func coreAIUpscale(_ source: UIImage) {
+        coreAIUpscaleError = nil
+        do {
+            let out = try CoreAIUpscaler.upscale(source)
+            images.append(out)
+        } catch {
+            coreAIUpscaleError = error.localizedDescription
+            appLog("coreai upscale: \(error.localizedDescription)", source: "sd")
         }
     }
 
