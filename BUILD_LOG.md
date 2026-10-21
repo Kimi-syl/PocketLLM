@@ -818,6 +818,41 @@ so the Metal step plus the MLX decode stays the plan. A later, optional path wou
 CI run [39544450824](https://github.com/Kimi-syl/PocketLLM/actions/runs/39544450824) is green on
 `408e7c2`; the artifact is `PocketLLM-device-unsigned`. None of this has run on a device yet.
 
+### 2.23 Xcode 27 on the runner: present, but not by installing it (2026-10-21)
+
+The question was whether Xcode 27 could be installed into the CI runner. Probing it was cheaper than
+answering from the documentation, and the answer had two halves.
+
+**Installing it is not possible without Apple credentials.** The `macos-26` image carries Xcode
+26.0.1 through 26.6 (26.6 default) and Command Line Tools 27.0, but no Xcode 27. The `xcodes` 2.1.0
+tool is installed and `xcodes list` even works unauthenticated, so the version list and URLs are
+obtainable; `xcodes install 27.0` then prompts for an Apple ID, and a direct `HEAD` on
+`https://download.developer.apple.com/Developer_Tools/Xcode_27/Xcode_27.xip` answers `302` to
+`developer.apple.com/unauthorized/`. No Apple ID exists in the repository secrets, and even with one
+the 2FA prompt would make an unattended install fragile — plus the ~13 GB `.xip` would exceed what
+is worth caching per run.
+
+**Installing it is also unnecessary.** `actions/runner-images` issue
+[#14404](https://github.com/actions/runner-images/issues/14404) introduced the `xcode-27` label (a
+preview image, now based on macOS 27). A probe job on that label reported macOS 27.0.1, Xcode 27.0
+as default alongside 27.1 and a 27.2 beta, the iPhoneOS 27.0 SDK, and `CoreAI.framework` in the SDK
+— `import CoreAI` compiles. Xcode 27.0 itself only requires macOS 26.6, so the version would also
+have run on the old image; the label is the whole switch.
+
+`ios.yml` therefore gained two `workflow_dispatch` inputs (`runner`, `xcode`) that default to the
+pinned macos-26/Xcode 26 pair, so pushes are unaffected, and the DerivedData cache key now includes
+the Xcode major version — otherwise a preview run would hand a tree built by 27 to the pinned
+build. One real incompatibility surfaced: Xcode 27 ships **without the Metal toolchain**, so
+mlx-swift's shaders failed with `cannot execute tool 'metal'`; an `xcodebuild -downloadComponent
+MetalToolchain` step (guarded by `xcrun metal --version`, and requiring no Apple ID) fixes it.
+With that, [run 39549677787](https://github.com/Kimi-syl/PocketLLM/actions/runs/39549677787) built
+and packaged the app on macOS 27 / Xcode 27 / iOS 27 SDK, artifact `PocketLLM-device-unsigned`.
+
+The remaining gap is not toolchain but runtime and assets: the deployment target is iOS 17, Core AI
+needs 27, and it runs `.aimodel` files rather than GGUF/ESRGAN (§2.22). So the feature stays behind
+both `#if canImport(CoreAI)` (false on the Xcode 26 build, true on 27) and `if #available(iOS 27, *)`,
+with the button disabled otherwise.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -989,3 +1024,7 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 7. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
+8. **iOS Core AI upscaler (optional)** — the `xcode-27` image can now compile it (§2.23). Scaffold
+   `CoreAIUpscaler` behind `#if canImport(CoreAI)` + `if #available(iOS 27, *)`, ship a converted
+   `.aimodel` (the catalog's `edsr` is the closest fit), and leave the button disabled everywhere
+   else. No effect on iOS 17-26 users.
