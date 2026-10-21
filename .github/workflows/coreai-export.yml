@@ -1,0 +1,46 @@
+name: coreai-export
+
+# Produces a Core AI `.aimodel` asset on a Linux runner, which is the only thing
+# the .aimodel format needs: coreai-torch is pure Python and coreai-core ships a
+# manylinux x86_64 wheel. Exported assets are platform-portable; specialization
+# happens when the app loads them.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Recipe directory under apple/coreai-models/models"
+        default: "edsr"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Fetch the recipe
+        run: git clone --depth 1 https://github.com/apple/coreai-models /tmp/coreai-models
+
+      - name: Platform check
+        run: |
+          uname -m
+          python3 --version
+          echo "${{ github.event.inputs.model }}"
+
+      - name: Export
+        run: |
+          cd /tmp/coreai-models/models/${{ github.event.inputs.model }}
+          uv run export.py --output-dir "$GITHUB_WORKSPACE/out" --overwrite
+          find "$GITHUB_WORKSPACE/out" -maxdepth 2 | head -40
+          du -sh "$GITHUB_WORKSPACE/out"/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aimodel-${{ github.event.inputs.model }}
+          path: out/
+          if-no-files-found: error
