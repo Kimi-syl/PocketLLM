@@ -938,15 +938,19 @@ screenful, so cells load the thumbnail and only the detail sheet opens the PNG. 
 `Task.detached` — `pngData()` on a 1024×576 canvas is tens of milliseconds and would stutter the
 tab — with the `UIImage` handed over in an `@unchecked Sendable` wrapper.
 
-Writes are hooked where `images` is assigned, not in the view: generation (`SdEngine.swift:403`)
+Writes are hooked where `images` is assigned, not in the view: generation (`SdEngine.swift:404`)
 archives the parameters it actually used, which `lastArchive` keeps so an upscale is filed with the
 prompt that produced its source rather than whatever the prompt field says later. The upscale path
-(`SdEngine.swift:482`) and the Core AI path set `kind = "upscaled"`, record `scale`, and overwrite
+(`SdEngine.swift:483`) and the Core AI path set `kind = "upscaled"`, record `scale`, and overwrite
 width/height from the output. Failures surface as a transient banner instead of being swallowed:
 the image stays on screen regardless, so a full disk should be visible.
 
 The tab is `GalleryView`: adaptive grid, count in the toolbar, `ContentUnavailableView` when empty,
 and a detail sheet with share, delete (PNG + thumb + JSON) and the recorded metadata.
+
+Run `39585090061` is the compile evidence; the first attempt failed because the detached closure
+does not capture the view's model slot, so the name is now read on the main actor
+(`SdEngine.swift:325`) and passed in. Artifact 46.3 MB.
 
 ---
 
