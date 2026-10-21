@@ -41,10 +41,10 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | MLX backend + model browser | working |
 | TTFT / tokens-per-second metrics | built |
 | Logs tab (persistent, crash-surviving) | working |
-| Image generation (stable-diffusion.cpp) | runs on Metal — but ~10 s/step trips the GPU watchdog |
+| Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; models picked as bundles, ESRGAN upscale (§2.22) |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
-Latest artifact: `PocketLLM-device-unsigned` from run `39472414846`, released as **v0.6.0**.
+Latest artifact: `PocketLLM-device-unsigned` from run `39544450824` (`408e7c2`, post-v0.6.0).
 
 ### Known-open
 
@@ -58,8 +58,9 @@ Latest artifact: `PocketLLM-device-unsigned` from run `39472414846`, released as
    engine's full sampler/scheduler tables so the 1024×768 fault can be iterated on-device.
 2. **iOS vision** — the pipeline reaches the model, produces a single space. The native
    stage logs are not appearing at all, which is the current investigation.
-3. **iOS tree browser and auto-configuration** (§2.21) — compiled only. On device: browse an image
-   repo, check a quant plus the `split_files` folder, then confirm the bundle row and the slots.
+3. **iOS tree browser, bundle picker and upscaler** (§2.21–§2.22) — compiled only. On device: the
+   browser and bundle row, the picker, then MLX decode after attaching an external VAE, then a 4x
+   ESRGAN pass.
 4. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
    which the Android CMake does not build.
 5. **iOS LoRA / decision model** — not started.
