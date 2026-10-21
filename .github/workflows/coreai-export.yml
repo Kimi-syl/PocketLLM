@@ -10,6 +10,10 @@ on:
       model:
         description: "Recipe directory under apple/coreai-models/models"
         default: "edsr"
+      dynamic:
+        description: "Dynamic shapes where the recipe supports them (EDSR: 8-256 px)"
+        type: boolean
+        default: true
 
 jobs:
   export:
@@ -35,7 +39,9 @@ jobs:
       - name: Export
         run: |
           cd /tmp/coreai-models/models/${{ github.event.inputs.model }}
-          uv run export.py --output-dir "$GITHUB_WORKSPACE/out" --overwrite
+          ARGS="--output-dir $GITHUB_WORKSPACE/out --overwrite"
+          if [ "${{ inputs.dynamic }}" = "true" ]; then ARGS="$ARGS --dynamic"; fi
+          uv run export.py $ARGS
           find "$GITHUB_WORKSPACE/out" -maxdepth 2 | head -40
           du -sh "$GITHUB_WORKSPACE/out"/*
 
