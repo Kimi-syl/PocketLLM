@@ -773,6 +773,50 @@ publishes it; `ImageGenView` mirrors that id into the six slots, remembering the
 so hand-picked paths survive a tab switch. The mirror listens to both the id and the bundle list,
 because the id is set before the refresh that publishes the bundle.
 
+### 2.22 The image tab leads with a model, and a separate VAE unlocks MLX (2026-10-21)
+
+Auto-configuration made the six-path form redundant: the library already knows which files form a
+model, so the tab now opens on one picker over `ModelStore.bundles`. Everything else moved into a
+collapsed 「進階：個別元件」 disclosure, which also grew a per-slot 清除 button and the GPU toggle
+for the upscaler. Choosing 「手動選擇」 calls `ModelStore.detachBundle()`, which stops following the
+bundle but deliberately leaves the slots alone, so a hand-tuned setup is never wiped.
+
+The VAE is the interesting slot. A single-file checkpoint carries its VAE inside the GGUF, and
+`SdEngine` already loads it — but the MLX decoder cannot read weights out of a GGUF, so the fast
+path was gated off exactly where it matters most (`vaeCPU = vaeOnCPU || (mlxOn && vae.isEmpty)`).
+Supplying a separate VAE fixes this on both sides: `diffusion_engine.cpp:802` loads `vae_path`
+through `init_from_file(vae_path, "vae.")` even when the model arrived as `model_path`, so the
+external VAE replaces the embedded one for the engine's own decode too. The tab therefore keeps the
+VAE (and the upscaler) when switching bundles instead of clearing it, persists both in
+`UserDefaults` — otherwise it would have to be re-imported every launch — and shows which decoder
+the current slots will use: green 「解碼：MLX」, or an orange warning that a model without a VAE is
+stuck on CPU decode. The 清除 button is the way out when a VAE belongs to another architecture.
+
+Upscaling is new: `SdUpscaler` in the bridge wraps `new_upscaler_ctx`/`upscale`
+(`direct=false`, backend `upscaler=metal` or `upscaler=cpu`, tiled at 128 px), and
+`SdEngine.upscale` runs a 4x pass off-main, appending the result to the image list so the existing
+share menu applies to it. The ratio is baked into the ESRGAN weights and `factor` is ignored by the
+engine, so the button offers no scale choice. `UIImage` is converted to interleaved RGB
+(`SdImage(width:height:channel:pixels:)`, alpha dropped) because the ESRGAN path reads three
+channels. Bundles pick up `esrgan`/`upscal`/`ultrasharp` weights — `.pth` included, which the
+repository filter did not allow before — so an ESRGAN repository downloads and configures like any
+other part.
+
+**Apple ANE / Core AI, researched (not adopted).** The new Core AI framework is the only documented
+route to the Neural Engine besides Core ML, and the documentation header reports
+**iOS/iPadOS/macOS 27.0+**; `apple/coreai-models` repeats the same requirement (Xcode 27). Its
+models are `.aimodel` files exported from PyTorch through `coreai-torch` and Core AI Optimization —
+not GGUF — and the catalog's image-related entries are `edsr` (super-resolution), `clip`, `t5`,
+`sana`, `flux2` and `diffusion_gemma`. Nothing there covers SD1.5/SDXL/Qwen-Image checkpoints or
+ESRGAN. With a deployment target of iOS 17 the framework cannot be called at all on most supported
+devices; adopting it means either raising the minimum to 27 or shipping a second, converted model
+family. The ANE itself is not directly programmable — it is reached only through Core ML/Core AI —
+so the Metal step plus the MLX decode stays the plan. A later, optional path would be an
+`if #available(iOS 27, *)` upscaler backed by an exported `edsr` `.aimodel`.
+
+CI run [39544450824](https://github.com/Kimi-syl/PocketLLM/actions/runs/39544450824) is green on
+`408e7c2`; the artifact is `PocketLLM-device-unsigned`. None of this has run on a device yet.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -927,10 +971,13 @@ replaced the single dual-ABI APK.
    GPU baseline. §2.19 built the `MLXVae` port, §2.20 fixed its group walk, and the device run
    decodes 512×512 in ~2 s, so MLX is now the default decoder. Remaining: a 1024×576 run to confirm
    the ~4-5 s extrapolation and that peak memory stays clear of jetsam at the largest canvas.
-3. **iOS tree browser and auto-configuration** — compiled only. On device: browse an image repo,
-   check a quant plus the `split_files` folder, confirm the progress rows, then check that the
-   bundle row appears with 「已自動配置」 and that the image tab's slots follow it without
-   opening the browser again.
+3. **iOS tree browser, bundle picker and upscaler** — compiled only. On device: browse an image
+   repo, check a quant plus the `split_files` folder, confirm the progress rows, then check that the
+   bundle row appears with 「已自動配置」 and that the image tab's picker already names it. Then
+   generate with an all-in-one checkpoint (CPU decode), attach `qwen_image_vae.safetensors` in
+   「進階」 and confirm the hint turns green 「解碼：MLX」 and the decode drops to seconds, and
+   finally press 放大 on a result to time a 4x ESRGAN pass on Metal. The VAE survives a relaunch;
+   the 清除 button is the test for a stale one.
 4. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
