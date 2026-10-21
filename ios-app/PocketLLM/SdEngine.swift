@@ -25,6 +25,9 @@ final class SdEngine: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var images: [UIImage] = []
+    /// Parameters of the last generation, so an upscale can be archived with the
+    /// prompt that produced the source instead of the tab's current text.
+    private var lastArchive: GalleryStore.Meta?
 
     /// The model slots. Empty string means "not supplied". `mainModel` is also
     /// the slot for a single-file all-in-one checkpoint (SD1.5/SDXL downloads):
@@ -397,6 +400,14 @@ final class SdEngine: ObservableObject {
                 } else {
                     self.images = decoded
                     self.phase = .idle
+                    let archive = GalleryStore.Meta(
+                        prompt: promptText, negative: negativeText,
+                        width: w, height: h, steps: n, seed: s0,
+                        model: URL(fileURLWithPath: model).lastPathComponent)
+                    self.lastArchive = archive
+                    for image in decoded {
+                        GalleryStore.shared.save(image, meta: archive)
+                    }
                     appLog(String(format: "sd generated %d image(s) · %.1fs · %@",
                                   decoded.count, secs, LogStore.memoryDescription()), source: "sd")
                 }
@@ -466,7 +477,16 @@ final class SdEngine: ObservableObject {
                     self.upscaleError = failure
                     appLog("sd upscale failed: \(failure)", source: "sd")
                 }
-                if let output { self.images.append(output) }
+                if let output {
+                    self.images.append(output)
+                    var meta = self.lastArchive ?? GalleryStore.Meta()
+                    meta.kind = "upscaled"
+                    meta.scale = target
+                    meta.width = Int(output.size.width)
+                    meta.height = Int(output.size.height)
+                    meta.createdAt = Date()
+                    GalleryStore.shared.save(output, meta: meta)
+                }
             }
         }
     }
@@ -498,6 +518,12 @@ final class SdEngine: ObservableObject {
         do {
             let out = try CoreAIUpscaler.upscale(source)
             images.append(out)
+            var meta = lastArchive ?? GalleryStore.Meta()
+            meta.kind = "upscaled"
+            meta.width = Int(out.size.width)
+            meta.height = Int(out.size.height)
+            meta.createdAt = Date()
+            GalleryStore.shared.save(out, meta: meta)
         } catch {
             coreAIUpscaleError = error.localizedDescription
             appLog("coreai upscale: \(error.localizedDescription)", source: "sd")

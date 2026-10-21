@@ -61,10 +61,14 @@ Latest artifact: `PocketLLM-device-unsigned` from run `39544450824` (`408e7c2`, 
 3. **iOS tree browser, bundle picker and upscaler** (§2.21–§2.22) — compiled only. On device: the
    browser and bundle row, the picker, then MLX decode after attaching an external VAE, then a 4x
    ESRGAN pass.
-4. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
+4. **iOS gallery on device** — §2.26 compiles the tab, the store and the save hooks. On device:
+   generate once, switch tabs and relaunch, and confirm the picture is still in 「圖庫」 with its
+   prompt; upscale it and check the entry is marked 4×; delete it and confirm all three files go.
+   Also watch the first save for a stutter — that is the `pngData()` landing on the wrong thread.
+5. **Android MTP / speculative decoding** — blocked: the API lives in `common/speculative.h`
    which the Android CMake does not build.
-5. **iOS LoRA / decision model** — not started.
-6. **Release signing** — every APK is signed with a generated debug key; no release key exists
+6. **iOS LoRA / decision model** — not started.
+7. **Release signing** — every APK is signed with a generated debug key; no release key exists
    in the repo or as secrets.
 
 ---
@@ -917,6 +921,33 @@ So the remaining gap for Core AI is no longer the toolchain or the asset pipelin
 side (loading an `.aimodel` and running `InferenceFunction` with `NDArray`) plus a device on iOS 27
 to run it on. Until both exist, ESRGAN remains the only upscaler that actually executes.
 
+### 2.26 Generated images survive the tab (2026-10-21)
+
+`SdEngine.images` was the only copy of every result, so switching tabs, or the next generation,
+discarded the picture. A new `GalleryStore` (a singleton, because `SdEngine` has no environment)
+archives each result under `Documents/Gallery`, beside `Models/` rather than inside it:
+
+| file | contents |
+|---|---|
+| `yyyyMMdd-HHmmss-xxxxxx.png` | the image, lossless |
+| `…-thumb.jpg` | 512 px longest side, quality 0.8 |
+| `… .json` | `Meta`: prompt, negative, width/height, steps, seed, model, `kind`, `scale`, `createdAt` |
+
+The split exists for the grid: a `LazyVGrid` that decoded 1024 px PNGs would hold tens of MB per
+screenful, so cells load the thumbnail and only the detail sheet opens the PNG. Encoding runs in
+`Task.detached` — `pngData()` on a 1024×576 canvas is tens of milliseconds and would stutter the
+tab — with the `UIImage` handed over in an `@unchecked Sendable` wrapper.
+
+Writes are hooked where `images` is assigned, not in the view: generation (`SdEngine.swift:403`)
+archives the parameters it actually used, which `lastArchive` keeps so an upscale is filed with the
+prompt that produced its source rather than whatever the prompt field says later. The upscale path
+(`SdEngine.swift:482`) and the Core AI path set `kind = "upscaled"`, record `scale`, and overwrite
+width/height from the output. Failures surface as a transient banner instead of being swallowed:
+the image stays on screen regardless, so a full disk should be visible.
+
+The tab is `GalleryView`: adaptive grid, count in the toolbar, `ContentUnavailableView` when empty,
+and a detail sheet with share, delete (PNG + thumb + JSON) and the recorded metadata.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -983,6 +1014,7 @@ and for the ggml guard.
 | iOS dylib packaging (reverted) | `Frameworks/` in the `.ipa`: 13 dylibs, `libggml.0.dylib` present |
 | Converter correctness | round-trip through the official `gguf` reader |
 | Android Kotlin compiles | `:app:compileReleaseKotlin` BUILD SUCCESSFUL |
+| iOS gallery archives generated images | compile only (run after §2.26); the file layout is asserted in `GalleryStore.reload`/`delete` |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is
@@ -1078,17 +1110,21 @@ replaced the single dual-ABI APK.
    「進階」 and confirm the hint turns green 「解碼：MLX」 and the decode drops to seconds, and
    finally press 放大 on a result to time a 4x ESRGAN pass on Metal. The VAE survives a relaunch;
    the 清除 button is the test for a stale one.
-4. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
+4. **iOS gallery on device** — §2.26 compiles the tab, the store and the save hooks. On device:
+   generate once, switch tabs and relaunch, and confirm the picture is still in 「圖庫」 with its
+   prompt; upscale it and check the entry is marked 4×; delete it and confirm all three files go.
+   Also watch the first save for a stutter — that is the `pngData()` landing on the wrong thread.
+5. **Android MTP / speculative decoding** — add `common/` (`common.cpp`, `sampling.cpp`,
    `speculative.cpp`) to the native build, or implement draft-and-verify directly against
    `libllama`.
-5. **iOS LoRA and the decision model** — mirror `setLoras` in `LlamaBridge.mm`; the decision
+6. **iOS LoRA and the decision model** — mirror `setLoras` in `LlamaBridge.mm`; the decision
    model has the same singleton constraint as Android.
-6. **Release signing** — add `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
+7. **Release signing** — add `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
    `KEY_PASSWORD` as secrets and replace the generated debug keystore in the workflow. Until
    then every CI prerelease has a different signature and cannot upgrade in place.
-7. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
+8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-8. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+9. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
    (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
    (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
    `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says

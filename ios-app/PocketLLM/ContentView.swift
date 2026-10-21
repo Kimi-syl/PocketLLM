@@ -13,6 +13,8 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
             ImageGenView()
                 .tabItem { Label("Images", systemImage: "photo") }
+            GalleryView()
+                .tabItem { Label("Gallery", systemImage: "photo.on.rectangle.angled") }
             LogView()
                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
         }
