@@ -26,10 +26,21 @@ jobs:
         run: |
           which xcodes || true
           xcodes version || true
-          echo "--- list (needs Apple ID) ---"
-          timeout 90 xcodes list 2>&1 | head -40 || echo "list failed: $?"
+          echo "--- auth state ---"
+          ls -la ~/Library/Application\ Support/xcodes 2>/dev/null || echo "no xcodes state dir"
+          echo "--- list ---"
+          set +e
+          xcodes list > /tmp/list.txt 2>&1
+          echo "exit=$?"
+          head -40 /tmp/list.txt
       - name: Credentials in env
         run: env | grep -iE "apple|asc|xcodes" || echo "none"
+      - name: Try install (expect auth failure)
+        run: |
+          set +e
+          printf 'n\n' | xcodes install 27.0 > /tmp/install.txt 2>&1
+          echo "exit=$?"
+          head -40 /tmp/install.txt
       - name: Preview download reachable?
         run: |
           curl -sS -o /dev/null -w "developer portal: %{http_code}\n" \
