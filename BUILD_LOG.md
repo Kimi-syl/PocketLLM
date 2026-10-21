@@ -41,7 +41,7 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | MLX backend + model browser | working |
 | TTFT / tokens-per-second metrics | built |
 | Logs tab (persistent, crash-surviving) | working |
-| Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; models picked as bundles, ESRGAN upscale (§2.22) |
+| Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; bundle picker; bundled ESRGAN upscale with 2-4x and a gated Core AI path (§2.22-§2.24) |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
 Latest artifact: `PocketLLM-device-unsigned` from run `39544450824` (`408e7c2`, post-v0.6.0).
@@ -853,6 +853,42 @@ needs 27, and it runs `.aimodel` files rather than GGUF/ESRGAN (§2.22). So the 
 both `#if canImport(CoreAI)` (false on the Xcode 26 build, true on 27) and `if #available(iOS 27, *)`,
 with the button disabled otherwise.
 
+### 2.24 A bundled upscaler with its own settings, and a gated Core AI path (2026-10-21)
+
+The first cut of upscaling was a hidden slot and a button, which meant it did nothing until an
+ESRGAN repository had been found and downloaded. Three changes made it usable on a fresh install:
+
+| change | detail |
+|---|---|
+| bundled weights | `RealESRGAN_x4plus_anime_6B.pth` (17,938,799 B, sha256 `f872d837…e99da`) ships in `ios-app/Resources`, built as a resource by xcodegen, with Real-ESRGAN's BSD-3 text beside it |
+| own settings card | model dropdown (bundled model first, then any `.pth`/`.safetensors` a bundle carried) and a 2×/3×/4× segmented control, separate from the slot list |
+| default | `SdEngine.upscaler` falls back to the bundled path only when the defaults key was never written, so an explicit 清除 sticks instead of resurrecting it on launch |
+
+The anime 6B variant was chosen over the 64 MB general model deliberately: it has six RRDB blocks
+instead of 23, which matters on a phone where the whole 4× pass runs on Metal. A general model can
+be downloaded later and will appear in the dropdown. The cost is visible: the unsigned `.ipa` went
+from 29.5 MB to 45 MB, and the weights are already dense floats, so zip does not shrink them.
+`unzip -l` confirms `Payload/PocketLLM.app/RealESRGAN_x4plus_anime_6B.pth`, which is the path
+`Bundle.main.url(forResource:withExtension:)` needs.
+
+Scale is honest about what the network does. ESRGAN's ratio is baked into the weights (4× here), so
+2× and 3× run the 4× pass and then resample down with a high-quality `CGContext` pass
+(`SdEngine.resized`); the hint under the dropdown says exactly that, and the log line prints both
+the native factor and the requested one.
+
+**Core AI is a separate path, not a replacement.** `CoreAIUpscaler` reports `isAvailable` from
+`#if canImport(CoreAI)` plus `if #available(iOS 27.0, *)`, which means the release toolchain (Xcode
+26) compiles the body out entirely while an Xcode 27 build keeps it. It also looks for `.aimodel`
+files under `Models/` and reports which of the two is missing, so the row's button is disabled with
+「需要 iOS 27」 or 「需要 .aimodel 模型」 rather than disappearing. The inference call itself is
+deliberately not implemented: no `.aimodel` exists to test against, and producing one needs a Mac
+running `coreai-torch` (the catalog's `edsr` is the closest recipe). Shipping an untested tensor
+pipeline would be worse than a button that says why it is off.
+
+Both toolchains compile it: [39556486072](https://github.com/Kimi-syl/PocketLLM/actions/runs/39556486072)
+on macos-26/Xcode 26 and [39558006398](https://github.com/Kimi-syl/PocketLLM/actions/runs/39558006398)
+on xcode-27. Nothing has been run on a device.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1024,7 +1060,7 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 7. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-8. **iOS Core AI upscaler (optional)** — the `xcode-27` image can now compile it (§2.23). Scaffold
-   `CoreAIUpscaler` behind `#if canImport(CoreAI)` + `if #available(iOS 27, *)`, ship a converted
-   `.aimodel` (the catalog's `edsr` is the closest fit), and leave the button disabled everywhere
-   else. No effect on iOS 17-26 users.
+8. **iOS Core AI upscaler (optional)** — the gate, the `.aimodel` discovery and the disabled state
+   are in place and compile on both toolchains (§2.24). What is missing is the asset: export an
+   `edsr` `.aimodel` with `coreai-torch` on a Mac, then implement `CoreAIUpscaler.upscale` against
+   it. Until then the button says why it is off, and ESRGAN stays the working path.
