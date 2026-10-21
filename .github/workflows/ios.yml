@@ -66,6 +66,17 @@ jobs:
         with:
           xcode-version: ${{ env.XCODE_MAJOR }}
 
+      # Xcode 27 ships without the Metal toolchain, so mlx-swift's shaders fail
+      # to compile with "cannot execute tool 'metal'". The component download
+      # needs no Apple ID; on images that already have it this is a cheap probe.
+      - name: Ensure Metal toolchain
+        run: |
+          if xcrun --sdk iphoneos metal --version >/dev/null 2>&1; then
+            echo "Metal toolchain already present"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
       # ---------------------------------------------------------------- caches
       #
       # Restore and save are separate steps, rather than one actions/cache step.
