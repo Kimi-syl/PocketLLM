@@ -889,6 +889,34 @@ Both toolchains compile it: [39556486072](https://github.com/Kimi-syl/PocketLLM/
 on macos-26/Xcode 26 and [39558006398](https://github.com/Kimi-syl/PocketLLM/actions/runs/39558006398)
 on xcode-27. Nothing has been run on a device.
 
+### 2.25 Core AI assets can be built on Linux, but Qwen3.5 is not an iOS target (2026-10-21)
+
+The open question was whether an `.aimodel` could be produced without a Mac — which decides whether
+the §2.24 Core AI path can ever be tested. It can: `coreai-torch` is a pure-Python wheel and
+`coreai-core` publishes a `manylinux_2_34_x86_64` build, so the whole export runs on an
+`ubuntu-latest` runner (and therefore in Codespaces, which is the same architecture).
+
+`ci.yml`'s sibling `coreai-export.yml` clones `apple/coreai-models` and runs a recipe's own
+`uv run export.py`, so the pinned `coreai-core==1.0.0b3` / `coreai-torch==0.4.3` versions come from
+the recipe rather than from this repo. The first run
+([39568424202](https://github.com/Kimi-syl/PocketLLM/actions/runs/39568424202)) produced
+`edsr_r16f64_x2_float32_static.aimodel` — a **directory** of `main.mlirb`, `main.hash` and
+`metadata.json`, 5.3 MB — about four minutes cold, most of it PyTorch and CUDA-stub downloads.
+`metadata.json` records only producer/author/licence/version, no platform, which matches the design:
+the asset is portable and specialization happens at load time. A second dispatch with `--dynamic`
+produced the same graph accepting 8-256 px tiles
+([39568733438](https://github.com/Kimi-syl/PocketLLM/actions/runs/39568733438)); the static variant
+only accepts 16x16, which is useless for photographs.
+
+Qwen3.5 0.8B was the suggested test model and is the wrong one: `apple/coreai-models`' own
+`models/qwen3_5` table marks **every** Qwen3.5 size (0.8B through 122B) `macOS: Yes`, `iOS: No`. A
+converted LLM would therefore test nothing that can run in this app. EDSR is the right small
+target — 1.5 M parameters, an image upscaler, and the closest catalog recipe to what §2.24 needs.
+
+So the remaining gap for Core AI is no longer the toolchain or the asset pipeline; it is the Swift
+side (loading an `.aimodel` and running `InferenceFunction` with `NDArray`) plus a device on iOS 27
+to run it on. Until both exist, ESRGAN remains the only upscaler that actually executes.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1060,7 +1088,8 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 7. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-8. **iOS Core AI upscaler (optional)** — the gate, the `.aimodel` discovery and the disabled state
-   are in place and compile on both toolchains (§2.24). What is missing is the asset: export an
-   `edsr` `.aimodel` with `coreai-torch` on a Mac, then implement `CoreAIUpscaler.upscale` against
-   it. Until then the button says why it is off, and ESRGAN stays the working path.
+8. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+   (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
+   (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
+   `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says
+   why it is off and ESRGAN is the working path.
