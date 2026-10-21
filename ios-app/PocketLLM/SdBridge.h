@@ -9,8 +9,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) int32_t channel;
 @property (nonatomic, readonly, copy) NSData *pixels;
 
-/// Builds an image from raw interleaved pixels. Swift cannot fill the read-only
-/// properties, and the upscaler needs an input image to hand to the engine.
+/// Builds an image from raw interleaved pixels; imports into Swift as
+/// `SdImage(width:height:channel:pixels:)`. The upscaler needs an input image to
+/// hand to the engine, and the read-only properties cannot be filled otherwise.
 + (instancetype)imageWithWidth:(int32_t)width
                         height:(int32_t)height
                        channel:(int32_t)channel

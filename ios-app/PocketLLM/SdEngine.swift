@@ -450,8 +450,9 @@ final class SdEngine: ObservableObject {
             rgb[d + 1] = rgba[s + 1]
             rgb[d + 2] = rgba[s + 2]
         }
-        return SdImage.image(withWidth: Int32(w), height: Int32(h), channel: 3,
-                             pixels: Data(rgb))
+        // ObjC imports the +imageWithWidth: factory as this initializer.
+        return SdImage(width: Int32(w), height: Int32(h), channel: 3,
+                       pixels: Data(rgb))
     }
 
     /// sd_image_t carries interleaved RGB(A) bytes; UIImage wants a CGImage.
