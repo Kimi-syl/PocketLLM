@@ -90,6 +90,19 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
 @end
 
 @implementation SdImage
+
++ (instancetype)imageWithWidth:(int32_t)width
+                        height:(int32_t)height
+                       channel:(int32_t)channel
+                        pixels:(NSData *)pixels {
+    SdImage *image = [[SdImage alloc] init];
+    image.width = width;
+    image.height = height;
+    image.channel = channel;
+    image.pixels = pixels;
+    return image;
+}
+
 @end
 
 @implementation SdContext {
@@ -379,6 +392,119 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     if (_ctx != nullptr) {
         free_sd_ctx(_ctx);
         _ctx = nullptr;
+    }
+}
+
+@end
+
+@implementation SdUpscaler {
+    upscaler_ctx_t *_upscaler;
+}
+
+- (nullable instancetype)initWithModel:(NSString *)model
+                              tileSize:(int32_t)tileSize
+                               threads:(int32_t)threads
+                                useGPU:(BOOL)useGPU
+                                 error:(NSError * _Nullable * _Nullable)error {
+    self = [super init];
+    if (!self) return nil;
+
+    std::string sModel = model ? model.UTF8String : "";
+    if (sModel.empty()) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdUpscaler"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    @"no upscaler model selected"}];
+        }
+        return nil;
+    }
+
+    // The upscaler has its own backend manager, so the module spec is enough;
+    // params_backend is left null to keep the engine's default placement.
+    _upscaler = new_upscaler_ctx(sModel.c_str(),
+                                 /*direct=*/false,
+                                 threads > 0 ? threads : 4,
+                                 tileSize,
+                                 useGPU ? "upscaler=metal" : "upscaler=cpu",
+                                 nullptr);
+    if (_upscaler == nullptr) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdUpscaler"
+                                         code:2
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    @"new_upscaler_ctx failed — is this an ESRGAN .pth/.safetensors model?"}];
+        }
+        return nil;
+    }
+    return self;
+}
+
+- (nullable NSArray<SdImage *> *)upscaleImage:(SdImage *)image
+                                       factor:(int32_t)factor
+                                        error:(NSError * _Nullable * _Nullable)error {
+    if (_upscaler == nullptr) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdUpscaler" code:3
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"upscaler context is not loaded"}];
+        }
+        return nil;
+    }
+    // The engine's ESRGAN path takes RGB only; an RGBA image would be read with
+    // the wrong stride.
+    NSUInteger expected = (NSUInteger)image.width * (NSUInteger)image.height * 3;
+    if (image.width <= 0 || image.height <= 0 || image.channel != 3
+        || image.pixels.length < expected) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdUpscaler" code:4
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"upscaler input must be 3-channel RGB"}];
+        }
+        return nil;
+    }
+
+    sd_image_t input;
+    input.width = (uint32_t)image.width;
+    input.height = (uint32_t)image.height;
+    input.channel = 3;
+    input.data = (uint8_t *)image.pixels.bytes;
+
+    sd_image_t *images = nullptr;
+    int count = 0;
+    if (!upscale(_upscaler, input, (uint32_t)MAX(factor, 1), &images, &count) || count <= 0) {
+        if (images != nullptr) free_sd_images(images, count);
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdUpscaler" code:5
+                                    userInfo:@{NSLocalizedDescriptionKey:
+                                                   @"upscale failed (out of memory, or the model is not ESRGAN)"}];
+        }
+        return nil;
+    }
+
+    NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+    for (int i = 0; i < count; ++i) {
+        sd_image_t img = images[i];
+        if (img.data == nullptr) continue;
+        size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
+        [out addObject:[SdImage imageWithWidth:(int32_t)img.width
+                                        height:(int32_t)img.height
+                                       channel:(int32_t)img.channel
+                                        pixels:[NSData dataWithBytes:img.data length:bytes]]];
+    }
+    free_sd_images(images, count);
+    return out;
+}
+
++ (int32_t)modelScale:(NSString *)model {
+    std::string path = model ? model.UTF8String : "";
+    return get_upscaler_model_scale(path.c_str());
+}
+
+- (void)dealloc {
+    if (_upscaler != nullptr) {
+        free_upscaler_ctx(_upscaler);
+        _upscaler = nullptr;
     }
 }
 

@@ -66,7 +66,10 @@ final class ModelStore: ObservableObject {
             case .mlx:
                 return ModelStore.mlxExtensions.contains { lower.hasSuffix($0) }
             case .image:
-                return [".gguf", ".safetensors", ".sft"].contains {
+                // .pth/.pt are here for ESRGAN upscalers, which only ship in
+                // those formats; the diffusion weights themselves are GGUF or
+                // safetensors.
+                return [".gguf", ".safetensors", ".sft", ".pth", ".pt"].contains {
                     lower.hasSuffix($0)
                 }
             }
@@ -317,6 +320,12 @@ final class ModelStore: ObservableObject {
     /// changes — a publish from here would mean a second engine instance.
     func apply(_ bundle: ModelBundle) {
         configure(bundle, automatic: false)
+    }
+
+    /// Stops following a bundle without touching the slots the user has.
+    func detachBundle() {
+        appliedBundleId = nil
+        UserDefaults.standard.removeObject(forKey: Self.appliedBundleKey)
     }
 
     private func configure(_ bundle: ModelBundle, automatic: Bool) {

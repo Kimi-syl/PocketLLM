@@ -8,6 +8,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) int32_t height;
 @property (nonatomic, readonly) int32_t channel;
 @property (nonatomic, readonly, copy) NSData *pixels;
+
+/// Builds an image from raw interleaved pixels. Swift cannot fill the read-only
+/// properties, and the upscaler needs an input image to hand to the engine.
++ (instancetype)imageWithWidth:(int32_t)width
+                        height:(int32_t)height
+                       channel:(int32_t)channel
+                        pixels:(NSData *)pixels;
 @end
 
 /// ObjC++ wrapper over stable-diffusion.cpp for on-device image generation.
@@ -87,6 +94,31 @@ NS_ASSUME_NONNULL_BEGIN
 /// Polled from Swift on a timer while generation runs.
 @property (nonatomic, readonly) int32_t progressStep;
 @property (nonatomic, readonly) int32_t progressSteps;
+
+@end
+
+/// Standalone ESRGAN upscaler.
+///
+/// Deliberately separate from `SdContext`: enlarging a finished image must not
+/// require reloading the diffusion model, and the engine's upscaler owns only
+/// the ESRGAN weights. `tileSize` bounds the graph the backend sees, which is
+/// what keeps a 4x pass on a large canvas inside the GPU watchdog.
+@interface SdUpscaler : NSObject
+
+- (nullable instancetype)initWithModel:(NSString *)model
+                              tileSize:(int32_t)tileSize
+                               threads:(int32_t)threads
+                                useGPU:(BOOL)useGPU
+                                 error:(NSError * _Nullable * _Nullable)error;
+
+/// The model's own scale (usually 4). `factor` is accepted for the C API but
+/// this engine ignores it: the ratio is baked into the ESRGAN weights.
+- (nullable NSArray<SdImage *> *)upscaleImage:(SdImage *)image
+                                       factor:(int32_t)factor
+                                        error:(NSError * _Nullable * _Nullable)error;
+
+/// 0 when the file is not a recognised RGB ESRGAN model, otherwise its scale.
++ (int32_t)modelScale:(NSString *)model;
 
 @end
 

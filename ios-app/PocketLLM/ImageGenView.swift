@@ -1,13 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Image generation UI: the model slots, prompt, parameters and results.
+/// Image generation UI: the model, prompt, parameters and results.
 ///
-/// The slots are explicit rather than a single "pick a model" control because
-/// the checkpoint format genuinely has several parts — text encoder, main model,
-/// CLIP/T5 encoders, VAE and optional LoRAs — and the engine needs each in its
-/// own field. A single-file all-in-one checkpoint goes in the main-model slot
-/// alone; the engine detects that case and loads it as a full checkpoint.
+/// The model comes from the library as a bundle, so the normal path is one
+/// picker. The individual slots still exist underneath because a checkpoint
+/// genuinely has several parts — text encoder, main model, CLIP/T5 encoders,
+/// VAE, upscaler and LoRAs — and the engine needs each in its own field; that
+/// list is folded away as "advanced" to keep it out of the way.
 struct ImageGenView: View {
     @StateObject private var engine = SdEngine()
     @EnvironmentObject private var store: ModelStore
@@ -17,9 +17,12 @@ struct ImageGenView: View {
     /// The bundle id last written into the slots. Guards against overwriting
     /// hand-picked paths every time this tab reappears.
     @State private var mirroredBundleId: String?
+    /// The slot list is an escape hatch, not the normal flow: a bundle from the
+    /// Models tab already sets every slot, so this starts collapsed.
+    @State private var showAdvanced = false
 
     private enum Slot: String, Identifiable {
-        case textEncoder, mainModel, clipL, clipG, t5, vae, lora
+        case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -29,6 +32,7 @@ struct ImageGenView: View {
             case .clipG:       return "CLIP-G"
             case .t5:          return "T5 (t5xxl)"
             case .vae:         return "VAE"
+            case .upscaler:    return "放大模型 (ESRGAN)"
             case .lora:        return "LoRA"
             }
         }
@@ -39,7 +43,8 @@ struct ImageGenView: View {
             case .clipL:       return "SD1.5 / SDXL 的 CLIP-L"
             case .clipG:       return "SDXL 的 OpenCLIP-G"
             case .t5:          return "SD3 / Flux 的 T5"
-            case .vae:         return "獨立的 VAE 權重"
+            case .vae:         return "單檔模型加這個就能用 MLX 解碼"
+            case .upscaler:    return "RealESRGAN / 4x-UltraSharp（.pth 或 .safetensors）"
             case .lora:        return "path|強度，多個以分號分隔"
             }
         }
@@ -49,7 +54,7 @@ struct ImageGenView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    slotsCard
+                    modelCard
                     promptCard
                     paramsCard
                     generateButton
@@ -115,20 +120,11 @@ struct ImageGenView: View {
         }
     }
 
-    /// Copies a bundle's files into every slot in one move, clearing slots the
-    /// bundle does not use so a companion from a previous model cannot leak in.
     private func mirrorAppliedBundle() {
         guard let id = store.appliedBundleId, id != mirroredBundleId,
             let bundle = store.bundles.first(where: { $0.id == id })
         else { return }
-        engine.textEncoder = bundle.textEncoder?.path ?? ""
-        engine.mainModel = bundle.mainModel.path
-        engine.clipL = bundle.clipL?.path ?? ""
-        engine.clipG = bundle.clipG?.path ?? ""
-        engine.t5 = bundle.t5?.path ?? ""
-        engine.vae = bundle.vae?.path ?? ""
-        mirroredBundleId = id
-        importNote = "已自動配置：\(bundle.name)"
+        apply(bundle)
     }
 
     private func assign(_ path: String, to slot: Slot) {
@@ -139,6 +135,7 @@ struct ImageGenView: View {
         case .clipG:       engine.clipG = path
         case .t5:          engine.t5 = path
         case .vae:         engine.vae = path
+        case .upscaler:    engine.upscaler = path
         case .lora:
             // Append as path|<current strength> so several can accumulate.
             let entry = "\(path)|1.0"
@@ -146,23 +143,41 @@ struct ImageGenView: View {
         }
     }
 
-    private var slotsCard: some View {
-        GroupBox("模型元件") {
+    /// The model in use, chosen from the library rather than assembled by hand.
+    /// Everything below the picker is the advanced escape hatch.
+    private var modelCard: some View {
+        GroupBox("模型") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("支援 .gguf 與 .safetensors（也接受 diffusers 資料夾）")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                slotRow(.textEncoder, value: engine.textEncoder)
-                slotRow(.mainModel, value: engine.mainModel)
-                slotRow(.clipL, value: engine.clipL)
-                slotRow(.clipG, value: engine.clipG)
-                slotRow(.t5, value: engine.t5)
-                slotRow(.vae, value: engine.vae)
-                slotRow(.lora, value: engine.loras)
-                if let note = importNote {
-                    Text(note).font(.caption2)
-                        .foregroundStyle(note.hasPrefix("已匯入") ? .green : .red)
+                Picker("模型", selection: bundleBinding) {
+                    Text("手動選擇").tag("")
+                    ForEach(store.bundles) { bundle in
+                        Text(bundle.name).tag(bundle.id)
+                    }
                 }
+                .pickerStyle(.menu)
+
+                if let bundle = appliedBundle {
+                    Text(bundle.companionSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if store.bundles.isEmpty {
+                    Text("Models 分頁還沒有可用的圖片模型。下載一組模型後會出現在這裡。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if !engine.mainModel.isEmpty {
+                    Text(URL(fileURLWithPath: engine.mainModel).lastPathComponent)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                mlxHint
+
+                if let note = importNote {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(note.hasPrefix("已") ? .green : .red)
+                }
+
                 HStack {
                     Button("載入模型") { engine.load() }
                         .buttonStyle(.borderedProminent)
@@ -173,8 +188,96 @@ struct ImageGenView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                advancedDisclosure
             }
         }
+    }
+
+    /// Says which decoder the current slots will use. This is the whole reason
+    /// the VAE slot is worth importing for a single-file checkpoint: without it
+    /// the engine decodes on the CPU, which is an order of magnitude slower.
+    @ViewBuilder
+    private var mlxHint: some View {
+        if !engine.mainModel.isEmpty && engine.vae.isEmpty {
+            Label(
+                "這個模型沒有獨立 VAE：只能用 CPU 解碼（慢 20 倍以上）。在進階匯入 VAE 就能改用 MLX 解碼。",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption2)
+            .foregroundStyle(.orange)
+        } else if !engine.vae.isEmpty {
+            Label(
+                "解碼：\(engine.vaeOnMLX ? "MLX" : (engine.vaeOnCPU ? "CPU" : "引擎")) · \(URL(fileURLWithPath: engine.vae).lastPathComponent)",
+                systemImage: engine.vaeOnMLX ? "bolt.fill" : "cpu"
+            )
+            .font(.caption2)
+            .foregroundStyle(engine.vaeOnMLX ? .green : .secondary)
+        }
+    }
+
+    private var advancedDisclosure: some View {
+        DisclosureGroup(isExpanded: $showAdvanced) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("支援 .gguf 與 .safetensors（也接受 diffusers 資料夾）")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                slotRow(.textEncoder, value: engine.textEncoder)
+                slotRow(.mainModel, value: engine.mainModel)
+                slotRow(.clipL, value: engine.clipL)
+                slotRow(.clipG, value: engine.clipG)
+                slotRow(.t5, value: engine.t5)
+                slotRow(.vae, value: engine.vae)
+                slotRow(.upscaler, value: engine.upscaler)
+                slotRow(.lora, value: engine.loras)
+                Toggle("放大用 GPU", isOn: $engine.upscaleOnGPU)
+                    .font(.callout)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("進階：個別元件")
+                .font(.callout)
+        }
+    }
+
+    private var appliedBundle: ModelBundle? {
+        guard let id = store.appliedBundleId else { return nil }
+        return store.bundles.first { $0.id == id }
+    }
+
+    /// "手動選擇" detaches without touching the slots, so a hand-tuned setup is
+    /// never wiped by accident.
+    private var bundleBinding: Binding<String> {
+        Binding(
+            get: { store.appliedBundleId ?? "" },
+            set: { id in
+                guard !id.isEmpty else {
+                    store.detachBundle()
+                    return
+                }
+                guard let bundle = store.bundles.first(where: { $0.id == id }) else { return }
+                apply(bundle)
+            }
+        )
+    }
+
+    /// Copies a bundle's files into the slots.
+    ///
+    /// Slots the bundle does not carry are cleared, except the VAE and the
+    /// upscaler: a single-file checkpoint has no VAE of its own, and a VAE the
+    /// user imported for MLX decoding is exactly what should survive selecting
+    /// another all-in-one model.
+    private func apply(_ bundle: ModelBundle) {
+        engine.textEncoder = bundle.textEncoder?.path ?? ""
+        engine.mainModel = bundle.mainModel.path
+        engine.clipL = bundle.clipL?.path ?? ""
+        engine.clipG = bundle.clipG?.path ?? ""
+        engine.t5 = bundle.t5?.path ?? ""
+        if let vae = bundle.vae { engine.vae = vae.path }
+        if let upscaler = bundle.upscaler { engine.upscaler = upscaler.path }
+        mirroredBundleId = bundle.id
+        importNote = "已套用：\(bundle.name)"
+        store.apply(bundle)
     }
 
     // The path is only ever set by the file picker: there is no text field
@@ -186,6 +289,11 @@ struct ImageGenView: View {
             HStack {
                 Text(slot.title).font(.callout)
                 Spacer()
+                if !value.isEmpty {
+                    Button("清除") { clear(slot) }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button("選擇…") { picking = slot; isPickerPresented = true }
                     .font(.callout)
             }
@@ -203,6 +311,19 @@ struct ImageGenView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+        }
+    }
+
+    private func clear(_ slot: Slot) {
+        switch slot {
+        case .textEncoder: engine.textEncoder = ""
+        case .mainModel:   engine.mainModel = ""
+        case .clipL:       engine.clipL = ""
+        case .clipG:       engine.clipG = ""
+        case .t5:          engine.t5 = ""
+        case .vae:         engine.vae = ""
+        case .upscaler:    engine.upscaler = ""
+        case .lora:        engine.loras = ""
         }
     }
 
@@ -423,15 +544,36 @@ struct ImageGenView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("結果").font(.headline)
                     ForEach(Array(engine.images.enumerated()), id: \.offset) { _, img in
-                        Image(uiImage: img)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .contextMenu {
-                                ShareLink(item: Image(uiImage: img),
-                                          preview: SharePreview("generated", image: Image(uiImage: img)))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(uiImage: img)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .contextMenu {
+                                    ShareLink(item: Image(uiImage: img),
+                                              preview: SharePreview("generated", image: Image(uiImage: img)))
+                                }
+                            HStack(spacing: 10) {
+                                Button {
+                                    engine.upscale(img)
+                                } label: {
+                                    Label("放大", systemImage: "arrow.up.left.and.arrow.down.right")
+                                }
+                                .disabled(engine.upscaler.isEmpty || engine.isUpscaling)
+                                if engine.isUpscaling {
+                                    ProgressView()
+                                    Text("放大中…").font(.caption2).foregroundStyle(.secondary)
+                                } else if engine.upscaler.isEmpty {
+                                    Text("在進階選擇 ESRGAN 模型即可放大")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                        }
+                    }
+                    if let error = engine.upscaleError {
+                        Text(error).font(.caption).foregroundStyle(.red)
                     }
                 }
             }

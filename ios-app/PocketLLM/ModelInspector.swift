@@ -82,6 +82,9 @@ struct ModelBundle: Identifiable, Hashable {
     let clipL: URL?
     let clipG: URL?
     let t5: URL?
+    /// Optional ESRGAN weights, picked up from the generated image's folder so
+    /// the upscaler slot is configured by the same download.
+    let upscaler: URL?
     let size: Int64
     let isAllInOne: Bool
 
@@ -96,6 +99,7 @@ struct ModelBundle: Identifiable, Hashable {
         if let clipL { parts.append("CLIP-L") }
         if let clipG { parts.append("CLIP-G") }
         if let t5 { parts.append("T5") }
+        if let upscaler { parts.append("ESRGAN: \(upscaler.lastPathComponent)") }
         return parts.joined(separator: " · ")
     }
 }
@@ -114,7 +118,9 @@ extension ModelInspector {
         else { return nil }
         for case let url as URL in enumerator {
             let ext = url.pathExtension.lowercased()
-            guard ["gguf", "safetensors", "sft"].contains(ext) else { continue }
+            // .pth/.pt only ever qualify as an ESRGAN model; diffusion weights
+            // in those formats are not something the engine loads.
+            guard ["gguf", "safetensors", "sft", "pth", "pt"].contains(ext) else { continue }
             weights.append(url)
         }
         guard !weights.isEmpty else { return nil }
@@ -122,12 +128,14 @@ extension ModelInspector {
         var mains: [URL] = []
         var textEncoders: [URL] = []
         var vaes: [URL] = []
+        var upscalers: [URL] = []
         var clipL: URL?
         var clipG: URL?
         var t5: URL?
 
         for url in weights {
             let name = url.lastPathComponent.lowercased()
+            let ext = url.pathExtension.lowercased()
             let relative = url.path.replacingOccurrences(of: folder.path + "/", with: "")
                 .lowercased()
 
@@ -135,7 +143,13 @@ extension ModelInspector {
             if name.contains("mmproj") || name.contains("projector")
                 || name.contains("lora") || name.contains("controlnet") { continue }
 
-            if relative.contains("vae/") || name.contains("vae")
+            if name.contains("esrgan") || name.contains("upscal")
+                || name.contains("ultrasharp") {
+                upscalers.append(url)
+            } else if !["gguf", "safetensors", "sft"].contains(ext) {
+                // A .pth that is not an upscaler is not loadable here.
+                continue
+            } else if relative.contains("vae/") || name.contains("vae")
                 || name.contains("autoencoder") || name == "ae.safetensors" {
                 vaes.append(url)
             } else if name.contains("clip_l") || name.contains("clip-l") {
@@ -154,6 +168,7 @@ extension ModelInspector {
         guard let main = mains.max(by: { fileSize($0) < fileSize($1) }) else { return nil }
         let encoder = textEncoders.max(by: { fileSize($0) < fileSize($1) })
         let vae = vaes.max(by: { fileSize($0) < fileSize($1) })
+        let upscaler = upscalers.max(by: { fileSize($0) < fileSize($1) })
         let allInOne = encoder == nil && vae == nil
 
         let bundle = ModelBundle(
@@ -166,6 +181,7 @@ extension ModelInspector {
             clipL: clipL,
             clipG: clipG,
             t5: t5,
+            upscaler: upscaler,
             size: directorySize(folder),
             isAllInOne: allInOne)
 

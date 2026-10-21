@@ -32,7 +32,12 @@ final class SdEngine: ObservableObject {
     /// engine reads the encoders and VAE out of it.
     @Published var textEncoder = ""   // llm_path (Qwen2.5-VL for Qwen-Image)
     @Published var mainModel   = ""   // diffusion_model_path, or model_path for a full checkpoint
-    @Published var vae         = ""   // vae_path
+    /// Persisted: an all-in-one checkpoint has no VAE inside it that the MLX
+    /// decoder can read, so the separate VAE the user attaches has to survive a
+    /// relaunch or it would be re-imported every session.
+    @Published var vae = SdEngine.restore("sd.vae") {   // vae_path
+        didSet { SdEngine.store(vae, "sd.vae", oldValue) }
+    }
     @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
     @Published var clipG       = ""   // clip_g_path (SDXL's OpenCLIP-G encoder)
     @Published var t5          = ""   // t5xxl_path
@@ -68,6 +73,29 @@ final class SdEngine: ObservableObject {
     /// every Metal submission stays short. This is the faster Metal path; it
     /// still runs on the GPU, so `vaeOnCPU` remains the watchdog-proof floor.
     @Published var vaeOnMLX = true
+
+    /// ESRGAN weights for the standalone upscaler. Independent of the diffusion
+    /// context, so it can be picked and used without reloading the model.
+    @Published var upscaler = SdEngine.restore("sd.upscaler") {
+        didSet { SdEngine.store(upscaler, "sd.upscaler", oldValue) }
+    }
+    /// Run the ESRGAN graph on Metal rather than on the CPU. The graph is tiled
+    /// at `upscaleTileSize`, which is what keeps a 4x pass under the watchdog.
+    @Published var upscaleOnGPU = true
+    /// Tile edge in source pixels for the upscaler. Smaller tiles bound the
+    /// graph; ESRGAN has no overlap problem, so this can be as small as fits.
+    @Published var upscaleTileSize = 128
+    @Published private(set) var isUpscaling = false
+    @Published private(set) var upscaleError: String?
+
+    private static func restore(_ key: String) -> String {
+        UserDefaults.standard.string(forKey: key) ?? ""
+    }
+
+    private static func store(_ value: String, _ key: String, _ old: String) {
+        guard value != old else { return }
+        UserDefaults.standard.set(value, forKey: key)
+    }
 
     /// Metal backend tuning, applied once when the context is created (the
     /// backend reads these environment knobs at init, not per graph). Kept
@@ -341,6 +369,89 @@ final class SdEngine: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Upscaling
+
+    /// Enlarges a finished image with the ESRGAN model in `upscaler`.
+    ///
+    /// Separate from `generate` on purpose: the model does not need reloading,
+    /// and a 4x pass on a 1024px canvas allocates hundreds of MB per tile, so
+    /// it runs off-main like the sampler does.
+    func upscale(_ source: UIImage) {
+        guard !isUpscaling else { return }
+        guard !upscaler.isEmpty else {
+            upscaleError = "尚未選擇放大模型（ESRGAN）"
+            return
+        }
+        guard let input = Self.sdImage(from: source) else {
+            upscaleError = "無法讀取這張圖片"
+            return
+        }
+        isUpscaling = true
+        upscaleError = nil
+        let model = upscaler
+        let gpu = upscaleOnGPU
+        let tile = Int32(max(32, upscaleTileSize))
+        let threads = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let started = Date()
+            var output: UIImage?
+            var failure: String?
+            do {
+                let upscaler = try SdUpscaler(
+                    model: model, tileSize: tile, threads: threads, useGPU: gpu)
+                let images: [SdImage]? = try upscaler.upscaleImage(input, factor: 4)
+                if let first = images?.first, let bitmap = Self.bitmap(from: first) {
+                    output = bitmap
+                    appLog(String(format: "sd: upscaled %dx%d -> %dx%d in %.1fs (gpu=%@ tile=%d) · %@",
+                                  input.width, input.height, first.width, first.height,
+                                  Date().timeIntervalSince(started), gpu ? "on" : "off",
+                                  Int(tile), LogStore.memoryDescription()), source: "sd")
+                } else {
+                    failure = "放大沒有輸出"
+                }
+            } catch {
+                failure = error.localizedDescription
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.isUpscaling = false
+                if let failure {
+                    self.upscaleError = failure
+                    appLog("sd upscale failed: \(failure)", source: "sd")
+                }
+                if let output { self.images.append(output) }
+            }
+        }
+    }
+
+    /// UIImage -> interleaved RGB, the only layout the ESRGAN path reads. Drawn
+    /// through a 32-bit context because 24-bit bitmap contexts are not reliably
+    /// supported; the alpha bytes are dropped afterwards.
+    nonisolated static func sdImage(from image: UIImage) -> SdImage? {
+        guard let cg = image.cgImage else { return nil }
+        let w = cg.width, h = cg.height
+        guard w > 0, h > 0 else { return nil }
+        var rgba = [UInt8](repeating: 255, count: w * h * 4)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                  data: &rgba, width: w, height: h, bitsPerComponent: 8,
+                  bytesPerRow: w * 4, space: space,
+                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        var rgb = [UInt8](repeating: 0, count: w * h * 3)
+        for i in 0..<(w * h) {
+            let s = i * 4, d = i * 3
+            rgb[d] = rgba[s]
+            rgb[d + 1] = rgba[s + 1]
+            rgb[d + 2] = rgba[s + 2]
+        }
+        return SdImage.image(withWidth: Int32(w), height: Int32(h), channel: 3,
+                             pixels: Data(rgb))
     }
 
     /// sd_image_t carries interleaved RGB(A) bytes; UIImage wants a CGImage.
