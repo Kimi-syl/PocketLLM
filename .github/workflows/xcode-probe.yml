@@ -1,0 +1,38 @@
+name: xcode-probe
+
+# Temporary: reports which Xcodes the macos-26 image ships and whether Xcode 27
+# can be installed without Apple ID credentials. Delete after reading.
+on:
+  push:
+    paths:
+      - ".github/workflows/xcode-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - name: Host
+        run: |
+          sw_vers
+          uname -m
+          df -h /
+      - name: Installed Xcodes
+        run: |
+          ls -1 /Applications | grep -i xcode || true
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-version || true
+      - name: xcodes tool
+        run: |
+          which xcodes || true
+          xcodes version || true
+          echo "--- list (needs Apple ID) ---"
+          timeout 90 xcodes list 2>&1 | head -40 || echo "list failed: $?"
+      - name: Credentials in env
+        run: env | grep -iE "apple|asc|xcodes" || echo "none"
+      - name: Preview download reachable?
+        run: |
+          curl -sS -o /dev/null -w "developer portal: %{http_code}\n" \
+            https://developer.apple.com/download/all/ || true
+          curl -sS -o /dev/null -w "xcode release feed: %{http_code}\n" \
+            https://developerservices2.apple.com/services/download || true
