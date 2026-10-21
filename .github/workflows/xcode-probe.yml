@@ -9,41 +9,58 @@ on:
   workflow_dispatch:
 
 jobs:
-  probe:
+  macos26:
     runs-on: macos-26
     steps:
       - name: Host
+        run: sw_vers; uname -m
+      - name: Toolchain
         run: |
-          sw_vers
-          uname -m
-          df -h /
-      - name: Installed Xcodes
+          ls -1 /Applications | grep -i '^Xcode' || true
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
+          ls "$SDK/System/Library/Frameworks" | grep -i -E '^CoreAI' || echo "no CoreAI.framework"
+      - name: Swift import probe
         run: |
-          ls -1 /Applications | grep -i xcode || true
-          xcodebuild -version || true
-          xcrun --sdk iphoneos --show-sdk-version || true
-      - name: xcodes tool
+          cat > /tmp/t.swift <<'SWIFT'
+          #if canImport(CoreAI)
+          import CoreAI
+          print("CoreAI: importable")
+          #else
+          print("CoreAI: absent")
+          #endif
+          SWIFT
+          swift /tmp/t.swift
+
+  xcode27:
+    runs-on: xcode-27
+    steps:
+      - name: Host
+        run: sw_vers; uname -m
+      - name: Toolchain
         run: |
-          which xcodes || true
-          xcodes version || true
-          echo "--- auth state ---"
-          ls -la ~/Library/Application\ Support/xcodes 2>/dev/null || echo "no xcodes state dir"
-          echo "--- list ---"
-          set +e
-          xcodes list > /tmp/list.txt 2>&1
-          echo "exit=$?"
-          head -40 /tmp/list.txt
-      - name: Credentials in env
-        run: env | grep -iE "apple|asc|xcodes" || echo "none"
-      - name: Try install (expect auth failure)
+          ls -1 /Applications | grep -i '^Xcode' || true
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
+          ls "$SDK/System/Library/Frameworks" | grep -i -E '^CoreAI' || echo "no CoreAI.framework"
+      - name: Swift import probe
         run: |
-          set +e
-          printf 'n\n' | xcodes install 27.0 > /tmp/install.txt 2>&1
-          echo "exit=$?"
-          head -40 /tmp/install.txt
-      - name: Preview download reachable?
+          cat > /tmp/t.swift <<'SWIFT'
+          #if canImport(CoreAI)
+          import CoreAI
+          print("CoreAI: importable")
+          #else
+          print("CoreAI: absent")
+          #endif
+          SWIFT
+          swift /tmp/t.swift
+      - name: CoreAI availability
         run: |
-          curl -sS -o /dev/null -w "developer portal: %{http_code}\n" \
-            https://developer.apple.com/download/all/ || true
-          curl -sS -o /dev/null -w "xcode release feed: %{http_code}\n" \
-            https://developerservices2.apple.com/services/download || true
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          F="$SDK/System/Library/Frameworks/CoreAI.framework/CoreAI.tbd"
+          ls -la "$F" 2>/dev/null || true
+          grep -m5 -i "ios" "$F" 2>/dev/null | head -10 || true
