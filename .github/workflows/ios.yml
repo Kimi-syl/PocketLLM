@@ -17,6 +17,16 @@ on:
       - "app/src/main/cpp/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
+    # Defaults keep every push on the pinned GA image. A manual dispatch can run
+    # the same build on the `xcode-27` preview image (macOS 27, Xcode 27) to see
+    # what a newer SDK changes before it becomes the default.
+    inputs:
+      runner:
+        description: "Runner image label"
+        default: "macos-26"
+      xcode:
+        description: "Xcode major version"
+        default: "26"
 
 # A superseded run on the same ref is wasted compute; cancel it rather than let
 # two full builds race for the same caches.
@@ -32,12 +42,15 @@ env:
   # Image generation engine. Pinned like llama.cpp so both platforms
   # build the same code.
   SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+  # Part of the DerivedData cache key: a tree built by a different Xcode must
+  # not be reused, or a preview run would poison the pinned one.
+  XCODE_MAJOR: ${{ inputs.xcode || '26' }}
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
 jobs:
   ios:
-    runs-on: macos-26
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     # MLX and its Metal shaders add enough compile time to both app builds that
     # 40 minutes stopped being comfortable headroom.
     timeout-minutes: 70
@@ -51,7 +64,7 @@ jobs:
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "26"
+          xcode-version: ${{ env.XCODE_MAJOR }}
 
       # ---------------------------------------------------------------- caches
       #
@@ -149,9 +162,9 @@ jobs:
           path: |
             ios-app/build
             ios-app/build-device
-          key: ${{ runner.os }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
+          key: ${{ runner.os }}-xcode${{ env.XCODE_MAJOR }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
           restore-keys: |
-            ${{ runner.os }}-deriveddata-
+            ${{ runner.os }}-xcode${{ env.XCODE_MAJOR }}-deriveddata-
 
       # Homebrew bottles/downloads for the only formula this job installs.
       - name: Restore Homebrew downloads
@@ -428,7 +441,7 @@ jobs:
           path: |
             ios-app/build
             ios-app/build-device
-          key: ${{ runner.os }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
+          key: ${{ runner.os }}-xcode${{ env.XCODE_MAJOR }}-deriveddata-${{ hashFiles('ios-app/PocketLLM/**/*.swift', 'ios-app/project.yml') }}
 
       - name: Save Homebrew downloads
         if: always()
