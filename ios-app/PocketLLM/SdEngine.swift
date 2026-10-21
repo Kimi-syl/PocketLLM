@@ -322,6 +322,7 @@ final class SdEngine: ObservableObject {
         let mlxVae = vaeOnMLX && !vae.isEmpty
         let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !mlxVae, vaeTileSize)
         let vaePathForMLX = vae
+        let modelName = URL(fileURLWithPath: mainModel).lastPathComponent
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()
@@ -403,7 +404,7 @@ final class SdEngine: ObservableObject {
                     let archive = GalleryStore.Meta(
                         prompt: promptText, negative: negativeText,
                         width: w, height: h, steps: n, seed: s0,
-                        model: URL(fileURLWithPath: model).lastPathComponent)
+                        model: modelName)
                     self.lastArchive = archive
                     for image in decoded {
                         GalleryStore.shared.save(image, meta: archive)
