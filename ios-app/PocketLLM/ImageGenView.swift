@@ -208,12 +208,34 @@ struct ImageGenView: View {
             .font(.caption2)
             .foregroundStyle(.orange)
         } else if !engine.vae.isEmpty {
+            let name = URL(fileURLWithPath: engine.vae).lastPathComponent
+            let problem = mlxIncompatibility
+            let mode = problem == nil
+                ? (engine.vaeOnMLX ? "MLX" : (engine.vaeOnCPU ? "CPU" : "引擎"))
+                : "引擎"
             Label(
-                "解碼：\(engine.vaeOnMLX ? "MLX" : (engine.vaeOnCPU ? "CPU" : "引擎")) · \(URL(fileURLWithPath: engine.vae).lastPathComponent)",
-                systemImage: engine.vaeOnMLX ? "bolt.fill" : "cpu"
+                problem.map { "解碼：\(mode) · \($0)" } ?? "解碼：\(mode) · \(name)",
+                systemImage: problem == nil ? (engine.vaeOnMLX ? "bolt.fill" : "cpu")
+                                           : "exclamationmark.triangle.fill"
             )
             .font(.caption2)
-            .foregroundStyle(engine.vaeOnMLX ? .green : .secondary)
+            .foregroundStyle(problem == nil ? (engine.vaeOnMLX ? .green : .secondary) : .orange)
+        }
+    }
+
+    /// Why the selected VAE cannot use the MLX decoder, in a few words. Reading
+    /// the header is cheap, so this can be asked on every redraw.
+    private var mlxIncompatibility: String? {
+        guard engine.vaeOnMLX, !engine.vae.isEmpty else { return nil }
+        guard let info = try? MLXVae.inspect(engine.vae) else { return "讀不到這個 VAE" }
+        switch info.layout {
+        case .diffusers2D:
+            return "2D SD/FLUX VAE，MLX 只支援 3D Wan/Qwen VAE"
+        case .unknown:
+            return "這個檔案沒有 VAE 解碼器"
+        case .wan3D:
+            guard let problem = info.problem else { return nil }
+            return "\(info.latentChannels) 通道，MLX 只支援 16 通道"
         }
     }
 

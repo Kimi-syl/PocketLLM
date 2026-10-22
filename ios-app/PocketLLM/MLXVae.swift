@@ -17,10 +17,12 @@ import MLXNN
 /// unlike mlx-python. Everything inside this file is NHWC; the public entry
 /// point converts to and from `[N, C, H, W]`.
 ///
-/// Weight names follow the engine's block paths (`conv2`, `decoder.middle.0`,
-/// `decoder.upsamples.N`, ...), which is what the VAE files it accepts contain.
-/// A leading wrapper prefix (e.g. `first_stage_model.` or `vae.`) is detected
-/// from the file rather than assumed.
+/// Weight names follow the engine's block paths (`conv2`, `decoder.conv1`,
+/// `decoder.middle.0`, `decoder.upsamples.N`, ...). Files exported by diffusers
+/// use the same blocks under different names (`post_quant_conv`, `conv_in`,
+/// `norm_out`, `conv_out`), so the key space is rewritten into the engine's
+/// vocabulary once at load. A leading wrapper prefix (`first_stage_model.`,
+/// `vae.`) is detected from the file rather than assumed.
 final class MLXVae {
     enum VaeError: LocalizedError {
         case unreadable(String)
@@ -36,13 +38,118 @@ final class MLXVae {
         }
     }
 
+    /// Read from the safetensors header without touching the tensor data, so it
+    /// is cheap enough to run before a generation rather than after it fails.
+    struct Inspection {
+        enum Layout {
+            /// The 3D causal Wan/Qwen decoder this class implements.
+            case wan3D
+            /// A 2D SD/SDXL/FLUX decoder: same idea, unrelated block layout.
+            case diffusers2D
+            case unknown
+        }
+
+        let layout: Layout
+        let prefix: String
+        let latentChannels: Int
+
+        /// Why this file cannot be decoded here, or nil when it can.
+        var problem: String? {
+            switch layout {
+            case .wan3D:
+                guard latentChannels == 0 || latentChannels == 16 else {
+                    return "unsupported \(latentChannels)-channel VAE (Wan 2.2 TI2V?); only the 16-channel Wan/Qwen VAE is implemented"
+                }
+                return nil
+            case .diffusers2D:
+                return "2D diffusers VAE (SD/SDXL/FLUX) — the MLX decoder only implements the 3D Wan/Qwen VAE; switch MLX decode off so the engine decodes it"
+            case .unknown:
+                return "no decoder.conv1/conv_in tensors — not a VAE file (a full checkpoint has no decoder)"
+            }
+        }
+    }
+
+    /// `nil` when the file can be decoded here, otherwise the reason.
+    static func decodeProblem(_ path: String) -> String? {
+        do { return try inspect(path).problem } catch { return error.localizedDescription }
+    }
+
+    static func inspect(_ path: String) throws -> Inspection {
+        var shapes: [String: [Int]]
+        do {
+            shapes = try headerShapes(path)
+        } catch {
+            throw VaeError.unreadable("\(path): \(error.localizedDescription)")
+        }
+
+        func lookup(_ anchors: [String]) -> (String, [Int])? {
+            for anchor in anchors {
+                if let shape = shapes[anchor] { return ("", shape) }
+                if let hit = shapes.first(where: { $0.key.hasSuffix("." + anchor) }) {
+                    return (String(hit.key.dropLast(anchor.count)), hit.value)
+                }
+            }
+            return nil
+        }
+
+        if let (prefix, shape) = lookup(["decoder.conv1.weight"]) {
+            return Inspection(layout: .wan3D, prefix: prefix,
+                              latentChannels: shape.count > 1 ? shape[1] : 0)
+        }
+        if let (prefix, shape) = lookup(["decoder.conv_in.weight"]) {
+            let is2D = shapes.keys.contains {
+                $0.hasPrefix(prefix + "decoder.up_blocks.") || $0.hasPrefix(prefix + "decoder.mid_block.")
+            }
+            return Inspection(layout: is2D ? .diffusers2D : .wan3D, prefix: prefix,
+                              latentChannels: shape.count > 1 ? shape[1] : 0)
+        }
+        return Inspection(layout: .unknown, prefix: "", latentChannels: 0)
+    }
+
+    /// The safetensors header: u64 length, then a JSON object of
+    /// `name -> {dtype, shape, data_offsets}`. Reading 8 bytes and one JSON blob
+    /// is what makes inspection cheap; the tensors themselves are mmapped later.
+    private static func headerShapes(_ path: String) throws -> [String: [Int]] {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw VaeError.unreadable(path)
+        }
+        defer { try? handle.close() }
+        guard let lengthBytes = try handle.read(upToCount: 8), lengthBytes.count == 8 else {
+            throw VaeError.unreadable("truncated header")
+        }
+        let length = lengthBytes.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        guard length > 2, length < 64 * 1024 * 1024 else {
+            throw VaeError.unreadable("bad header length \(length)")
+        }
+        guard let json = try handle.read(upToCount: Int(length)),
+              let object = try JSONSerialization.jsonObject(with: json) as? [String: Any] else {
+            throw VaeError.unreadable("header is not valid JSON")
+        }
+        var out: [String: [Int]] = [:]
+        for (key, value) in object where key != "__metadata__" {
+            guard let entry = value as? [String: Any] else { continue }
+            if let shape = entry["shape"] as? [Int] { out[key] = shape }
+        }
+        guard !out.isEmpty else { throw VaeError.unreadable("no tensors in header") }
+        return out
+    }
+
     private(set) var weights: [String: MLXArray]
-    private let prefix: String
 
     /// Compute dtype. The engine decodes in f32 (bf16 files are converted on
     /// load) and the widest stage is only ~230 MB, so match it instead of
     /// introducing a bf16 path the Metal kernels may or may not cover.
     static let compute: DType = .float32
+
+    /// Alternate spellings of the same modules, as `(diffusers, engine)`. Only
+    /// the decoder is aliased; the encoder is dropped at load.
+    private static let aliases: [(String, String)] = [
+        ("decoder.conv_in.",   "decoder.conv1."),
+        ("decoder.norm_out.",  "decoder.head.0."),
+        ("decoder.conv_out.",  "decoder.head.2."),
+        ("post_quant_conv.",   "conv2."),
+        ("post_quant.",        "conv2."),
+    ]
 
     let zDim: Int
     let dim: Int
@@ -65,6 +172,11 @@ final class MLXVae {
         guard FileManager.default.fileExists(atPath: vaePath) else {
             throw VaeError.unreadable(vaePath)
         }
+        // Classify from the header first: a 2D SD/FLUX VAE or a full checkpoint
+        // used to surface much later as a missing tensor, after minutes of work.
+        let info = try Self.inspect(vaePath)
+        if let problem = info.problem { throw VaeError.unsupported(problem) }
+
         let arrays: [String: MLXArray]
         do {
             arrays = try loadArrays(url: URL(fileURLWithPath: vaePath))
@@ -73,13 +185,17 @@ final class MLXVae {
         }
         guard !arrays.isEmpty else { throw VaeError.unreadable(vaePath) }
 
-        // Locate the wrapper prefix by the one key every Wan-family VAE has.
-        let anchor = "decoder.conv1.weight"
-        guard let key = arrays.keys.first(where: { $0 == anchor || $0.hasSuffix("." + anchor) }) else {
-            throw VaeError.missing(anchor)
+        // The encoder half is never used; dropping it keeps the lookup table
+        // (and the mmapped pages it pins) to the decoder.
+        var normalized: [String: MLXArray] = [:]
+        normalized.reserveCapacity(arrays.count / 2)
+        for (key, value) in arrays where key.hasPrefix(info.prefix) {
+            normalized[Self.engineName(String(key.dropFirst(info.prefix.count)))] = value
         }
-        self.prefix = String(key.dropLast(anchor.count))
-        self.weights = arrays
+        guard normalized["decoder.conv1.weight"] != nil else {
+            throw VaeError.missing("decoder.conv1.weight")
+        }
+        self.weights = normalized
         self.zDim = zDim
         self.dim = dim
         self.dimMult = dimMult
@@ -89,12 +205,23 @@ final class MLXVae {
     // MARK: - Tensor lookup
 
     private func has(_ name: String) -> Bool {
-        weights[prefix + name] != nil
+        weights[name] != nil
     }
 
     private func tensor(_ name: String) throws -> MLXArray {
-        guard let a = weights[prefix + name] else { throw VaeError.missing(prefix + name) }
+        guard let a = weights[name] else { throw VaeError.missing(name) }
         return a
+    }
+
+    private static func engineName(_ key: String) -> String {
+        for (from, to) in Self.aliases where key.hasPrefix(from) {
+            return to + key.dropFirst(from.count)
+        }
+        return key
+    }
+
+    private func bias(_ name: String) -> MLXArray? {
+        weights[name + ".bias"]
     }
 
     /// PyTorch keeps convolution weights as `[out, in, kt, kh, kw]`; mlx-swift
@@ -115,7 +242,7 @@ final class MLXVae {
     private func conv(_ x: MLXArray, _ name: String, padding: Int) throws -> MLXArray {
         let w = try convWeight(name + ".weight")
         var y = conv2d(x, w, stride: 1, padding: .init(padding))
-        if let b = weights[prefix + name + ".bias"] {
+        if let b = bias(name) {
             y = y + b.asType(Self.compute).reshaped([1, 1, 1, b.size])
         }
         // Evaluate per convolution. MLX is lazy, so without this the whole

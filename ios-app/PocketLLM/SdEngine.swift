@@ -319,7 +319,13 @@ final class SdEngine: ObservableObject {
         // MLX owns the decode, so the engine's own tiling must be off.
         // Only an actual separate VAE file can be handed to MLX; the engine then
         // leaves the latents untouched for it.
-        let mlxVae = vaeOnMLX && !vae.isEmpty
+        // A VAE the MLX decoder cannot read must not take the MLX path: the
+        // engine would skip its own decode and the run would end with no image.
+        var mlxVae = vaeOnMLX && !vae.isEmpty
+        if mlxVae, let problem = MLXVae.decodeProblem(vae) {
+            appLog("sd: MLX decode unavailable, engine will decode: \(problem)", source: "sd")
+            mlxVae = false
+        }
         let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !mlxVae, vaeTileSize)
         let vaePathForMLX = vae
         let modelName = URL(fileURLWithPath: mainModel).lastPathComponent

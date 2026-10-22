@@ -952,6 +952,31 @@ Run `39585090061` is the compile evidence; the first attempt failed because the 
 does not capture the view's model slot, so the name is now read on the main actor
 (`SdEngine.swift:325`) and passed in. Artifact 46.3 MB.
 
+### 2.27 The MLX VAE now reads diffusers-exported Wan/Qwen VAEs (2026-10-21)
+
+`MLXVae` was hard-wired to the names the engine writes (`decoder.conv1`, `decoder.head.0`,
+`decoder.head.2`, `conv2`), and it found the wrapper prefix by searching for
+`decoder.conv1.weight`. A VAE taken from the Hub — `Qwen/Qwen-Image/vae/diffusion_pytorch_model.safetensors`,
+any `AutoencoderKLWan` export — uses the same blocks under diffusers' names, so the search failed
+and the run died with `MLX VAE: tensor missing: decoder.conv1.weight`, after the engine had already
+skipped its own decode because `mlx_vae` was set. The image was lost, and the message said nothing
+about the real cause.
+
+Two changes:
+
+- **Name normalisation.** The safetensors header is read first (8 bytes of length plus one JSON
+  blob), the prefix is found from either `decoder.conv1` or `decoder.conv_in`, and every key is
+  rewritten into the engine's vocabulary: `conv_in`→`conv1`, `norm_out`→`head.0`,
+  `conv_out`→`head.2`, `post_quant_conv`→`conv2`. Encoder tensors are dropped at the same time.
+  The block structure of `AutoencoderKLWan`/`AutoencoderKLQwenImage` is the same residual +
+  attention + resample stack the port already ran, so this is a rename, not a reimplementation.
+- **Classification before generation.** The header also says which family the file belongs to.
+  A 2D diffusers VAE (SD, SDXL, FLUX: `decoder.mid_block`/`decoder.up_blocks`) and anything
+  without a decoder are rejected with a reason instead of a missing key, and `SdEngine.generate`
+  now clears `mlxVae` in that case so the engine decodes as usual — a wrong VAE costs a log line,
+  not a render. The VAE hint in 「進階」 says the same thing before the run starts (orange,
+  `解碼：引擎 · 2D SD/FLUX VAE…`). Wan 2.2's 48-channel VAE is caught by the channel check.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1019,6 +1044,7 @@ and for the ggml guard.
 | Converter correctness | round-trip through the official `gguf` reader |
 | Android Kotlin compiles | `:app:compileReleaseKotlin` BUILD SUCCESSFUL |
 | iOS gallery archives generated images | compile only (run after §2.26); the file layout is asserted in `GalleryStore.reload`/`delete` |
+| diffusers-format Wan/Qwen VAE keys | header inspection asserted against the two naming schemes; the decode itself is the same code that produced the 2 s 512×512 device run |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is
