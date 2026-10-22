@@ -977,6 +977,49 @@ Two changes:
   not a render. The VAE hint in 「進階」 says the same thing before the run starts (orange,
   `解碼：引擎 · 2D SD/FLUX VAE…`). Wan 2.2's 48-channel VAE is caught by the channel check.
 
+### 2.28 FLUX.3 Klein gets an engine, not a re-vendor (2026-10-22)
+
+The question was whether `unsloth/flux-3-image-klein-GGUF` runs here. Its header was read directly
+(Range request, GGUF metadata): 359 tensors, `emb_in.image.weight` 128x3072, `txt_in.weight`
+20480x3072, `txt_mode_blocks.{0..4}`, `content_mode_blocks.{image,image_cond}.{0..4}`,
+`single_blocks.{0..27}`, `general.architecture = flux`, `model = f3-image-small`. That is exactly
+upstream's `Flux3Config` (hidden 3072, context 20480, depth 5, single_depth 28), so the file is the
+DiT alone — no text encoder, no VAE.
+
+The engine was the blocker, not memory. iOS does not build `third_party/sd` at all (that tree only
+serves the Android JNI, and Android CI clones upstream master unpinned); `ios.yml` pins a commit and
+builds the dylib from a fresh clone. The pin was `3f8527a4` (2026-09-27), 58 commits behind
+upstream's FLUX.3 merge `8cd731e7b` (PR #2143, 2026-10-15), and its version detection knows
+FLUX.2/flux2-klein but nothing for FLUX.3 — so such a checkpoint was not refused with a reason; it
+would be classified `VERSION_COUNT` and fail inside init.
+
+Memory was the part of the earlier answer that was wrong. `sd_ctx_params_t` here has `max_vram`,
+`auto_fit` (default true), lazy parameter loading, prefetch and a residency manager, and `SdBridge`
+already pins `backend = "te=cpu"` and frees the llama.cpp Metal context first. That is why a 2-bit
+Qwen-Image 2.1 at ~6.5 GB loads on the same device: the DiT is streamed under a VRAM budget instead
+of being resident in full. FLUX.3 is smaller on that axis (Q3_K_M 3.0 GB, Q4_K_M 3.5 GB), with the
+4B Qwen3-VL encoder on the CPU.
+
+So the change is the pin plus a verification that the surrounding assumptions still hold:
+
+- `8cd731e7b`'s `include/stable-diffusion.h` is additive for everything the bridge uses (new
+  `batched_cfg`, `flash_attn_mode`, `conv_direct_mode`; one `convert_*` signature grew LoRA
+  arguments; `sd_image_t`, `sd_ctx_params_init`, the upscaler API and `new_sd_ctx` are unchanged).
+- both local patches still apply — the Metal command-buffer one with fuzz 1, the latents dump
+  cleanly — and the workflow's `grep` guards still find their markers.
+- `te=cpu` still parses (`ggml_extend_backend.cpp` maps `te`/`llm`/`t5`), and FLUX.3 needs no
+  `llm_vision_path` for text-to-image.
+- no app-side plumbing: the Qwen3-VL GGUF lands in the existing 「文字編碼器」 slot (`llm_path`) and
+  `ae.safetensors` is already classified as a VAE by `ModelInspector`, which also matches `qwen3`
+  as an encoder name.
+- the MLX VAE path stays off by itself: the FLUX.2/3 VAE is 2D with 32 latent channels, which §2.27
+  now rejects at load, so `mlxVae` is cleared and the engine decodes.
+
+Run `39735240219` is green and the shipped `libsdcpp_ios.dylib` contains the new symbols
+(`Flux3::Flux3Runner`, `Flux3::Block`, `Flux3FlowDenoiser`). Settings for a first run: 16 steps,
+CFG 1.0, euler (`flux-3-image-klein-base` instead wants CFG 3.5, 20 steps). Not verified: an actual
+FLUX.3 render — that needs the three files on a device.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1045,6 +1088,7 @@ and for the ggml guard.
 | Android Kotlin compiles | `:app:compileReleaseKotlin` BUILD SUCCESSFUL |
 | iOS gallery archives generated images | compile only (run after §2.26); the file layout is asserted in `GalleryStore.reload`/`delete` |
 | diffusers-format Wan/Qwen VAE keys | header inspection asserted against the two naming schemes; the decode itself is the same code that produced the 2 s 512×512 device run |
+| FLUX.3 support is in the shipped dylib | run `39735240219`: `strings` on `Frameworks/libsdcpp_ios.dylib` shows `Flux3::Flux3Runner`, `Flux3::Block`, `Flux3FlowDenoiser` |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is
