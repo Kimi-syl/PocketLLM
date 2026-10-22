@@ -41,7 +41,13 @@ env:
   LLAMA_COMMIT: f280b26983ad0fdb705a0d9ebf0503e76f2899b0
   # Image generation engine. Pinned like llama.cpp so both platforms
   # build the same code.
-  SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+  # 8cd731e7b = upstream "add FLUX.3 Image Klein and Klein Base support"
+  # (#2143). The older pin had no VERSION_FLUX3, so FLUX.3 loaded as
+  # VERSION_COUNT and stalled in model init. The header is additive, both
+  # local patches still apply, and FLUX.3 needs no new app-side plumbing: its
+  # text encoder is a Qwen3-VL GGUF (the existing llm_path slot) and its VAE is
+  # the FLUX.2 ae.safetensors (the existing vae_path slot).
+  SD_COMMIT: 8cd731e7b4667eb8f40a153315b9a7125d09a58d
   # Part of the DerivedData cache key: a tree built by a different Xcode must
   # not be reused, or a preview run would poison the pinned one.
   XCODE_MAJOR: ${{ inputs.xcode || '26' }}
