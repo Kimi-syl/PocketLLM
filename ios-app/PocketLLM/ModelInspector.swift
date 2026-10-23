@@ -88,7 +88,22 @@ struct ModelBundle: Identifiable, Hashable {
     let size: Int64
     let isAllInOne: Bool
 
-    var isComplete: Bool { isAllInOne || (textEncoder != nil && vae != nil) }
+    /// A conditioner is any of the encoder slots: the LLM/Qwen slot for newer
+    /// models, T5 or CLIP-L/G for SD3/SDXL-style ones.
+    var hasConditioner: Bool {
+        textEncoder != nil || t5 != nil || clipL != nil || clipG != nil
+    }
+
+    /// Slots this bundle can fill. All-in-one means "this file needs nothing
+    /// else"; whether that is *true* for a bare diffusion transformer is decided
+    /// from its tensor names by `ModelAudit`.
+    var isComplete: Bool { isAllInOne || (hasConditioner && vae != nil) }
+
+    /// `author/repo`. Scans rebuild the name from the folder, which encodes the
+    /// slash as `--`.
+    var repoId: String {
+        name.contains("/") ? name : name.replacingOccurrences(of: "--", with: "/")
+    }
 
     /// What "已自動配置" is claiming, spelled out for the row.
     var companionSummary: String {

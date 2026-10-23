@@ -41,10 +41,10 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | MLX backend + model browser | working |
 | TTFT / tokens-per-second metrics | built |
 | Logs tab (persistent, crash-surviving) | working |
-| Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; bundle picker; bundled ESRGAN upscale with 2-4x and a gated Core AI path (§2.22-§2.24) |
+| Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; bundle picker; bundled ESRGAN upscale with 2-4x and a gated Core AI path (§2.22-§2.24); gallery (§2.26); FLUX.3 (§2.28); import classifies GGUF architecture and a split repo reports its missing parts before and after download (§2.29) |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
-Latest artifact: `PocketLLM-device-unsigned` from run `39544450824` (`408e7c2`, post-v0.6.0).
+Latest artifact: `PocketLLM-device-unsigned` from run `39735240219` (`4a00278`, FLUX.3 pin).
 
 ### Known-open
 
@@ -1020,6 +1020,47 @@ Run `39735240219` is green and the shipped `libsdcpp_ios.dylib` contains the new
 CFG 1.0, euler (`flux-3-image-klein-base` instead wants CFG 3.5, 20 steps). Not verified: an actual
 FLUX.3 render — that needs the three files on a device.
 
+### 2.29 Import classifies what it is given, and a split repo says what it still needs (2026-10-22)
+
+Two holes in the model path, both of which end in "nothing usable appears":
+
+- Import assumed a directory was an MLX model. `importModel` sent every folder to
+  `importMLXFolder`, which demands `config.json` and safetensors at the root — so a picked
+  diffusion folder (a downloaded `split_files/` directory, or a hand-assembled one) was refused,
+  and its weights never reached the bundle scan.
+- `ModelBundle.isComplete` required `textEncoder` (the `llm_path` slot) **and** `vae`. SDXL and SD3
+  checkpoints ship `clip_l`/`clip_g`/`t5xxl` instead, so a complete SD3 download was classified
+  incomplete and silently dropped. The slot matcher had always filled those slots; only the
+  completeness predicate ignored them.
+
+The classification now comes from the file itself rather than the container. `GGUFHeader` reads the
+header only — magic, version, KV pairs, then the tensor-info list — with arrays skipped instead of
+materialised, because a text model's KV section carries its whole tokenizer. `general.architecture`
+is matched against `ModelAudit.imageArchitectures` (`flux`, `flux2`, `flux3`, `sd1`…`sdxl`,
+`qwen_image`, `wan`, `hidream`, …), so a chat GGUF is still a chat GGUF no matter which folder it
+was in, and a lone diffusion transformer is filed into a folder of its own and recorded as an image
+repo so a TE and a VAE imported later can pair with it.
+
+The same reader answers "is this really all-in-one?". A single-file checkpoint carries
+`first_stage_model.*`/`decoder.*` and `cond_stage_model.*`/`te.*`/`text_encoders.*` inside the same
+file; a bare DiT (`unsloth/flux-3-image-klein-GGUF` is the live example, §2.28) carries neither. So
+`ModelAudit.missingParts` reads 4096 tensor names and reports the missing halves instead of trusting
+the extension. Incomplete repositories now appear under 「Image models · 不完整」 with the exact
+missing labels, instead of being invisible until every file happens to land.
+
+Before the download, `RepoFilesView` fetches the README (`HuggingFaceClient.readme`) and
+`RepoAudit` decides whether the repository is split — a `diffusion_models/` or `split_files/` folder,
+or README prose that names a companion file or Hub link — then lists which of the selected files
+still leaves a part missing, with the README's companion links as buttons. `ModelStore.finishRepo`
+refuses to auto-configure an incomplete bundle, which matters because a bare DiT loads far enough
+to fail inside the engine (a wasted multi-minute attempt) rather than at the slot picker.
+
+No new failure mode is introduced by trusting the tensor names: an unreadable header is treated as
+loadable, i.e. the old behaviour, rather than nagging about every file the reader does not know.
+
+Compile-only: run after this entry. The GGUF walk is asserted against the headers inspected by
+hand in §2.28 (359 tensors, `general.architecture = flux`).
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1089,6 +1130,7 @@ and for the ggml guard.
 | iOS gallery archives generated images | compile only (run after §2.26); the file layout is asserted in `GalleryStore.reload`/`delete` |
 | diffusers-format Wan/Qwen VAE keys | header inspection asserted against the two naming schemes; the decode itself is the same code that produced the 2 s 512×512 device run |
 | FLUX.3 support is in the shipped dylib | run `39735240219`: `strings` on `Frameworks/libsdcpp_ios.dylib` shows `Flux3::Flux3Runner`, `Flux3::Block`, `Flux3FlowDenoiser` |
+| GGUF header reader matches a real file | `GGUFHeader` walks the same 359-tensor `flux` header read by hand in §2.28; import classification and `missingParts` are compile-only until a device run |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is
@@ -1183,7 +1225,10 @@ replaced the single dual-ABI APK.
    generate with an all-in-one checkpoint (CPU decode), attach `qwen_image_vae.safetensors` in
    「進階」 and confirm the hint turns green 「解碼：MLX」 and the decode drops to seconds, and
    finally press 放大 on a result to time a 4x ESRGAN pass on Metal. The VAE survives a relaunch;
-   the 清除 button is the test for a stale one.
+   the 清除 button is the test for a stale one. Then the §2.29 paths: import a lone
+   `flux-3-…-Q4_K_M.gguf` and confirm it lands under 「不完整」 naming TE + VAE, browse a split repo and
+   confirm the orange warning names the companion before downloading, then add the missing files and
+   confirm the row moves up and auto-configures.
 4. **iOS gallery on device** — §2.26 compiles the tab, the store and the save hooks. On device:
    generate once, switch tabs and relaunch, and confirm the picture is still in 「圖庫」 with its
    prompt; upscale it and check the entry is marked 4×; delete it and confirm all three files go.

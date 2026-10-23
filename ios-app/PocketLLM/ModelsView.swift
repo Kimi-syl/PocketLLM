@@ -142,8 +142,9 @@ struct ModelsView: View {
     }
 
     private var bundlesSection: some View {
+        Group {
         Section {
-            if store.bundles.isEmpty {
+            if store.bundles.isEmpty && store.incomplete.isEmpty {
                 Text("No image models yet. Pick Image below; a download that comes with its text encoder and VAE is matched automatically when the last file lands.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -180,6 +181,35 @@ struct ModelsView: View {
         } footer: {
             Text("Tap a bundle to point every image-engine slot at its files. Matching is by filename: a main model plus a text encoder and a VAE, or a single all-in-one checkpoint.")
                 .font(.footnote)
+        }
+        if !store.incomplete.isEmpty {
+            Section {
+                ForEach(store.incomplete) { bundle in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(bundle.name).font(.body).lineLimit(2)
+                        Text("缺少 " + ModelAudit.missingParts(in: bundle)
+                            .map(\.label).joined(separator: "、"))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Text(humanReadableBytes(Int(bundle.size)))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            store.delete(bundle)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                }
+            } header: {
+                Text("Image models · 不完整")
+            } footer: {
+                Text("這些 repo 只下載了擴散模型本身。回到該 repo 補齊缺少的檔案，齊了會自動移到上面並配置給引擎。")
+                    .font(.footnote)
+            }
+        }
         }
     }
 
@@ -328,6 +358,7 @@ struct RepoFilesView: View {
     @State private var selected: Set<String> = []
     @State private var failure: String?
     @State private var isLoading = true
+    @State private var audit: RepoAudit?
 
     private var repoId: String { selection.repoId }
 
@@ -340,6 +371,9 @@ struct RepoFilesView: View {
             }
             if let failure {
                 Text(failure).font(.footnote).foregroundStyle(.red)
+            }
+            if let audit, !audit.missing(in: selected).isEmpty {
+                splitWarning(audit)
             }
             if !files.isEmpty {
                 selectionBar
@@ -356,6 +390,28 @@ struct RepoFilesView: View {
         .navigationTitle(repoId)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+    }
+
+    /// A diffusion repo that ships its parts separately: the download is only
+    /// useful when the text encoder and the VAE come along too, so say that
+    /// before several gigabytes are queued rather than after a failed load.
+    private func splitWarning(_ audit: RepoAudit) -> some View {
+        let missing = audit.missing(in: selected)
+        return Section {
+            Text("這個 repo 是分開包裝的：還需要 "
+                + missing.map(\.label).joined(separator: "、"))
+                .font(.footnote)
+                .foregroundStyle(.orange)
+            ForEach(audit.links) { link in
+                Link(destination: link.url) {
+                    Label(link.title, systemImage: "arrow.up.right.square")
+                        .font(.callout)
+                }
+            }
+        } footer: {
+            Text("缺的檔案不在這裡時，點上面的連結到對應頁面下載；所有檔案到齊後會自動配置給圖片引擎。")
+                .font(.footnote)
+        }
     }
 
     private var selectionBar: some View {
@@ -384,6 +440,11 @@ struct RepoFilesView: View {
         failure = nil
         do {
             let all = try await store.tree(repoId: repoId)
+            // The README is fetched after the listing: it is small, and asking
+            // for both at once would put a non-Sendable store into two child
+            // tasks for no real gain.
+            let readme = await store.readme(repoId: repoId)
+            audit = ModelAudit.audit(files: all, readme: readme, kind: selection.kind)
             let accepted = all.filter { selection.kind.accepts(path: $0.path) }
             files = accepted
             roots = RepoTree.build(from: accepted)

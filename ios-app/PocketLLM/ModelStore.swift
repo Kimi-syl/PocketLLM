@@ -96,6 +96,10 @@ final class ModelStore: ObservableObject {
     @Published private(set) var installed: [InstalledModel] = []
     /// Repositories whose downloaded files matched a loadable slot set.
     @Published private(set) var bundles: [ModelBundle] = []
+    /// Image repositories that are recognisably image models but lack a
+    /// conditioner or a VAE. Listed with what to fetch instead of vanishing
+    /// until every file happens to arrive.
+    @Published private(set) var incomplete: [ModelBundle] = []
     /// Which bundle was last applied to the image engine, so the row can say so.
     @Published private(set) var appliedBundleId: String?
     @Published private(set) var downloads: [ActiveDownload] = []
@@ -170,12 +174,109 @@ final class ModelStore: ObservableObject {
         }
 
         if isDirectory.boolValue {
-            return await importMLXFolder(url)
+            return await importFolder(url)
         }
         guard url.pathExtension.lowercased() == "gguf" else {
             return "not a .gguf file or an MLX model folder"
         }
+        // A diffusion GGUF is half of a model, so it is filed into a folder of
+        // its own and remembered as an image repo; that is what lets the bundle
+        // scan pair it with a text encoder and a VAE imported later.
+        if isImageGGUF(url) {
+            let stem = url.deletingPathExtension().lastPathComponent
+            let destination = uniqueDirectory(named: stem)
+            try? fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+            let failure = await performCopy(
+                source: url, destination: destination.appendingPathComponent(url.lastPathComponent),
+                label: url.lastPathComponent)
+            if failure == nil {
+                markImageRepo(destination)
+                notice = imageImportReport(folder: destination)
+                refresh()
+            }
+            return failure
+        }
         return await importGGUFFile(url)
+    }
+
+    /// Classifies a picked directory instead of assuming MLX: a diffusion
+    /// bundle (its files stay together so the slot matcher can pair them), an
+    /// MLX model, or a folder of chat GGUFs the normal scan will pick up.
+    private func importFolder(_ url: URL) async -> String? {
+        let fileManager = FileManager.default
+        let hasConfig = fileManager.fileExists(
+            atPath: url.appendingPathComponent("config.json").path)
+        if hasConfig && hasWeights(in: url) {
+            return await importMLXFolder(url)
+        }
+        guard containsWeights(url) else {
+            return "\(url.lastPathComponent) has no .gguf or .safetensors weights"
+        }
+
+        let destination = uniqueDirectory(named: url.lastPathComponent)
+        let failure = await performCopy(source: url, destination: destination,
+                                       label: url.lastPathComponent)
+        guard failure == nil else { return failure }
+
+        if let bundle = ModelInspector.bundle(in: destination),
+           isImageBundle(bundle) {
+            markImageRepo(destination)
+            notice = imageImportReport(folder: destination)
+        }
+        refresh()
+        return nil
+    }
+
+    /// A bundle belongs to the image engine when there are companion slots, or
+    /// when its main file is a known diffusion architecture (or at least named
+    /// like one).
+    private func isImageBundle(_ bundle: ModelBundle) -> Bool {
+        if bundle.hasConditioner || bundle.vae != nil { return true }
+        if let image = ggufArchitectureIsImage(bundle.mainModel) { return image }
+        return ModelAudit.isImageWeight(bundle.mainModel.lastPathComponent)
+    }
+
+    private func isImageGGUF(_ url: URL) -> Bool {
+        ggufArchitectureIsImage(url) ?? false
+    }
+
+    /// Reads `general.architecture`; nil when the file is not a GGUF whose
+    /// header can be read.
+    private func ggufArchitectureIsImage(_ url: URL) -> Bool? {
+        guard url.pathExtension.lowercased() == "gguf",
+              let info = GGUFHeader.read(url),
+              let arch = info.architecture?.lowercased() else { return nil }
+        return ModelAudit.imageArchitectures.contains(arch)
+    }
+
+    private func containsWeights(_ folder: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: nil) else { return false }
+        for case let url as URL in enumerator {
+            let ext = url.pathExtension.lowercased()
+            if ext == "gguf" || ext == "safetensors" || ext == "sft" { return true }
+        }
+        return false
+    }
+
+    private func markImageRepo(_ folder: URL) {
+        imageRepos.insert(folder.lastPathComponent)
+        UserDefaults.standard.set(Array(imageRepos), forKey: Self.imageReposKey)
+    }
+
+    /// What to say after importing a folder the image engine may want: either
+    /// the slots that were filled, or the parts still missing.
+    private func imageImportReport(folder: URL) -> String {
+        guard let bundle = ModelInspector.bundle(in: folder) else {
+            return "imported \(folder.lastPathComponent): no image weights matched"
+        }
+        let missing = ModelAudit.missingParts(in: bundle)
+        guard missing.isEmpty else {
+            return "imported \(bundle.name), but it is missing "
+                + missing.map(\.label).joined(separator: "、")
+        }
+        configure(bundle, automatic: true)
+        return "imported \(bundle.name) — \(bundle.companionSummary)"
     }
 
     private func importMLXFolder(_ url: URL) async -> String? {
@@ -255,6 +356,7 @@ final class ModelStore: ObservableObject {
         let fileManager = FileManager.default
         var found: [InstalledModel] = []
         var foundBundles: [ModelBundle] = []
+        var foundIncomplete: [ModelBundle] = []
 
         let entries = (try? fileManager.contentsOfDirectory(
             at: root,
@@ -282,16 +384,26 @@ final class ModelStore: ObservableObject {
             guard values?.isDirectory == true else { continue }
             if fileManager.fileExists(
                 atPath: entry.appendingPathComponent("config.json").path) { continue }
-            guard let bundle = ModelInspector.bundle(in: entry) else { continue }
-            // A lone GGUF is only an image bundle if it came from that category;
-            // otherwise it is a text model that merely sits in its own folder.
-            guard bundle.isComplete, !bundle.isAllInOne || imageRepos.contains(bundle.id) else {
-                continue
+            let repoName = entry.lastPathComponent.replacingOccurrences(of: "--", with: "/")
+            guard let bundle = ModelInspector.bundle(in: entry, repoId: repoName) else { continue }
+            // A lone GGUF is only an image bundle if it came from that
+            // category; otherwise it is a text model that merely sits in its
+            // own folder. Deciding this before reading tensors keeps a chat
+            // model's header off the scan path.
+            let listed = imageRepos.contains(bundle.id)
+            if bundle.isAllInOne && !listed { continue }
+            if ModelAudit.missingParts(in: bundle).isEmpty {
+                foundBundles.append(bundle)
+            } else if listed {
+                foundIncomplete.append(bundle)
             }
-            foundBundles.append(bundle)
         }
 
-        let bundleFolders = Set(foundBundles.map { $0.folder.standardizedFileURL.path })
+        // Files inside a half-downloaded bundle stay out of the chat list too:
+        // they are image weights, not models anyone can chat with.
+        let bundleFolders = Set((foundBundles + foundIncomplete).map {
+            $0.folder.standardizedFileURL.path
+        })
         if let enumerator = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -311,6 +423,9 @@ final class ModelStore: ObservableObject {
         found.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         installed = found
         bundles = foundBundles.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        incomplete = foundIncomplete.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
@@ -398,6 +513,12 @@ final class ModelStore: ObservableObject {
     /// The repository's whole tree; the browser builds folders from the paths.
     func tree(repoId: String) async throws -> [HuggingFaceClient.FileEntry] {
         try await client.tree(repoId: repoId)
+    }
+
+    /// README text for the browser's completeness warning; nil is a normal
+    /// answer (many repos have none).
+    func readme(repoId: String) async -> String? {
+        await client.readme(repoId: repoId)
     }
 
     // MARK: - Downloads
@@ -515,10 +636,24 @@ final class ModelStore: ObservableObject {
         guard kind == .image else { return }
         let folderName = Self.repoFolderName(repoId)
         let folder = root.appendingPathComponent(folderName, isDirectory: true)
-        guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else { return }
+        guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else {
+            notice = "\(repoId): 下載完成，但找不到可用的主模型檔"
+            return
+        }
+        // Do not point the engine at half a model: a bare diffusion
+        // transformer loads far enough to fail inside the engine, and the
+        // missing parts are a download the user can still make.
+        let missing = ModelAudit.missingParts(in: bundle)
+        guard missing.isEmpty else {
+            notice = "\(repoId) 還缺少 " + missing.map(\.label).joined(separator: "、")
+                + "；在該 repo 頁面補下載後會自動配置"
+            refresh()
+            return
+        }
         // The repository the user just finished downloading is the one they
         // want to generate with, so the slots follow it without another tap.
         configure(bundle, automatic: true)
+        refresh()
     }
 
     private func upsert(_ download: ActiveDownload) {

@@ -203,6 +203,16 @@ struct HuggingFaceClient {
             .sorted { $0.realSize < $1.realSize }
     }
 
+    /// The repository's README. A split image repository documents which
+    /// companions (text encoder, VAE) it expects and where they live, and that
+    /// prose is the only place that is written down.
+    func readme(repoId: String, revision: String = "main") async -> String? {
+        guard let url = URL(string: "https://huggingface.co/\(repoId)/resolve/\(revision)/README.md")
+        else { return nil }
+        guard let data = try? await get(url) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     // MARK: - Downloads
 
     static func downloadURL(repoId: String, path: String, revision: String = "main") -> URL? {
