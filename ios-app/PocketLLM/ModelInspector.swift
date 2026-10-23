@@ -111,9 +111,9 @@ struct ModelBundle: Identifiable, Hashable {
         var parts: [String] = []
         if let textEncoder { parts.append("TE: \(textEncoder.lastPathComponent)") }
         if let vae { parts.append("VAE: \(vae.lastPathComponent)") }
-        if let clipL { parts.append("CLIP-L") }
-        if let clipG { parts.append("CLIP-G") }
-        if let t5 { parts.append("T5") }
+        if clipL != nil { parts.append("CLIP-L") }
+        if clipG != nil { parts.append("CLIP-G") }
+        if t5 != nil { parts.append("T5") }
         if let upscaler { parts.append("ESRGAN: \(upscaler.lastPathComponent)") }
         return parts.joined(separator: " · ")
     }

@@ -234,7 +234,7 @@ struct ImageGenView: View {
         case .unknown:
             return "這個檔案沒有 VAE 解碼器"
         case .wan3D:
-            guard let problem = info.problem else { return nil }
+            guard info.problem != nil else { return nil }
             return "\(info.latentChannels) 通道，MLX 只支援 16 通道"
         }
     }

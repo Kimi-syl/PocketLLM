@@ -233,7 +233,7 @@ final class ModelStore: ObservableObject {
     private func isImageBundle(_ bundle: ModelBundle) -> Bool {
         if bundle.hasConditioner || bundle.vae != nil { return true }
         if let image = ggufArchitectureIsImage(bundle.mainModel) { return image }
-        return ModelAudit.isImageWeight(bundle.mainModel.lastPathComponent)
+        return ModelAudit.isImageWeight(path: bundle.mainModel.lastPathComponent)
     }
 
     private func isImageGGUF(_ url: URL) -> Bool {
