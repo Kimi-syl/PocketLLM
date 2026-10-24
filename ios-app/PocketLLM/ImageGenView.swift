@@ -545,14 +545,24 @@ struct ImageGenView: View {
                 Button("取消") { engine.cancel() }
                     .disabled(!isRunning)
             }
+            // The bar outlives the run on purpose: filled green when the image
+            // was produced, filled red with the engine's message when it was not,
+            // so the outcome is readable without opening the log.
             switch engine.phase {
             case .loading:
                 Text("載入中…").font(.caption).foregroundStyle(.secondary)
             case .running(let step, let steps):
                 ProgressView(value: Double(step), total: Double(max(steps, 1)))
                 Text("\(step)/\(steps)").font(.caption).monospacedDigit()
+            case .succeeded:
+                ProgressView(value: 1, total: 1).tint(.green)
+                Text("完成").font(.caption).foregroundStyle(.green)
             case .failed(let msg):
-                Text(msg).font(.caption).foregroundStyle(.red)
+                ProgressView(value: 1, total: 1).tint(.red)
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
             case .idle:
                 EmptyView()
             }

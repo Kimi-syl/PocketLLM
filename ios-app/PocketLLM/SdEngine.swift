@@ -20,6 +20,8 @@ final class SdEngine: ObservableObject {
         case idle
         case loading
         case running(step: Int, steps: Int)
+        /// Kept after the run so the progress bar can stay filled and green.
+        case succeeded
         case failed(String)
     }
 
@@ -219,7 +221,10 @@ final class SdEngine: ObservableObject {
         // there is nothing for it to read, so fall back to a CPU decode rather
         // than leaving the GPU decode path (and its watchdog) armed.
         let mlxOn = vaeOnMLX
-        let vaeCPU = vaeOnCPU || (mlxOn && vae.isEmpty)
+        // CPU whenever MLX is armed, not only when it has no file: if the MLX
+        // decode fails the run is retried with the engine's own decoder, and
+        // that fallback must not be the GPU decode the watchdog kills.
+        let vaeCPU = vaeOnCPU || mlxOn
         let threadCount = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 1))
         // Opened before the context is created, not after: new_sd_ctx is where a
         // Metal load aborts, so a log file opened afterwards would miss the only
@@ -337,7 +342,7 @@ final class SdEngine: ObservableObject {
             appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d, vaeTiling %@%d) · %@",
                           w, h, n, c, b, tile ? "on " : "off ", tile ? tileSize : 0,
                           LogStore.memoryDescription()), source: "sd")
-            let result: [SdImage]?
+            var result: [SdImage]?
             do {
                 result = try ctx.generatePrompt(
                     promptText, negative: negativeText.isEmpty ? nil : negativeText,
@@ -366,6 +371,7 @@ final class SdEngine: ObservableObject {
                           LogStore.memoryDescription()), source: "sd")
 
             var decoded: [UIImage] = []
+            var mlxFailure: String?
             if mlxVae {
                 // The engine wrote the latents and skipped its decode; run the
                 // MLX decoder on them. Any existing images are ignored because
@@ -391,27 +397,71 @@ final class SdEngine: ObservableObject {
                                   String(describing: pixels.shape), Date().timeIntervalSince(t0),
                                   GPU.peakMemory / 1_048_576,
                                   LogStore.memoryDescription()), source: "sd")
-                    if let ui = SdEngine.bitmap(from: pixels) { decoded.append(ui) }
+                    if let ui = SdEngine.bitmap(from: pixels) {
+                        decoded.append(ui)
+                    } else {
+                        mlxFailure = "MLX 解碼結果無法轉成圖片"
+                    }
                 } catch {
+                    mlxFailure = error.localizedDescription
                     appLog("sd: mlx vae failed: \(error.localizedDescription)", source: "sd")
                 }
+                if decoded.isEmpty, mlxFailure == nil {
+                    mlxFailure = "MLX 解碼沒有輸出"
+                }
             }
+
+            // Final fallback: the engine decodes the same latents itself, on the
+            // CPU. Sampling runs again (same seed, so the same latents) because
+            // the public API has no decode-only entry point, but the context was
+            // created with `vae=cpu` whenever MLX is armed, so this cannot end
+            // in the GPU watchdog that made MLX the default decoder.
+            if let failure = mlxFailure {
+                appLog("sd: MLX 解碼失敗（\(failure)），改用 CPU 解碼重跑", source: "sd")
+                do {
+                    result = try ctx.generatePrompt(
+                        promptText, negative: negativeText.isEmpty ? nil : negativeText,
+                        width: Int32(w), height: Int32(h), steps: Int32(n),
+                        cfg: c, distilledGuidance: 0, seed: s0, batch: Int32(b),
+                        sampleMethod: Int32(sm), scheduler: Int32(sc),
+                        clipSkip: Int32(cs2),
+                        vaeTiling: true, vaeTileSize: Int32(tileSize),
+                        mlxVae: false,
+                        loras: loraSpec.isEmpty ? nil : loraSpec)
+                } catch {
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.pollTask?.cancel()
+                        self.pollTask = nil
+                        let message = "MLX 解碼失敗（\(failure)），CPU 解碼也失敗：\(error.localizedDescription)"
+                        self.phase = .failed(message)
+                        appLog("sd cpu fallback failed: \(message)", source: "sd")
+                    }
+                    return
+                }
+            }
+
             for (i, img) in (result ?? []).enumerated() {
                 appLog("sd: decoding image \(i) \(img.width)x\(img.height)x\(img.channel)", source: "sd")
                 if let ui = SdEngine.bitmap(from: img) { decoded.append(ui) }
             }
             let secs = Date().timeIntervalSince(started)
+            // Snapshot: the failure text is only needed for the final message,
+            // and a `let` keeps it out of the sendable capture.
+            let mlxFailureText = mlxFailure
 
             await MainActor.run {
                 guard let self else { return }
                 self.pollTask?.cancel()
                 self.pollTask = nil
                 if decoded.isEmpty {
-                    self.phase = .failed("未產生影像")
-                    appLog("sd generate failed: no output", source: "sd")
+                    let message = mlxFailureText.map { "MLX 解碼失敗（\($0)），CPU 解碼後仍未產生影像" }
+                        ?? "未產生影像"
+                    self.phase = .failed(message)
+                    appLog("sd generate failed: \(message)", source: "sd")
                 } else {
                     self.images = decoded
-                    self.phase = .idle
+                    self.phase = .succeeded
                     let archive = GalleryStore.Meta(
                         prompt: promptText, negative: negativeText,
                         width: w, height: h, steps: n, seed: s0,

@@ -1178,6 +1178,26 @@ safetensors loads, but is ~12 GB and needs the separate Qwen3-VL encoder).
 
 ---
 
+### 2.33 A failed MLX decode falls back to the engine on CPU, and the bar keeps the outcome (2026-10-24)
+
+The MLX decode was a single point of failure: when it threw (the first Z-Image run died on
+`post_quant_conv`), the engine had already skipped its own decode, so the run ended with no image at
+all. Now a failure is not final:
+
+- `SdEngine.generate` records the MLX error, then re-runs `generatePrompt` with `mlxVae: false`. The
+  context is created with `vae=cpu` whenever MLX decode is enabled (`vaeCPU = vaeOnCPU || mlxOn`),
+  so that second decode is the CPU path that cannot hit the GPU watchdog — the reason MLX exists.
+  Sampling runs again because the public API has no decode-only entry point; the seed is unchanged,
+  so the latents are the same ones MLX failed on.
+- The fallback uses `vaeTiling: true` at the user's tile size: on CPU the cost is time, not a
+  watchdog kill, and tiling keeps peak memory down at 1024².
+- `Phase` gained `.succeeded`, which is kept after the run instead of resetting to `.idle`. The
+  progress bar therefore stays visible: filled green with 「完成」 on success, filled red with the
+  error text (selectable) on failure. The message is also logged as `sd generate failed: …`, and a
+  failed fallback says so explicitly (`MLX 解碼失敗（…），CPU 解碼也失敗：…`).
+
+---
+
 ## 3. Recurring failure patterns
 
 These account for the large majority of the session's bugs and are worth stating explicitly.
@@ -1253,6 +1273,7 @@ and for the ggml guard.
 | a VAE is recognised without "vae" in the name | role table built from diffusers/sd.cpp tensor prefixes; `kl-f8-anime2`, `ae`, `diffusion_pytorch_model` in `vae/` all resolve to `.vae` |
 | 2D VAE layout matches the engine | pinned `auto_encoder_kl.hpp`: `GroupNorm32` (32 groups, 1e-6), mid = resnet/attention/resnet, `up_blocks.N.resnets.{0..2}` + `upsamplers.0.conv`, `conv_norm_out` -> silu -> `conv_out`; LDM spelling mapped from `name_conversion.cpp:1057-1120` |
 | engine writes VAE-space latents for the 2D decoder | patch applies to `8cd731e7b` (`patch -p1 --dry-run` clean); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
+| MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | the Iris GGUF is the reason `new_sd_ctx` fails | real headers: `Iris-3B-Q3_K_S`/`Q4_K_S` store `blocks.0.mlp_x.w2.weight` as `[256, 68260]`; `speridlabs/iris-3b` safetensors has `[2560, 6826]`; sd.cpp registers `w2` as `[mlp_dim, hidden]` from `w1.ne[1]` (`iris.hpp:42`) |
 
