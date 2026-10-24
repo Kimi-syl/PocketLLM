@@ -230,7 +230,7 @@ struct ImageGenView: View {
         guard let info = try? MLXVae.inspect(engine.vae) else { return "讀不到這個 VAE" }
         switch info.layout {
         case .diffusers2D:
-            return "2D SD/FLUX VAE，MLX 只支援 3D Wan/Qwen VAE"
+            return info.problem
         case .unknown:
             return "這個檔案沒有 VAE 解碼器"
         case .wan3D:

@@ -145,8 +145,12 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     NSString *base = [SdContext latentsDumpPath];
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm removeItemAtPath:base error:nil];
+    // The 2D VAE reads the ".vae" sibling the engine writes next to each blob.
+    [fm removeItemAtPath:[base stringByAppendingString:@".vae"] error:nil];
     for (int i = 1; i < 64; i++) {
-        [fm removeItemAtPath:[base stringByAppendingFormat:@".%d", i] error:nil];
+        NSString *path = [base stringByAppendingFormat:@".%d", i];
+        [fm removeItemAtPath:path error:nil];
+        [fm removeItemAtPath:[path stringByAppendingString:@".vae"] error:nil];
     }
 }
 

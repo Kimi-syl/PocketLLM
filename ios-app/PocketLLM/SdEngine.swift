@@ -369,17 +369,22 @@ final class SdEngine: ObservableObject {
             if mlxVae {
                 // The engine wrote the latents and skipped its decode; run the
                 // MLX decoder on them. Any existing images are ignored because
-                // this path is defined by the latents file.
-                let url = URL(fileURLWithPath: SdContext.latentsDumpPath())
+                // this path is defined by the latents file. A 2D VAE reads the
+                // ".vae" sibling: those latents already carry the engine's scale
+                // factor and shift, which the decoder cannot derive from weights.
                 let t0 = Date()
                 do {
+                    let info = try MLXVae.inspect(vaePathForMLX)
+                    let dump = SdContext.latentsDumpPath()
+                        + (info.layout == .diffusers2D ? ".vae" : "")
+                    let url = URL(fileURLWithPath: dump)
                     // MLX's buffer pool otherwise grows to a large fraction of
                     // the GPU working set and counts against jetsam next to the
                     // engine's weights.
                     GPU.set(cacheLimit: 64 * 1024 * 1024)
                     GPU.resetPeakMemory()
                     let latents = try MLXVae.latents(from: url)
-                    appLog("sd: mlx vae latents \(latents.shape)", source: "sd")
+                    appLog("sd: mlx vae latents \(latents.shape) (\(info.layout == .diffusers2D ? "2d" : "3d"))", source: "sd")
                     let vae = try MLXVae(vaePath: vaePathForMLX)
                     let pixels = try vae.decode(latents: latents)
                     appLog(String(format: "sd: mlx vae decoded %@ in %.1fs · peak %d MB · %@",

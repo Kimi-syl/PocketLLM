@@ -2,8 +2,9 @@ import Foundation
 import MLX
 import MLXNN
 
-/// Decoder-only Swift port of the 3D causal VAE used by Qwen-Image and Wan 2.1
-/// (the VAE Anima ships as `qwen_image_vae.safetensors`).
+/// Decoder-only Swift port of the two VAE families the engine can hand over:
+/// the 3D causal VAE used by Qwen-Image and Wan 2.1 (`qwen_image_vae.safetensors`)
+/// and the 2D `AutoencoderKL` used by SD1.5, SDXL and FLUX (`ae.safetensors`).
 ///
 /// Only the single-frame path is implemented, because image generation decodes
 /// one latent frame. That matters for correctness: every `CausalConv3d` here has
@@ -41,7 +42,7 @@ final class MLXVae {
     /// Read from the safetensors header without touching the tensor data, so it
     /// is cheap enough to run before a generation rather than after it fails.
     struct Inspection {
-        enum Layout {
+        enum Layout: Equatable {
             /// The 3D causal Wan/Qwen decoder this class implements.
             case wan3D
             /// A 2D SD/SDXL/FLUX decoder: same idea, unrelated block layout.
@@ -62,7 +63,10 @@ final class MLXVae {
                 }
                 return nil
             case .diffusers2D:
-                return "2D diffusers VAE (SD/SDXL/FLUX) — the MLX decoder only implements the 3D Wan/Qwen VAE; switch MLX decode off so the engine decodes it"
+                guard latentChannels > 0 else {
+                    return "2D diffusers VAE without a readable latent channel count"
+                }
+                return nil
             case .unknown:
                 return "no decoder.conv1/conv_in tensors — not a VAE file (a full checkpoint has no decoder)"
             }
@@ -97,8 +101,11 @@ final class MLXVae {
                               latentChannels: shape.count > 1 ? shape[1] : 0)
         }
         if let (prefix, shape) = lookup(["decoder.conv_in.weight"]) {
+            // diffusers names (`up_blocks`, `mid_block`) or the original LDM ones
+            // (`up.N.block.M`, `mid.block_1`); both decode the same way.
             let is2D = shapes.keys.contains {
                 $0.hasPrefix(prefix + "decoder.up_blocks.") || $0.hasPrefix(prefix + "decoder.mid_block.")
+                    || $0.hasPrefix(prefix + "decoder.up.") || $0.hasPrefix(prefix + "decoder.mid.")
             }
             return Inspection(layout: is2D ? .diffusers2D : .wan3D, prefix: prefix,
                               latentChannels: shape.count > 1 ? shape[1] : 0)
@@ -151,6 +158,40 @@ final class MLXVae {
         ("post_quant.",        "conv2."),
     ]
 
+    /// Original-LDM decoder spelling -> diffusers spelling, so the 2D decoder
+    /// below only ever sees one vocabulary. The SD1.5 VAE shipped in LDM form
+    /// (`decoder.up.3.block.0`, `mid.attn_1`); SDXL/FLUX files are already
+    /// diffusers-shaped.
+    private static let ldm2dAliases: [(String, String)] = {
+        var out: [(String, String)] = [
+            ("decoder.mid.block_1.", "decoder.mid_block.resnets.0."),
+            ("decoder.mid.block_2.", "decoder.mid_block.resnets.1."),
+            ("decoder.mid.attn_1.",  "decoder.mid_block.attentions.0."),
+            ("decoder.norm_out.",    "decoder.conv_norm_out."),
+        ]
+        for i in 0..<4 {
+            for j in 0..<3 {
+                out.append(("decoder.up.\(3 - i).block.\(j).",
+                            "decoder.up_blocks.\(i).resnets.\(j)."))
+            }
+            if i < 3 {
+                out.append(("decoder.up.\(3 - i).upsample.",
+                            "decoder.up_blocks.\(i).upsamplers.0.conv."))
+            }
+        }
+        return out
+    }()
+
+    /// LDM attention module names, applied only inside `attentions.0.`.
+    private static let ldm2dAttention: [(String, String)] = [
+        ("norm.",     "group_norm."),
+        ("q.",        "to_q."),
+        ("k.",        "to_k."),
+        ("v.",        "to_v."),
+        ("proj_out.", "to_out.0."),
+    ]
+
+    let layout: Inspection.Layout
     let zDim: Int
     let dim: Int
     let dimMult: [Int]
@@ -190,13 +231,24 @@ final class MLXVae {
         var normalized: [String: MLXArray] = [:]
         normalized.reserveCapacity(arrays.count / 2)
         for (key, value) in arrays where key.hasPrefix(info.prefix) {
-            normalized[Self.engineName(String(key.dropFirst(info.prefix.count)))] = value
+            let bare = String(key.dropFirst(info.prefix.count))
+            normalized[info.layout == .diffusers2D ? Self.diffusersName(bare) : Self.engineName(bare)] = value
         }
-        guard normalized["decoder.conv1.weight"] != nil else {
-            throw VaeError.missing("decoder.conv1.weight")
+        if info.layout == .diffusers2D {
+            guard normalized["post_quant_conv.weight"] != nil else {
+                throw VaeError.missing("post_quant_conv.weight")
+            }
+            guard normalized["decoder.conv_in.weight"] != nil else {
+                throw VaeError.missing("decoder.conv_in.weight")
+            }
+        } else {
+            guard normalized["decoder.conv1.weight"] != nil else {
+                throw VaeError.missing("decoder.conv1.weight")
+            }
         }
         self.weights = normalized
-        self.zDim = zDim
+        self.layout = info.layout
+        self.zDim = info.layout == .diffusers2D ? info.latentChannels : zDim
         self.dim = dim
         self.dimMult = dimMult
         self.numResBlocks = numResBlocks
@@ -218,6 +270,29 @@ final class MLXVae {
             return to + key.dropFirst(from.count)
         }
         return key
+    }
+
+    /// Rewrites an original-LDM key into the diffusers vocabulary the 2D decoder
+    /// below reads. Keys already in diffusers form pass through untouched.
+    private static func diffusersName(_ key: String) -> String {
+        var k = key
+        for (from, to) in Self.ldm2dAliases {
+            if let r = k.range(of: from) {
+                k.replaceSubrange(r, with: to)
+                break
+            }
+        }
+        if let r = k.range(of: "attentions.0.") {
+            let head = String(k[..<r.upperBound])
+            let tail = String(k[r.upperBound...])
+            for (from, to) in Self.ldm2dAttention where tail.hasPrefix(from) {
+                return head + to + tail.dropFirst(from.count)
+            }
+        }
+        if let r = k.range(of: "nin_shortcut.") {
+            k.replaceSubrange(r, with: "conv_shortcut.")
+        }
+        return k
     }
 
     private func bias(_ name: String) -> MLXArray? {
@@ -325,7 +400,12 @@ final class MLXVae {
         // a bad tensor name or an allocation failure lands in the app log
         // instead of killing the process.
         try withError { _ in
-            try decodeChecked(latents: latents)
+            switch layout {
+            case .diffusers2D:
+                return try decode2D(latents)
+            default:
+                return try decodeChecked(latents: latents)
+            }
         }
     }
 
@@ -398,6 +478,143 @@ final class MLXVae {
         x = rmsNorm(x, try? tensor("decoder.head.0.gamma"))
         x = silu(x)
         x = try conv(x, "decoder.head.2", padding: 1)
+        x = clip(x, min: -1.0, max: 1.0).asType(.float32)
+        eval(x)
+        return x
+    }
+
+    // MARK: - 2D diffusers decoder (SD1.5 / SDXL / FLUX)
+
+    /// GroupNorm over channels, `groups` fixed at 32 like every 2D VAE, with the
+    /// engine's `eps` (GroupNorm32 uses 1e-6).
+    private func groupNorm2D(_ x: MLXArray, _ name: String, groups: Int = 32, eps: Float = 1e-6) throws -> MLXArray {
+        let (n, h, w, c) = (x.shape[0], x.shape[1], x.shape[2], x.shape[3])
+        let g = c % groups == 0 ? groups : 1
+        // [n, hw, g, c/g]: the group axis is kept separate so the mean can be
+        // taken with the single-axis form the rest of this file already uses.
+        var y = x.reshaped([n, h * w, g, c / g])
+        let mean = y.mean(axis: 3, keepDims: true).mean(axis: 1, keepDims: true)
+        y = y - mean
+        let variance = (y * y).mean(axis: 3, keepDims: true).mean(axis: 1, keepDims: true)
+        y = y / sqrt(variance + eps)
+        y = y.reshaped([n, h, w, c])
+        if let gamma = weights[name + ".weight"] {
+            y = y * gamma.asType(Self.compute).reshaped([1, 1, 1, c])
+        }
+        if let beta = weights[name + ".bias"] {
+            y = y + beta.asType(Self.compute).reshaped([1, 1, 1, c])
+        }
+        return y
+    }
+
+    private func conv2D(_ x: MLXArray, _ name: String, padding: Int) throws -> MLXArray {
+        let w = try tensor(name + ".weight").asType(Self.compute).transposed(0, 2, 3, 1)
+        var y = conv2d(x, w, stride: 1, padding: .init(padding))
+        if let b = weights[name + ".bias"] {
+            y = y + b.asType(Self.compute).reshaped([1, 1, 1, b.size])
+        }
+        eval(y)
+        return y
+    }
+
+    private func linear2D(_ x: MLXArray, _ name: String) throws -> MLXArray {
+        var w = try tensor(name + ".weight").asType(Self.compute)
+        // The original LDM attention projects with 1x1 convolutions, diffusers
+        // with Linear layers; both reduce to the same [out, in] matrix.
+        if w.ndim == 4 { w = w.reshaped([w.shape[0], w.shape[1]]) }
+        var y = matmul(x, w.transposed(1, 0))
+        if let b = weights[name + ".bias"] {
+            y = y + b.asType(Self.compute)
+        }
+        return y
+    }
+
+    private func resnet2D(_ x: MLXArray, _ p: String) throws -> MLXArray {
+        var h = try groupNorm2D(x, p + "norm1")
+        h = silu(h)
+        h = try conv2D(h, p + "conv1", padding: 1)
+        h = try groupNorm2D(h, p + "norm2")
+        h = silu(h)
+        h = try conv2D(h, p + "conv2", padding: 1)
+        var skip = x
+        if has(p + "conv_shortcut.weight") {
+            skip = try conv2D(x, p + "conv_shortcut", padding: 0)
+        }
+        return skip + h
+    }
+
+    /// Single-head self-attention over the spatial positions, as diffusers'
+    /// `Attention` block does for a VAE: GroupNorm, three projections, softmax
+    /// with 1/sqrt(C), then the output projection and a residual.
+    private func attention2D(_ x: MLXArray, _ p: String) throws -> MLXArray {
+        let (n, h, w, c) = (x.shape[0], x.shape[1], x.shape[2], x.shape[3])
+        var y = try groupNorm2D(x, p + "group_norm")
+        y = y.reshaped([n, h * w, c])
+        let q = try linear2D(y, p + "to_q")
+        let k = try linear2D(y, p + "to_k")
+        let v = try linear2D(y, p + "to_v")
+        let scale = 1.0 / sqrt(Float(c))
+        let probs = softmax(matmul(q * scale, k.transposed(0, 2, 1)), axis: 2)
+        var out = matmul(probs, v)
+        out = try linear2D(out, p + "to_out.0")
+        out = out.reshaped([n, h, w, c])
+        eval(out)
+        return out + x
+    }
+
+    /// `post_quant_conv` -> `conv_in` -> mid -> every `up_blocks` entry, with an
+    /// upsample after each block that has one. Block and resnet counts come from
+    /// the weights rather than a hard-coded config, because SD1.5, SDXL and FLUX
+    /// all use this shape and only differ in channel counts.
+    private func decode2D(_ z: MLXArray) throws -> MLXArray {
+        var latents = z
+        if latents.ndim == 5 {
+            guard latents.shape[2] == 1 else {
+                throw VaeError.unsupported("only single-frame decode is implemented (got T=\(latents.shape[2]))")
+            }
+            latents = latents.squeezed(axis: 2)
+        }
+        guard latents.ndim == 4 else { throw VaeError.unsupported("latents must be 4D or 5D") }
+        guard latents.shape[1] == zDim else {
+            throw VaeError.unsupported("expected \(zDim) latent channels, got \(latents.shape[1])")
+        }
+
+        // The caller passes VAE-space latents (the engine applied its scale
+        // factor and shift before writing the blob), so there is no scaling here.
+        var x = latents.transposed(0, 2, 3, 1).asType(Self.compute)
+        x = try conv2D(x, "post_quant_conv", padding: 0)
+        x = try conv2D(x, "decoder.conv_in", padding: 1)
+        eval(x)
+
+        x = try resnet2D(x, "decoder.mid_block.resnets.0.")
+        x = try attention2D(x, "decoder.mid_block.attentions.0.")
+        x = try resnet2D(x, "decoder.mid_block.resnets.1.")
+        eval(x)
+
+        var block = 0
+        let t0 = Date()
+        while has("decoder.up_blocks.\(block).resnets.0.conv1.weight") {
+            var index = 0
+            while has("decoder.up_blocks.\(block).resnets.\(index).conv1.weight") {
+                x = try resnet2D(x, "decoder.up_blocks.\(block).resnets.\(index).")
+                index += 1
+            }
+            if has("decoder.up_blocks.\(block).upsamplers.0.conv.weight") {
+                x = try conv2D(nearest2x(x), "decoder.up_blocks.\(block).upsamplers.0.conv", padding: 1)
+            }
+            eval(x)
+            appLogMemory(String(format: "sd: mlx vae 2d block %d %dx%d %dch in %.2fs",
+                                block, x.shape[2], x.shape[1], x.shape[3],
+                                Date().timeIntervalSince(t0)), source: "sd")
+            block += 1
+        }
+        guard block > 0 else {
+            throw VaeError.missing("decoder.up_blocks.0.resnets.0.conv1.weight")
+        }
+
+        x = try groupNorm2D(x, "decoder.conv_norm_out")
+        x = silu(x)
+        x = try conv2D(x, "decoder.conv_out", padding: 1)
         x = clip(x, min: -1.0, max: 1.0).asType(.float32)
         eval(x)
         return x

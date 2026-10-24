@@ -1,5 +1,4 @@
 diff --git a/src/pipeline/image.cpp b/src/pipeline/image.cpp
-index d3d25c8..62ef9a4 100644
 --- a/src/pipeline/image.cpp
 +++ b/src/pipeline/image.cpp
 @@ -2,8 +2,11 @@
@@ -14,11 +13,10 @@ index d3d25c8..62ef9a4 100644
  
  #include "core/rng.hpp"
  #include "diffusion_engine.h"
-@@ -544,6 +547,51 @@ namespace sd::pipeline {
+@@ -544,6 +547,66 @@
              LOG_ERROR("no latent images to decode");
              return nullptr;
          }
-+
 +        // Hand the final latents to an external decoder (the iOS app's MLX VAE)
 +        // instead of decoding here. This exists because the decode is a single
 +        // long op chain that can outrun the iOS GPU watchdog and tiling only makes
@@ -28,30 +26,46 @@ index d3d25c8..62ef9a4 100644
 +        // [batch, channel, ...] memory order because shape()[0] is the fastest
 +        // axis. An empty (but non-null) image array keeps generate_image from
 +        // reporting the run as failed.
++        //
++        // Two blobs are written per image: the raw sampler latents, and - when a
++        // first stage exists - the VAE-space latents that decode_first_stage
++        // would have handed to the decoder (scaling factor, shift, per-channel
++        // statistics). A decoder outside this process needs the latter: the 2D
++        // SD/SDXL/FLUX VAE cannot learn its scale factor from the weights, and
++        // the 3D Wan/Qwen path applies the same conversion before decoding.
 +        const char* latents_dump = std::getenv("SD_LATENTS_DUMP");
 +        if (latents_dump != nullptr && latents_dump[0] != '\0') {
-+            bool ok = true;
-+            for (size_t i = 0; i < final_latents.size(); i++) {
-+                const std::string path = i == 0 ? std::string(latents_dump)
-+                                                : std::string(latents_dump) + "." + std::to_string(i);
++            auto dump_tensor = [](const std::string& path, const sd::Tensor<float>& tensor) {
 +                FILE* f = std::fopen(path.c_str(), "wb");
 +                if (f == nullptr) {
 +                    LOG_ERROR("SD_LATENTS_DUMP: cannot open %s", path.c_str());
-+                    ok = false;
-+                    break;
++                    return false;
 +                }
-+                const uint32_t magic   = 0x564C4C50;  // "PLLV"
-+                const int32_t version  = 1;
-+                const int32_t ndim     = static_cast<int32_t>(final_latents[i].dim());
++                const uint32_t magic  = 0x564C4C50;  // "PLLV"
++                const int32_t version = 1;
++                const int32_t ndim    = static_cast<int32_t>(tensor.dim());
 +                std::fwrite(&magic, sizeof(magic), 1, f);
 +                std::fwrite(&version, sizeof(version), 1, f);
 +                std::fwrite(&ndim, sizeof(ndim), 1, f);
 +                for (int32_t d = 0; d < ndim; d++) {
-+                    const int32_t dim = static_cast<int32_t>(final_latents[i].shape()[static_cast<size_t>(d)]);
++                    const int32_t dim = static_cast<int32_t>(tensor.shape()[static_cast<size_t>(d)]);
 +                    std::fwrite(&dim, sizeof(dim), 1, f);
 +                }
-+                std::fwrite(final_latents[i].data(), sizeof(float), static_cast<size_t>(final_latents[i].numel()), f);
++                std::fwrite(tensor.data(), sizeof(float), static_cast<size_t>(tensor.numel()), f);
 +                std::fclose(f);
++                return true;
++            };
++            bool ok = true;
++            for (size_t i = 0; i < final_latents.size() && ok; i++) {
++                const std::string path = i == 0 ? std::string(latents_dump)
++                                                : std::string(latents_dump) + "." + std::to_string(i);
++                ok = dump_tensor(path, final_latents[i]);
++                if (ok && sd->first_stage_model) {
++                    sd::Tensor<float> vae_latents = sd->first_stage_model->diffusion_to_vae_latents(final_latents[i]);
++                    if (!vae_latents.empty()) {
++                        ok = dump_tensor(path + ".vae", vae_latents);
++                    }
++                }
 +            }
 +            if (ok) {
 +                LOG_INFO("SD_LATENTS_DUMP: wrote %zu latent(s) to %s; VAE decode skipped",
