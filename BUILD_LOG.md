@@ -1094,6 +1094,45 @@ The lesson is the same one §3 keeps repeating: a matcher is only as good as the
 against. The three headers above are now the fixtures — one arch-less all-in-one GGUF, one SDXL
 all-in-one safetensors, one bare FLUX DiT.
 
+### 2.31 Iris-3B has no VAE, and a VAE does not have to say so in its name (2026-10-22)
+
+The audit assumed every image model is `main + text encoder + VAE`. Iris-3B is not: it is a
+pixel-space flow model, and the engine knows it. In the pinned tree, `decode_first_stage` returns
+`clamp((x + 1) / 2)` for `VERSION_PID`, `VERSION_MINIT2I` and `VERSION_IRIS`
+(`src/pipeline/diffusion_engine.cpp:3127`) — there is no first stage to run. So "missing VAE" was
+wrong for a whole class of models, and it was the audit that was wrong, not the download.
+
+The same pass removed the second assumption: that a VAE's file name says `vae`. It often does not —
+`ae.safetensors`, `ae-fp16`, `flux_ae`, `kl-f8-anime2`, or a plain `diffusion_pytorch_model.safetensors`
+inside a `vae/` folder. A file's *tensors* answer this exactly, and they were already being read for
+the all-in-one check:
+
+- `ModelAudit.facts(of:)` now reads a header once per file (path + size cached, 512 entries) and
+  returns `role` (diffusion / VAE / text encoder / other), `architecture`, `isPixelSpace`,
+  `hasVAE`, `hasConditioner`.
+- Roles come from tensor prefixes: diffusion blocks (`model.diffusion_model.`, `double_blocks.`,
+  `blocks.`, `pixel_blocks.`, …) beat VAE tensors (`first_stage_model.`, `vae.`,
+  `encoder.down_blocks.`, `decoder.up_blocks.`, `post_quant_conv.`, `decoder.conv1.`), which beat
+  conditioner tensors. A full checkpoint carries all three and is still a diffusion model.
+- `ModelInspector.bundle(in:evidence:)` asks for a role only for files whose name matched nothing,
+  and only for the eight smallest candidates, so a folder of twenty quants does not read twenty
+  headers. `refresh` passes `evidence:` only for repositories already marked as image repos.
+- `missingParts` drops the VAE requirement when the main file is pixel-space, from
+  `general.architecture` (`iris`, `pid`, `minit2i`) or from `pixel_blocks.`/`pixel_embedder.`
+  tensors for a file that carries no architecture tag.
+
+Verified against the real files: `realrebelai/iris-3b_GGUFs/Iris-3B-Q3_K_S.gguf` has
+`general.architecture = iris`, 639 tensors, prefixes `blocks.` 512, `pixel_blocks.` 68,
+`y_embedder.` 43, `modulation_cores.` 4 — no `first_stage_model`, no `cond_stage_model`. The
+safetensors in `speridlabs/iris-3b` is the same model with `pixel.enabled: true` in `config.yaml`
+and `text_encoder.name: qwen3_vl`.
+
+One caveat that is the converter's, not the audit's: that community GGUF writes bare
+`y_embedder.*`/`pixel_blocks.*` names, while sd.cpp's own detector looks for
+`model.diffusion_model.y_embedder.layer_pool.weight` (`src/model_loader.cpp:565`) and the Iris
+implementation looks up `prefix + "." + name`. The audit recognises the file; whether the engine
+loads it depends on the prefix the converter used.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1167,6 +1206,8 @@ and for the ggml guard.
 | import recognises an arch-less all-in-one GGUF | real header of `stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf`: `version 3, 1131 tensors, 0 KV`; tensor prefixes `cond_stage_model.` 196, `first_stage_model.` 248, `model.` 686 |
 | import recognises an SDXL all-in-one safetensors | real header of `animagine-xl-3.1.safetensors`: 2514 keys, `conditioner.embedders.` 586, `first_stage_model.` 248 |
 | FLUX `ae.safetensors` / `flux_ae` counts as a VAE | matcher table (simulated against the real file names of `unsloth/flux-3-image-klein-GGUF` and `city96/FLUX.1-dev-gguf`) |
+| Iris-3B needs no VAE | pinned engine: `decode_first_stage` rescales `(x+1)/2` for `VERSION_IRIS`/`PID`/`MINIT2I` (`diffusion_engine.cpp:3127`); real GGUF header: `general.architecture = iris`, 639 tensors, no `first_stage_model.` |
+| a VAE is recognised without "vae" in the name | role table built from diffusers/sd.cpp tensor prefixes; `kl-f8-anime2`, `ae`, `diffusion_pytorch_model` in `vae/` all resolve to `.vae` |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is

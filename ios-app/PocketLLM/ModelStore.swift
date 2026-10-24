@@ -223,7 +223,7 @@ final class ModelStore: ObservableObject {
                                        label: url.lastPathComponent)
         guard failure == nil else { return failure }
 
-        let bundle = ModelInspector.bundle(in: destination)
+        let bundle = ModelInspector.bundle(in: destination, evidence: true)
         if bundle.map(isImageBundle) == true || hasImageLayout(destination) {
             markImageRepo(destination)
             notice = imageImportReport(folder: destination)
@@ -293,7 +293,7 @@ final class ModelStore: ObservableObject {
     /// What to say after importing a folder the image engine may want: either
     /// the slots that were filled, or the parts still missing.
     private func imageImportReport(folder: URL) -> String {
-        guard let bundle = ModelInspector.bundle(in: folder) else {
+        guard let bundle = ModelInspector.bundle(in: folder, evidence: true) else {
             return "imported \(folder.lastPathComponent): 只有 VAE／文字編碼器，主模型還沒到"
         }
         if isDiffusersPipeline(folder) { return Self.diffusersProblem }
@@ -411,7 +411,9 @@ final class ModelStore: ObservableObject {
             if fileManager.fileExists(
                 atPath: entry.appendingPathComponent("config.json").path) { continue }
             let repoName = entry.lastPathComponent.replacingOccurrences(of: "--", with: "/")
-            guard var bundle = ModelInspector.bundle(in: entry, repoId: repoName) else { continue }
+            let listed = imageRepos.contains(entry.lastPathComponent)
+            guard var bundle = ModelInspector.bundle(
+                in: entry, repoId: repoName, evidence: listed) else { continue }
             if isDiffusersPipeline(bundle.folder) {
                 bundle.problem = Self.diffusersProblem
             }
@@ -419,7 +421,6 @@ final class ModelStore: ObservableObject {
             // category; otherwise it is a text model that merely sits in its
             // own folder. Deciding this before reading tensors keeps a chat
             // model's header off the scan path.
-            let listed = imageRepos.contains(bundle.id)
             if bundle.isAllInOne && !listed { continue }
             if bundle.problem != nil {
                 if listed { foundIncomplete.append(bundle) }
@@ -667,7 +668,8 @@ final class ModelStore: ObservableObject {
         guard kind == .image else { return }
         let folderName = Self.repoFolderName(repoId)
         let folder = root.appendingPathComponent(folderName, isDirectory: true)
-        guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else {
+        guard let bundle = ModelInspector.bundle(
+            in: folder, repoId: repoId, evidence: true) else {
             if isDiffusersPipeline(folder) {
                 markImageRepo(folder)
                 notice = "\(repoId): " + Self.diffusersProblem

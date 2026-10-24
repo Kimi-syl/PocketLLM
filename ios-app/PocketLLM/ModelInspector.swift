@@ -128,7 +128,7 @@ extension ModelInspector {
     /// load: a main model plus a text encoder and a VAE, or a single all-in-one
     /// checkpoint. Uses names and extensions only — the engine itself is the
     /// final authority on whether a file loads.
-    static func bundle(in folder: URL, repoId: String? = nil) -> ModelBundle? {
+    static func bundle(in folder: URL, repoId: String? = nil, evidence: Bool = false) -> ModelBundle? {
         let fileManager = FileManager.default
         var weights: [URL] = []
         guard let enumerator = fileManager.enumerator(
@@ -180,6 +180,32 @@ extension ModelInspector {
             } else if !SdEngine.isVideoCheckpoint(url.lastPathComponent) {
                 mains.append(url)
             }
+        }
+
+        // Files whose name said nothing are the ones a VAE hides in: `ae`,
+        // `kl-f8-anime2`, `taesd`, or a plain `diffusion_pytorch_model` inside a
+        // `vae/` folder. Their tensors decide. Only the smallest candidates are
+        // read (a VAE is small), so a folder of twenty quants does not pay for
+        // twenty headers.
+        if evidence {
+            let candidates = Set(mains
+                .filter { !ModelAudit.isImageWeight(path: $0.lastPathComponent) }
+                .sorted { fileSize($0) < fileSize($1) }
+                .prefix(8)
+                .map(\.path))
+            var resolved: [URL] = []
+            for url in mains {
+                guard candidates.contains(url.path) else {
+                    resolved.append(url)
+                    continue
+                }
+                switch ModelAudit.facts(of: url).role {
+                case .vae: vaes.append(url)
+                case .textEncoder: textEncoders.append(url)
+                default: resolved.append(url)
+                }
+            }
+            mains = resolved
         }
 
         guard let main = mains.max(by: { fileSize($0) < fileSize($1) }) else { return nil }

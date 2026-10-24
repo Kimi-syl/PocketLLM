@@ -86,38 +86,6 @@ enum ModelAudit {
         "sd3", "wan2", "hunyuan", "kolors", "chroma", "hidream", "pixart",
     ]
 
-    /// Tensor prefixes that only diffusion weights carry. sd.cpp's GGUF
-    /// converter writes **no** `general.architecture` at all (a real SD1.5
-    /// all-in-one GGUF has zero KV pairs), and an all-in-one checkpoint's file
-    /// name says nothing either, so the tensors are the only honest evidence.
-    private static let diffusionPrefixes = [
-        "model.diffusion_model.", "first_stage_model.", "cond_stage_model.",
-        "conditioner.embedders.", "text_encoders.", "double_blocks.",
-        "single_blocks.", "joint_blocks.", "input_blocks.", "output_blocks.",
-        "middle_block.", "unet.", "transformer.", "vae.",
-    ]
-
-    /// True when the file's own tensors say it is diffusion weights. Reads a
-    /// header only; the name and the extension are not trusted.
-    static func isDiffusionFile(_ url: URL) -> Bool {
-        let names: [String]
-        switch url.pathExtension.lowercased() {
-        case "gguf":
-            guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return false }
-            if let arch = info.architecture?.lowercased(),
-               imageArchitectures.contains(arch) { return true }
-            names = info.tensorNames.map { $0.lowercased() }
-        case "safetensors", "sft":
-            guard let keys = safetensorsKeys(url) else { return false }
-            names = keys.map { $0.lowercased() }
-        default:
-            return false
-        }
-        return diffusionPrefixes.contains { prefix in
-            names.contains { $0.hasPrefix(prefix) }
-        }
-    }
-
     static func isImageWeight(path: String) -> Bool {
         let lower = path.lowercased()
         return mainMarkers.contains { lower.contains($0) }
@@ -267,34 +235,57 @@ enum ModelAudit {
 
     // MARK: - Files on disk
 
-    /// Parts still missing for a bundle that `ModelInspector` built from a
-    /// repository folder. Empty means it can load.
-    ///
-    /// A single weight is only "all-in-one" when its own tensor list says so:
-    /// the engine's single-file checkpoints carry `first_stage_model.` /
-    /// `cond_stage_model.` (safetensors) or `decoder.*` (GGUF) inside the file,
-    /// while a bare diffusion transformer carries only its own blocks.
-    static func missingParts(in bundle: ModelBundle) -> [RepoAudit.Part] {
-        guard bundle.isAllInOne else {
-            var parts: [RepoAudit.Part] = []
-            if !bundle.hasConditioner { parts.append(.textEncoder) }
-            if bundle.vae == nil { parts.append(.vae) }
-            return parts
-        }
-        // One weight: the slot matcher cannot see inside it, so its own tensor
-        // names decide. An unreadable header is treated as loadable rather than
-        // nagging about every file the reader does not know.
-        if let evidence = Self.bundledParts(of: bundle.mainModel) {
-            return evidence ? [] : [.textEncoder, .vae]
-        }
-        return []
+    /// What a weight file is, from its own tensors rather than its name.
+    enum Role {
+        case diffusion
+        case vae
+        case textEncoder
+        /// Readable, but none of the above (a LoRA, a projector, …).
+        case other
+        /// The header could not be read.
+        case unknown
     }
 
-    /// VAE prefixes, taken from the engine's own name lists
-    /// (`first_stage_model_prefix_vec` in `name_conversion.cpp`) plus the
-    /// diffusers spelling a converted all-in-one file keeps.
-    private static let vaePrefixes = [
-        "first_stage_model.", "vae.", "autoencoder.", "decoder.",
+    /// Everything the audit needs about one file, read once and cached.
+    struct Facts {
+        var role: Role = .unknown
+        var architecture: String?
+        /// The model writes pixels directly, so no VAE is involved.
+        var isPixelSpace = false
+        var hasVAE = false
+        var hasConditioner = false
+    }
+
+    /// Architectures whose decode step is a rescale, not a VAE pass:
+    /// `decode_first_stage` in `diffusion_engine.cpp` returns
+    /// `clamp((x + 1) / 2)` for exactly these three.
+    static let pixelSpaceArchitectures: Set<String> = ["iris", "pid", "minit2i"]
+
+    /// Architectures that are text encoders rather than diffusion models.
+    private static let conditionerArchitectures: Set<String> = [
+        "t5", "t5encoder", "umt5", "clip", "qwen2", "qwen2vl", "qwen2_5_vl",
+        "qwen3", "qwen3vl", "qwen3_vl", "gemma3", "llama",
+    ]
+
+    /// Tensor prefixes that only a diffusion model's own blocks carry.
+    /// `blocks.` is the Wan/Iris spelling, `pixel_blocks.` Iris's pixel stage.
+    private static let diffusionBlockPrefixes = [
+        "model.diffusion_model.", "diffusion_model.", "double_blocks.",
+        "single_blocks.", "single_transformer_blocks.", "joint_blocks.",
+        "transformer_blocks.", "input_blocks.", "output_blocks.", "middle_block.",
+        "unet.", "blocks.", "pixel_blocks.", "txt_mode_blocks.",
+        "content_mode_blocks.", "net.",
+    ]
+
+    /// A VAE's tensors, whatever the file is called: `ae.safetensors`,
+    /// `kl-f8-anime2`, `vae-ft-mse-840000` and a diffusers
+    /// `vae/diffusion_pytorch_model.safetensors` all look like this.
+    private static let vaeTensorPrefixes = [
+        "first_stage_model.", "vae.", "autoencoder.",
+        "encoder.down_blocks.", "encoder.mid_block.", "encoder.conv_in.",
+        "decoder.up_blocks.", "decoder.mid_block.", "decoder.conv_in.",
+        "decoder.conv_out.", "decoder.conv1.", "decoder.head.",
+        "post_quant_conv.", "quant_conv.",
     ]
 
     /// Conditioner prefixes: `cond_stage_model*` and `text_encoders.*` are the
@@ -305,27 +296,99 @@ enum ModelAudit {
         "text_encoder.", "text_encoder_2.", "te.", "te1.", "te2.", "llm.",
     ]
 
+    private static let pixelSpaceTensorPrefixes = ["pixel_blocks.", "pixel_embedder."]
+
     private static func hasPrefix(_ names: [String], _ prefixes: [String]) -> Bool {
         names.contains { name in prefixes.contains { name.hasPrefix($0) } }
     }
 
-    /// True when the file contains its own conditioner/VAE, false when it is a
-    /// bare transformer, nil when that cannot be read.
-    private static func bundledParts(of url: URL) -> Bool? {
+    private static let lock = NSLock()
+    private static var factsCache: [String: Facts] = [:]
+
+    /// Header facts for one file, cached by path and size so a library scan
+    /// reads each header once.
+    static func facts(of url: URL) -> Facts {
+        let key = cacheKey(url)
+        lock.lock()
+        let cached = factsCache[key]
+        lock.unlock()
+        if let cached { return cached }
+
+        let value = readFacts(of: url)
+        lock.lock()
+        if factsCache.count > 512 { factsCache.removeAll(keepingCapacity: true) }
+        factsCache[key] = value
+        lock.unlock()
+        return value
+    }
+
+    private static func cacheKey(_ url: URL) -> String {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return "\(url.path)|\(size)"
+    }
+
+    private static func readFacts(of url: URL) -> Facts {
+        var facts = Facts()
         let names: [String]
         switch url.pathExtension.lowercased() {
         case "gguf":
             // Every tensor name, not a sample: an all-in-one SD3.5 Large puts
             // its VAE and encoder after several thousand diffusion tensors.
-            guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return nil }
+            guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return facts }
+            facts.architecture = info.architecture?.lowercased()
             names = info.tensorNames.map { $0.lowercased() }
         case "safetensors", "sft":
-            guard let keys = safetensorsKeys(url) else { return nil }
+            guard let keys = safetensorsKeys(url) else { return facts }
             names = keys.map { $0.lowercased() }
         default:
-            return nil
+            return facts
         }
-        return hasPrefix(names, vaePrefixes) && hasPrefix(names, conditionerPrefixes)
+
+        facts.hasVAE = hasPrefix(names, vaeTensorPrefixes)
+        facts.hasConditioner = hasPrefix(names, conditionerPrefixes)
+        facts.isPixelSpace = hasPrefix(names, pixelSpaceTensorPrefixes)
+            || (facts.architecture.map { pixelSpaceArchitectures.contains($0) } ?? false)
+
+        if let arch = facts.architecture, imageArchitectures.contains(arch) {
+            facts.role = .diffusion
+        } else if let arch = facts.architecture, conditionerArchitectures.contains(arch) {
+            facts.role = .textEncoder
+        } else if hasPrefix(names, diffusionBlockPrefixes) {
+            facts.role = .diffusion
+        } else if facts.hasVAE {
+            facts.role = .vae
+        } else if facts.hasConditioner {
+            facts.role = .textEncoder
+        } else {
+            facts.role = .other
+        }
+        return facts
+    }
+
+    /// True when the file's own tensors say it is diffusion weights. The name
+    /// and the extension are not trusted.
+    static func isDiffusionFile(_ url: URL) -> Bool {
+        facts(of: url).role == .diffusion
+    }
+
+    /// Parts still missing for a bundle that `ModelInspector` built from a
+    /// repository folder. Empty means it can load.
+    ///
+    /// A single weight is only "all-in-one" when its own tensor list says so:
+    /// the engine's single-file checkpoints carry `first_stage_model.` /
+    /// `cond_stage_model.` (safetensors) or `decoder.*` (GGUF) inside the file,
+    /// while a bare diffusion transformer carries only its own blocks. Iris-3B
+    /// and the other pixel-space models carry neither and need no VAE at all.
+    static func missingParts(in bundle: ModelBundle) -> [RepoAudit.Part] {
+        let facts = facts(of: bundle.mainModel)
+        // An unreadable header is treated as loadable rather than nagging about
+        // every file the reader does not know.
+        if bundle.isAllInOne && facts.role == .unknown { return [] }
+
+        var parts: [RepoAudit.Part] = []
+        if !bundle.hasConditioner && !facts.hasConditioner { parts.append(.textEncoder) }
+        if bundle.vae == nil && !facts.isPixelSpace { parts.append(.vae) }
+        return parts
     }
 
     /// Key names from a safetensors header; only the names, no tensor data.
