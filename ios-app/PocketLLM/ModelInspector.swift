@@ -87,6 +87,9 @@ struct ModelBundle: Identifiable, Hashable {
     let upscaler: URL?
     let size: Int64
     let isAllInOne: Bool
+    /// Set when the folder is recognisable but the engine cannot load it, e.g.
+    /// a diffusers pipeline directory of sharded safetensors. nil otherwise.
+    var problem: String?
 
     /// A conditioner is any of the encoder slots: the LLM/Qwen slot for newer
     /// models, T5 or CLIP-L/G for SD3/SDXL-style ones.
@@ -164,8 +167,7 @@ extension ModelInspector {
             } else if !["gguf", "safetensors", "sft"].contains(ext) {
                 // A .pth that is not an upscaler is not loadable here.
                 continue
-            } else if relative.contains("vae/") || name.contains("vae")
-                || name.contains("autoencoder") || name == "ae.safetensors" {
+            } else if relative.contains("vae/") || ModelAudit.isVAEName(name) {
                 vaes.append(url)
             } else if name.contains("clip_l") || name.contains("clip-l") {
                 clipL = url
@@ -198,11 +200,14 @@ extension ModelInspector {
             t5: t5,
             upscaler: upscaler,
             size: directorySize(folder),
-            isAllInOne: allInOne)
+            isAllInOne: allInOne,
+            problem: nil)
 
-        // An incomplete set is reported as nothing rather than as a bundle that
-        // cannot load; the download rows still show the files.
-        guard bundle.isComplete else { return nil }
+        // Incomplete sets are returned too. Import has to recognise a lone
+        // diffusion transformer as an image model (that is what a FLUX or
+        // FLUX.3 repository is), and the library shows it as missing its
+        // companions instead of hiding it; callers that need a loadable set
+        // check `ModelAudit.missingParts` or `isComplete`.
         return bundle
     }
 
@@ -217,6 +222,9 @@ extension ModelInspector {
         let markers = [
             "text_encoder", "text-encoder", "textencoder", "llm",
             "qwen3", "qwen2.5-vl", "qwen2_5_vl", "qwen2.5_vl",
+            // Image models do not all use T5: Sana/Lumina use Gemma-2 and
+            // HiDream uses Llama-3.1.
+            "gemma", "llama_3", "llama-3",
         ]
         return markers.contains { name.contains($0) }
     }

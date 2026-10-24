@@ -187,8 +187,8 @@ struct ModelsView: View {
                 ForEach(store.incomplete) { bundle in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(bundle.name).font(.body).lineLimit(2)
-                        Text("缺少 " + ModelAudit.missingParts(in: bundle)
-                            .map(\.label).joined(separator: "、"))
+                        Text(bundle.problem ?? ("缺少 " + ModelAudit.missingParts(in: bundle)
+                            .map(\.label).joined(separator: "、")))
                             .font(.caption)
                             .foregroundStyle(.orange)
                         Text(humanReadableBytes(Int(bundle.size)))

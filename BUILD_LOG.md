@@ -1061,6 +1061,39 @@ loadable, i.e. the old behaviour, rather than nagging about every file the reade
 Compile-only: run after this entry. The GGUF walk is asserted against the headers inspected by
 hand in §2.28 (359 tensors, `general.architecture = flux`).
 
+### 2.30 The import classifier was wrong about FLUX folders and about all-in-one files (2026-10-22)
+
+§2.29 shipped a classifier that passed its own reading but failed the first real folder. Three
+separate faults, each verified against a real header this time:
+
+1. `ModelInspector.bundle(in:)` still ended with `guard bundle.isComplete else { return nil }`, so a
+   folder holding a lone diffusion transformer (the normal shape of a FLUX/FLUX.3 download) produced
+   no bundle at all, `isImageBundle` was never consulted, and the files fell through to the chat
+   list. It now returns what it found; callers that need a loadable set ask `missingParts` or
+   `isComplete`.
+2. Classification keyed on `general.architecture`, but sd.cpp's own GGUF converter writes **no KV
+   pairs at all**: a real all-in-one SD1.5 GGUF (`second-state/stable-diffusion-v1-5-GGUF`,
+   Q4_0) has `version 3, tensor_count 1131, metadata_kv_count 0` — no `general.architecture` to
+   read. Classification and the all-in-one check now fall back to tensor prefixes
+   (`model.diffusion_model.`, `first_stage_model.`, `cond_stage_model.`, `double_blocks.`,
+   `single_blocks.`, …), which is what `isDiffusionFile` does for both GGUF and safetensors.
+3. The all-in-one evidence only knew `cond_stage_model.` as a conditioner, so an untouched SDXL
+   checkpoint — `conditioner.embedders.0…` plus `first_stage_model…`, 586 + 248 of its 2514 keys in
+   `cagliostrolab/animagine-xl-3.1` — was reported as missing its text encoder. The prefix lists now
+   follow `name_conversion.cpp` (`cond_stage_model*`, `text_encoders.`, `te.`) plus
+   `conditioner.embedders.` and the diffusers spellings; VAE names accept `ae` as a token, because
+   FLUX ships its decoder as `ae.safetensors` / `flux_ae`.
+
+Also fixed in the same pass: the tensor list is no longer sampled at 4096 names (an all-in-one
+SD3.5 Large puts its VAE and encoder after several thousand diffusion tensors) and the header read
+window grew to 64 MB; a diffusers pipeline directory (`model_index.json` + sharded safetensors) is
+recognised and refused with a reason instead of being auto-configured and failing inside the engine;
+and Sana/Lumina/HiDream conditioners (`gemma`, `llama_3`) are matched.
+
+The lesson is the same one §3 keeps repeating: a matcher is only as good as the file it was tested
+against. The three headers above are now the fixtures — one arch-less all-in-one GGUF, one SDXL
+all-in-one safetensors, one bare FLUX DiT.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1131,6 +1164,9 @@ and for the ggml guard.
 | diffusers-format Wan/Qwen VAE keys | header inspection asserted against the two naming schemes; the decode itself is the same code that produced the 2 s 512×512 device run |
 | FLUX.3 support is in the shipped dylib | run `39735240219`: `strings` on `Frameworks/libsdcpp_ios.dylib` shows `Flux3::Flux3Runner`, `Flux3::Block`, `Flux3FlowDenoiser` |
 | GGUF header reader matches a real file | `GGUFHeader` walks the same 359-tensor `flux` header read by hand in §2.28; import classification and `missingParts` are compile-only until a device run |
+| import recognises an arch-less all-in-one GGUF | real header of `stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf`: `version 3, 1131 tensors, 0 KV`; tensor prefixes `cond_stage_model.` 196, `first_stage_model.` 248, `model.` 686 |
+| import recognises an SDXL all-in-one safetensors | real header of `animagine-xl-3.1.safetensors`: 2514 keys, `conditioner.embedders.` 586, `first_stage_model.` 248 |
+| FLUX `ae.safetensors` / `flux_ae` counts as a VAE | matcher table (simulated against the real file names of `unsloth/flux-3-image-klein-GGUF` and `city96/FLUX.1-dev-gguf`) |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
 Android vision output, and all iOS UI changes. Every iOS build in this log is

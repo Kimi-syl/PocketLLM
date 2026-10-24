@@ -26,9 +26,10 @@ enum GGUFHeader {
              string, array, uint64, int64, float64
     }
 
-    /// 32 MB covers every header seen so far (the largest are tokenizer-heavy
-    /// llama.cpp files at a few MB) without reading a 3 GB weight file.
-    private static let limit = 32 * 1024 * 1024
+    /// The header is a few MB at most (a tokenizer is the large part) and the
+    /// tensor list follows it; 64 MB leaves room for both without reading a
+    /// multi-gigabyte weight file.
+    private static let limit = 64 * 1024 * 1024
 
     static func read(_ url: URL, tensorSample: Int = 0) -> Info? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }

@@ -86,6 +86,38 @@ enum ModelAudit {
         "sd3", "wan2", "hunyuan", "kolors", "chroma", "hidream", "pixart",
     ]
 
+    /// Tensor prefixes that only diffusion weights carry. sd.cpp's GGUF
+    /// converter writes **no** `general.architecture` at all (a real SD1.5
+    /// all-in-one GGUF has zero KV pairs), and an all-in-one checkpoint's file
+    /// name says nothing either, so the tensors are the only honest evidence.
+    private static let diffusionPrefixes = [
+        "model.diffusion_model.", "first_stage_model.", "cond_stage_model.",
+        "conditioner.embedders.", "text_encoders.", "double_blocks.",
+        "single_blocks.", "joint_blocks.", "input_blocks.", "output_blocks.",
+        "middle_block.", "unet.", "transformer.", "vae.",
+    ]
+
+    /// True when the file's own tensors say it is diffusion weights. Reads a
+    /// header only; the name and the extension are not trusted.
+    static func isDiffusionFile(_ url: URL) -> Bool {
+        let names: [String]
+        switch url.pathExtension.lowercased() {
+        case "gguf":
+            guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return false }
+            if let arch = info.architecture?.lowercased(),
+               imageArchitectures.contains(arch) { return true }
+            names = info.tensorNames.map { $0.lowercased() }
+        case "safetensors", "sft":
+            guard let keys = safetensorsKeys(url) else { return false }
+            names = keys.map { $0.lowercased() }
+        default:
+            return false
+        }
+        return diffusionPrefixes.contains { prefix in
+            names.contains { $0.hasPrefix(prefix) }
+        }
+    }
+
     static func isImageWeight(path: String) -> Bool {
         let lower = path.lowercased()
         return mainMarkers.contains { lower.contains($0) }
@@ -145,16 +177,25 @@ enum ModelAudit {
         let markers = [
             "t5", "umt5", "clip_l", "clip-l", "clip_g", "clip-g",
             "qwen3", "qwen2.5-vl", "qwen2_5_vl", "qwen2.5_vl", "llm",
+            "gemma", "llama_3", "llama-3",
         ]
         return markers.contains { name.contains($0) }
     }
 
+    /// `ae.safetensors` is FLUX's name for the VAE, and `flux_ae` is what a
+    /// downloaded copy is often called; token matching keeps names like
+    /// `diffusion_pytorch_model.safetensors` out.
+    static func isVAEName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.contains("vae") || lower.contains("autoencoder") { return true }
+        let stem = (lower as NSString).deletingPathExtension
+        return stem.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." })
+            .contains("ae")
+    }
+
     static func isVAEPath(_ path: String) -> Bool {
         let lower = path.lowercased()
-        let name = (lower as NSString).lastPathComponent
-        return lower.contains("vae/") || name.contains("vae")
-            || name.contains("autoencoder") || name == "ae.safetensors"
-            || name.hasPrefix("ae.") && name.hasSuffix(".safetensors")
+        return lower.contains("vae/") || isVAEName((lower as NSString).lastPathComponent)
     }
 
     // MARK: - README
@@ -249,28 +290,42 @@ enum ModelAudit {
         return []
     }
 
+    /// VAE prefixes, taken from the engine's own name lists
+    /// (`first_stage_model_prefix_vec` in `name_conversion.cpp`) plus the
+    /// diffusers spelling a converted all-in-one file keeps.
+    private static let vaePrefixes = [
+        "first_stage_model.", "vae.", "autoencoder.", "decoder.",
+    ]
+
+    /// Conditioner prefixes: `cond_stage_model*` and `text_encoders.*` are the
+    /// engine's; `conditioner.embedders.` is what an untouched SDXL checkpoint
+    /// uses, and `te.`/`text_encoder.` are the diffusers spellings.
+    private static let conditionerPrefixes = [
+        "cond_stage_model.", "conditioner.embedders.", "text_encoders.",
+        "text_encoder.", "text_encoder_2.", "te.", "te1.", "te2.", "llm.",
+    ]
+
+    private static func hasPrefix(_ names: [String], _ prefixes: [String]) -> Bool {
+        names.contains { name in prefixes.contains { name.hasPrefix($0) } }
+    }
+
     /// True when the file contains its own conditioner/VAE, false when it is a
     /// bare transformer, nil when that cannot be read.
     private static func bundledParts(of url: URL) -> Bool? {
+        let names: [String]
         switch url.pathExtension.lowercased() {
         case "gguf":
-            guard let info = GGUFHeader.read(url, tensorSample: 4096) else { return nil }
-            let names = info.tensorNames.map { $0.lowercased() }
-            let hasVAE = names.contains { $0.hasPrefix("decoder.") || $0.hasPrefix("first_stage_model.") }
-            let hasEncoder = names.contains {
-                $0.hasPrefix("cond_stage_model.") || $0.hasPrefix("te.") || $0.hasPrefix("text_encoders.")
-            }
-            return hasVAE && hasEncoder
+            // Every tensor name, not a sample: an all-in-one SD3.5 Large puts
+            // its VAE and encoder after several thousand diffusion tensors.
+            guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return nil }
+            names = info.tensorNames.map { $0.lowercased() }
         case "safetensors", "sft":
             guard let keys = safetensorsKeys(url) else { return nil }
-            let hasVAE = keys.contains { $0.hasPrefix("first_stage_model.") || $0.hasPrefix("vae.") }
-            let hasEncoder = keys.contains {
-                $0.hasPrefix("cond_stage_model.") || $0.hasPrefix("te.") || $0.hasPrefix("text_encoders.")
-            }
-            return hasVAE && hasEncoder
+            names = keys.map { $0.lowercased() }
         default:
             return nil
         }
+        return hasPrefix(names, vaePrefixes) && hasPrefix(names, conditionerPrefixes)
     }
 
     /// Key names from a safetensors header; only the names, no tensor data.

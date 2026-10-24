@@ -176,13 +176,15 @@ final class ModelStore: ObservableObject {
         if isDirectory.boolValue {
             return await importFolder(url)
         }
-        guard url.pathExtension.lowercased() == "gguf" else {
-            return "not a .gguf file or an MLX model folder"
+        let ext = url.pathExtension.lowercased()
+        guard ["gguf", "safetensors", "sft"].contains(ext) else {
+            return "not a .gguf/.safetensors file or an MLX model folder"
         }
-        // A diffusion GGUF is half of a model, so it is filed into a folder of
+        // A diffusion weight is half of a model, so it is filed into a folder of
         // its own and remembered as an image repo; that is what lets the bundle
         // scan pair it with a text encoder and a VAE imported later.
-        if isImageGGUF(url) {
+        let isImage = ModelAudit.isDiffusionFile(url)
+        if isImage {
             let stem = url.deletingPathExtension().lastPathComponent
             let destination = uniqueDirectory(named: stem)
             try? fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -195,6 +197,9 @@ final class ModelStore: ObservableObject {
                 refresh()
             }
             return failure
+        }
+        guard ext == "gguf" else {
+            return "\(url.lastPathComponent): 單一 safetensors 只在認得出是擴散模型時匯入"
         }
         return await importGGUFFile(url)
     }
@@ -218,8 +223,8 @@ final class ModelStore: ObservableObject {
                                        label: url.lastPathComponent)
         guard failure == nil else { return failure }
 
-        if let bundle = ModelInspector.bundle(in: destination),
-           isImageBundle(bundle) {
+        let bundle = ModelInspector.bundle(in: destination)
+        if bundle.map(isImageBundle) == true || hasImageLayout(destination) {
             markImageRepo(destination)
             notice = imageImportReport(folder: destination)
         }
@@ -227,26 +232,47 @@ final class ModelStore: ObservableObject {
         return nil
     }
 
+    /// A diffusers pipeline (`model_index.json`) or a folder that holds only the
+    /// companions of one. Recognised from the layout, so a folder whose main
+    /// weight has not arrived is still filed as an image repository rather than
+    /// mistaken for a chat model.
+    /// A diffusers pipeline directory: `model_index.json` plus sharded
+    /// safetensors. The engine takes one file per slot, so pointing it here
+    /// would fail inside init with a message about a missing tensor.
+    static let diffusersProblem = "這是 diffusers 目錄（分片 safetensors），引擎只吃單檔 GGUF／safetensors；請下載 GGUF 版本"
+
+    private func isDiffusersPipeline(_ folder: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("model_index.json").path)
+    }
+
+    private func hasImageLayout(_ folder: URL) -> Bool {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: folder.appendingPathComponent("model_index.json").path) {
+            return true
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: folder, includingPropertiesForKeys: nil) else { return false }
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent.lowercased()
+            let relative = url.path.replacingOccurrences(of: folder.path + "/", with: "").lowercased()
+            if ModelAudit.isVAEName(name) || name.contains("t5xxl")
+                || name.contains("clip_l") || name.contains("clip_g")
+                || relative.contains("text_encoder") || relative.contains("text-encoder") {
+                return true
+            }
+        }
+        return false
+    }
+
     /// A bundle belongs to the image engine when there are companion slots, or
     /// when its main file is a known diffusion architecture (or at least named
     /// like one).
     private func isImageBundle(_ bundle: ModelBundle) -> Bool {
         if bundle.hasConditioner || bundle.vae != nil { return true }
-        if let image = ggufArchitectureIsImage(bundle.mainModel) { return image }
-        return ModelAudit.isImageWeight(path: bundle.mainModel.lastPathComponent)
-    }
-
-    private func isImageGGUF(_ url: URL) -> Bool {
-        ggufArchitectureIsImage(url) ?? false
-    }
-
-    /// Reads `general.architecture`; nil when the file is not a GGUF whose
-    /// header can be read.
-    private func ggufArchitectureIsImage(_ url: URL) -> Bool? {
-        guard url.pathExtension.lowercased() == "gguf",
-              let info = GGUFHeader.read(url),
-              let arch = info.architecture?.lowercased() else { return nil }
-        return ModelAudit.imageArchitectures.contains(arch)
+        if ModelAudit.isDiffusionFile(bundle.mainModel) { return true }
+        if ModelAudit.isImageWeight(path: bundle.mainModel.lastPathComponent) { return true }
+        return hasImageLayout(bundle.folder)
     }
 
     private func containsWeights(_ folder: URL) -> Bool {
@@ -268,12 +294,12 @@ final class ModelStore: ObservableObject {
     /// the slots that were filled, or the parts still missing.
     private func imageImportReport(folder: URL) -> String {
         guard let bundle = ModelInspector.bundle(in: folder) else {
-            return "imported \(folder.lastPathComponent): no image weights matched"
+            return "imported \(folder.lastPathComponent): 只有 VAE／文字編碼器，主模型還沒到"
         }
+        if isDiffusersPipeline(folder) { return Self.diffusersProblem }
         let missing = ModelAudit.missingParts(in: bundle)
         guard missing.isEmpty else {
-            return "imported \(bundle.name), but it is missing "
-                + missing.map(\.label).joined(separator: "、")
+            return "imported \(bundle.name)，但還缺 " + missing.map(\.label).joined(separator: "、")
         }
         configure(bundle, automatic: true)
         return "imported \(bundle.name) — \(bundle.companionSummary)"
@@ -385,14 +411,19 @@ final class ModelStore: ObservableObject {
             if fileManager.fileExists(
                 atPath: entry.appendingPathComponent("config.json").path) { continue }
             let repoName = entry.lastPathComponent.replacingOccurrences(of: "--", with: "/")
-            guard let bundle = ModelInspector.bundle(in: entry, repoId: repoName) else { continue }
+            guard var bundle = ModelInspector.bundle(in: entry, repoId: repoName) else { continue }
+            if isDiffusersPipeline(bundle.folder) {
+                bundle.problem = Self.diffusersProblem
+            }
             // A lone GGUF is only an image bundle if it came from that
             // category; otherwise it is a text model that merely sits in its
             // own folder. Deciding this before reading tensors keeps a chat
             // model's header off the scan path.
             let listed = imageRepos.contains(bundle.id)
             if bundle.isAllInOne && !listed { continue }
-            if ModelAudit.missingParts(in: bundle).isEmpty {
+            if bundle.problem != nil {
+                if listed { foundIncomplete.append(bundle) }
+            } else if ModelAudit.missingParts(in: bundle).isEmpty {
                 foundBundles.append(bundle)
             } else if listed {
                 foundIncomplete.append(bundle)
@@ -637,7 +668,22 @@ final class ModelStore: ObservableObject {
         let folderName = Self.repoFolderName(repoId)
         let folder = root.appendingPathComponent(folderName, isDirectory: true)
         guard let bundle = ModelInspector.bundle(in: folder, repoId: repoId) else {
-            notice = "\(repoId): 下載完成，但找不到可用的主模型檔"
+            if isDiffusersPipeline(folder) {
+                markImageRepo(folder)
+                notice = "\(repoId): " + Self.diffusersProblem
+            } else if hasImageLayout(folder) {
+                markImageRepo(folder)
+                notice = "\(repoId): 目前只有 VAE／文字編碼器，還缺主模型；補齊後會自動配置"
+            } else {
+                notice = "\(repoId): 下載完成，但找不到可用的主模型檔"
+            }
+            refresh()
+            return
+        }
+        guard !isDiffusersPipeline(folder) else {
+            markImageRepo(folder)
+            notice = "\(repoId): " + Self.diffusersProblem
+            refresh()
             return
         }
         // Do not point the engine at half a model: a bare diffusion
