@@ -433,7 +433,7 @@ final class MLXVae {
         // `fatalError`. Scoping it converts them into a thrown Swift error, so
         // a bad tensor name or an allocation failure lands in the app log
         // instead of killing the process.
-        try withError { _ in
+        return try withError { _ in
             switch layout {
             case .diffusers2D:
                 return try decode2D(latents)
@@ -743,7 +743,7 @@ final class MLXVae {
                         out.replaceSubrange(dst..<dst + cols * 3, with: values[src..<src + cols * 3])
                     }
                 }
-                GPU.clearCache()
+                Memory.clearCache()
                 appLogMemory(String(format: "sd: mlx vae 2d tile %d/%d %.2fs",
                                     yi * xs.count + xi + 1, ys.count * xs.count,
                                     Date().timeIntervalSince(t0)), source: "sd")
