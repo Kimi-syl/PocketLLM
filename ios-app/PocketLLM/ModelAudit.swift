@@ -294,6 +294,8 @@ enum ModelAudit {
     private static let conditionerPrefixes = [
         "cond_stage_model.", "conditioner.embedders.", "text_encoders.",
         "text_encoder.", "text_encoder_2.", "te.", "te1.", "te2.", "llm.",
+        // Standalone T5/CLIP files saved without any of the above prefixes.
+        "encoder.block.", "text_model.",
     ]
 
     private static let pixelSpaceTensorPrefixes = ["pixel_blocks.", "pixel_embedder."]
