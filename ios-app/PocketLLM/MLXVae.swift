@@ -235,9 +235,9 @@ final class MLXVae {
             normalized[info.layout == .diffusers2D ? Self.diffusersName(bare) : Self.engineName(bare)] = value
         }
         if info.layout == .diffusers2D {
-            guard normalized["post_quant_conv.weight"] != nil else {
-                throw VaeError.missing("post_quant_conv.weight")
-            }
+            // post_quant_conv is optional: DiT VAEs (SD3, FLUX.1, Z-Image) are
+            // trained without one, which is why sd.cpp only builds it when
+            // `use_quant` holds (`auto_encoder_kl.hpp:568`).
             guard normalized["decoder.conv_in.weight"] != nil else {
                 throw VaeError.missing("decoder.conv_in.weight")
             }
@@ -582,7 +582,9 @@ final class MLXVae {
         // The caller passes VAE-space latents (the engine applied its scale
         // factor and shift before writing the blob), so there is no scaling here.
         var x = latents.transposed(0, 2, 3, 1).asType(Self.compute)
-        x = try conv2D(x, "post_quant_conv", padding: 0)
+        if has("post_quant_conv.weight") {
+            x = try conv2D(x, "post_quant_conv", padding: 0)
+        }
         x = try conv2D(x, "decoder.conv_in", padding: 1)
         eval(x)
 

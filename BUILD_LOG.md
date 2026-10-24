@@ -1138,17 +1138,24 @@ What actually blocks that file is a shape, not a name — see §2.32.
 ### 2.32 The MLX decoder only knew the 3D VAE, and the Iris GGUF is malformed (2026-10-24)
 
 **2D VAEs on MLX.** `MLXVae` classified SD/SDXL/FLUX `AutoencoderKL` files as `.diffusers2D` and then
-refused them, so MLX decode only ever worked for Wan/Qwen. It now decodes them: `post_quant_conv` ->
+refused them, so MLX decode only ever worked for Wan/Qwen. It now decodes them: `post_quant_conv` (when present) ->
 `decoder.conv_in` -> mid (resnet, single-head attention, resnet) -> every `up_blocks` entry with its
 resnets and optional nearest+conv upsample -> `conv_norm_out`/silu/`conv_out`, clamped to [-1, 1].
 GroupNorm is 32 groups with the engine's `GroupNorm32` eps (1e-6, `ggml_block.hpp:907`), attention is
 single-head with `1/sqrt(C)` and a residual, and the block/resnet counts are probed from the weights
 instead of hard-coded — SD1.5, SDXL and FLUX share this shape and differ only in channels and latent
-width (4, 4 and 16; read from `post_quant_conv`). Both spellings load: diffusers
+width (4, 4 and 16; read from `decoder.conv_in`). Both spellings load: diffusers
 (`decoder.up_blocks.N.resnets.M`, `mid_block.attentions.0.group_norm`) and the original LDM one
 (`decoder.up.3.block.0`, `mid.attn_1`, `norm/q/k/v/proj_out`, `nin_shortcut`), which is what the
 SD1.5 VAE actually ships. Detection also accepts the LDM up/mid prefixes, so such a file is no longer
 misread as 3D and then fails on `decoder.conv1`.
+
+`post_quant_conv` is optional, because DiT VAEs are trained without one: sd.cpp builds it only when
+`use_quant` holds, and sets `use_quant = false` for every DiT version except the FLUX.2-style
+32-channel VAE (`auto_encoder_kl.hpp:548-570`). The Z-Image VAE is exactly this case — its header
+(`Tongyi-MAI/Z-Image-Turbo/vae/diffusion_pytorch_model.safetensors`) has 244 keys, `decoder` and
+`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`, a mid attention, and no `post_quant_conv`
+at all. Requiring it failed the first device run with `tensor missing: post_quant_conv.weight`.
 
 **Which latents the decoder gets.** The dump hook wrote the raw sampler latents, and a 2D decoder
 cannot recover `scale_factor`/`shift_factor` from the weights (0.18215 for SD1.5, 0.13025 for SDXL,
@@ -1246,6 +1253,7 @@ and for the ggml guard.
 | a VAE is recognised without "vae" in the name | role table built from diffusers/sd.cpp tensor prefixes; `kl-f8-anime2`, `ae`, `diffusion_pytorch_model` in `vae/` all resolve to `.vae` |
 | 2D VAE layout matches the engine | pinned `auto_encoder_kl.hpp`: `GroupNorm32` (32 groups, 1e-6), mid = resnet/attention/resnet, `up_blocks.N.resnets.{0..2}` + `upsamplers.0.conv`, `conv_norm_out` -> silu -> `conv_out`; LDM spelling mapped from `name_conversion.cpp:1057-1120` |
 | engine writes VAE-space latents for the 2D decoder | patch applies to `8cd731e7b` (`patch -p1 --dry-run` clean); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
+| Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | the Iris GGUF is the reason `new_sd_ctx` fails | real headers: `Iris-3B-Q3_K_S`/`Q4_K_S` store `blocks.0.mlp_x.w2.weight` as `[256, 68260]`; `speridlabs/iris-3b` safetensors has `[2560, 6826]`; sd.cpp registers `w2` as `[mlp_dim, hidden]` from `w1.ne[1]` (`iris.hpp:42`) |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
