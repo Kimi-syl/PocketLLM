@@ -27,6 +27,18 @@ final class SdEngine: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var images: [UIImage] = []
+    /// Set when a run ended in `.failed`. A Metal fault, a watchdog kill or an
+    /// aborted sampler can leave the engine's graph and state caches
+    /// inconsistent, so the next `generate()` rebuilds the context instead of
+    /// reusing it — the alternative is a run that keeps failing on the same
+    /// context until the user thinks to press 卸載.
+    private var needsReload = false
+    /// Set when the reload was started *because* a run failed, so the load
+    /// resumes the generation the user asked for instead of stopping at idle.
+    private var resumeAfterReload = false
+    /// The user's saved presets, oldest first. Built-ins live in
+    /// `GenPreset.builtins` and are never written here.
+    @Published private(set) var presets: [GenPreset] = GenPreset.loadStored()
     /// Parameters of the last generation, so an upscale can be archived with the
     /// prompt that produced the source instead of the tab's current text.
     private var lastArchive: GalleryStore.Meta?
@@ -259,6 +271,7 @@ final class SdEngine: ObservableObject {
                     vaeOnCPU: vaeCPU)
             } catch {
                 await MainActor.run {
+                    self?.resumeAfterReload = false
                     self?.phase = .failed(error.localizedDescription)
                     appLog("sd load failed: \(error.localizedDescription)", source: "sd")
                 }
@@ -267,8 +280,15 @@ final class SdEngine: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 self.context = ctx
+                self.needsReload = false
                 self.phase = .idle
                 appLog("sd loaded · \(URL(fileURLWithPath: model).lastPathComponent)", source: "sd")
+                // A failed run asked for a rebuild; continue the generation the
+                // user pressed 生成 for rather than making them press it again.
+                if self.resumeAfterReload {
+                    self.resumeAfterReload = false
+                    self.generate()
+                }
             }
         }
     }
@@ -278,7 +298,87 @@ final class SdEngine: ObservableObject {
             appLog("sd unloaded so the LLM can take the GPU", source: "sd")
         }
         context = nil
+        needsReload = false
+        resumeAfterReload = false
         phase = .idle
+    }
+
+    // MARK: - Presets
+
+    /// The built-in that fits the loaded model, offered first in the menu.
+    /// `ModelAudit` caches header facts, so re-reading it on every body pass is
+    /// a dictionary lookup after the first call.
+    var recommendedPreset: GenPreset? { GenPreset.recommended(for: mainModel) }
+
+    /// Apply a preset. A built-in only sets sampling values; a saved preset is
+    /// a snapshot of the whole tab, so its slots are authoritative and an empty
+    /// slot means cleared.
+    func apply(_ preset: GenPreset) {
+        steps = preset.steps
+        cfg = preset.cfg
+        width = preset.width
+        height = preset.height
+        seed = preset.seed
+        clipSkip = preset.clipSkip
+        negative = preset.negative
+        // Indices come from the engine's own tables, and a preset saved by an
+        // older build may point past the end of a shorter list.
+        sampleMethod = min(max(0, preset.sampleMethod),
+                           max(0, SdContext.sampleMethodNames().count - 1))
+        scheduler = min(max(0, preset.scheduler),
+                        max(0, SdContext.schedulerNames().count - 1))
+        if !preset.isBuiltin {
+            let slotsChanged = preset.mainModel != mainModel || preset.textEncoder != textEncoder
+                || preset.vae != vae || preset.loras != loras
+            mainModel = preset.mainModel
+            textEncoder = preset.textEncoder
+            vae = preset.vae
+            loras = preset.loras
+            if slotsChanged && context != nil {
+                // The loaded weights are not the preset's. Rebuild before the
+                // next run, reusing the same path a failed run takes.
+                needsReload = true
+                appLog("sd: preset 「\(preset.name)」changed the model slots, reloading before the next run",
+                       source: "sd")
+            }
+        }
+        appLog(String(format: "sd: applied preset 「%@」 %dx%d %d steps cfg %.1f",
+                      preset.name, preset.width, preset.height, preset.steps, preset.cfg),
+               source: "sd")
+    }
+
+    /// Save the tab's current settings under a name. Saving again under the same
+    /// name overwrites, which is what "save" means the second time.
+    func savePreset(named raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var preset = GenPreset(name: name)
+        preset.mainModel = mainModel
+        preset.textEncoder = textEncoder
+        preset.vae = vae
+        preset.loras = loras
+        preset.steps = steps
+        preset.cfg = cfg
+        preset.width = width
+        preset.height = height
+        preset.seed = seed
+        preset.sampleMethod = sampleMethod
+        preset.scheduler = scheduler
+        preset.clipSkip = clipSkip
+        preset.negative = negative
+        if let i = presets.firstIndex(where: { $0.name == name }) {
+            preset.id = presets[i].id
+            presets[i] = preset
+        } else {
+            presets.append(preset)
+        }
+        GenPreset.persist(presets)
+        appLog("sd: saved preset 「\(name)」", source: "sd")
+    }
+
+    func deletePreset(_ preset: GenPreset) {
+        presets.removeAll { $0.id == preset.id }
+        GenPreset.persist(presets)
     }
 
     // MARK: - Generation
@@ -286,6 +386,16 @@ final class SdEngine: ObservableObject {
     func generate() {
         guard let ctx = context else {
             phase = .failed("尚未載入模型")
+            return
+        }
+        if needsReload {
+            needsReload = false
+            resumeAfterReload = true
+            appLog("sd: reloading the model after the failed run", source: "sd")
+            // Release the old context first: the reload allocates the whole
+            // weight set again, and two live contexts do not fit in memory.
+            context = nil
+            load()
             return
         }
         phase = .running(step: 0, steps: steps)
@@ -358,6 +468,7 @@ final class SdEngine: ObservableObject {
                     guard let self else { return }
                     self.pollTask?.cancel()
                     self.pollTask = nil
+                    self.needsReload = true
                     self.phase = .failed(error.localizedDescription)
                     appLog("sd generate failed: \(error.localizedDescription)", source: "sd")
                 }
@@ -434,6 +545,7 @@ final class SdEngine: ObservableObject {
                         self.pollTask?.cancel()
                         self.pollTask = nil
                         let message = "MLX 解碼失敗（\(failure)），CPU 解碼也失敗：\(error.localizedDescription)"
+                        self.needsReload = true
                         self.phase = .failed(message)
                         appLog("sd cpu fallback failed: \(message)", source: "sd")
                     }
@@ -457,10 +569,12 @@ final class SdEngine: ObservableObject {
                 if decoded.isEmpty {
                     let message = mlxFailureText.map { "MLX 解碼失敗（\($0)），CPU 解碼後仍未產生影像" }
                         ?? "未產生影像"
+                    self.needsReload = true
                     self.phase = .failed(message)
                     appLog("sd generate failed: \(message)", source: "sd")
                 } else {
                     self.images = decoded
+                    self.needsReload = false
                     self.phase = .succeeded
                     let archive = GalleryStore.Meta(
                         prompt: promptText, negative: negativeText,

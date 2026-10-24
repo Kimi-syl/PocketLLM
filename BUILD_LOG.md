@@ -1196,6 +1196,40 @@ all. Now a failure is not final:
   error text (selectable) on failure. The message is also logged as `sd generate failed: …`, and a
   failed fallback says so explicitly (`MLX 解碼失敗（…），CPU 解碼也失敗：…`).
 
+### 2.34 Presets for the whole tab, and a failed run rebuilds the context (2026-10-24)
+
+Two things the image tab was missing, both of which come down to "the tab forgets state that the
+user already established":
+
+- **Presets** (`GenPreset.swift`, menu at the top of 參數). The type is one snapshot: the four model
+  slots plus steps/CFG/size/seed/sampler/scheduler/clip skip/negative. It is stored as JSON in
+  `UserDefaults` (`sd.presets`), because the engine keeps `mainModel`/`textEncoder` in memory only —
+  before this, a relaunch lost the model set entirely.
+  - Built-ins (`GenPreset.builtins`) carry sampling values only: Turbo/LCM 8 steps CFG 1, FLUX 16/1,
+    Z-Image Turbo 9/1, SDXL 25/7, SD1.5 20/7.5, all at 1024² except SD1.5. Applying one leaves the
+    slots alone; applying a saved preset is authoritative, so an empty slot means cleared.
+  - `recommended(for:)` picks the built-in to show as 建議: turbo/lcm/lightning/hyper/schnell by file
+    name first (a distillation is not an architecture), then the GGUF header's architecture. An
+    unrecognised family returns nil rather than a guess.
+  - Sampler/scheduler indices are clamped to the engine's own tables, so a preset saved by an older
+    build cannot point past the end of a shorter list.
+- **Auto-reload after a failed run.** A Metal fault, a watchdog kill or an aborted sampler can leave
+  the graph and state caches inconsistent, and the only escape was pressing 卸載. Now a failed
+  generation sets `needsReload`; the next 生成 releases the context and calls `load()`, and the load
+  resumes the generation (`resumeAfterReload`) so the user still gets one press per run. The old
+  context is released *before* loading, since two live weight sets do not fit in memory. A reload
+  costs one weight pass per press, not a loop: the resumed run failing again just sets the flag again.
+  Applying a preset that changes the slots uses the same path.
+
+Also settled here: **`vae=cpu` really does put the decode on the CPU.** The VAE runner is
+constructed with `ctx.backends.runtime_backend(SDBackendModule::VAE)`
+(`model_builders.cpp:533-600`), and that module's runtime comes from the assignment parsed out of
+`p.backend`; `parse_backend_module` maps `vae` to `SDBackendModule::VAE`
+(`ggml_extend_backend.cpp:80`). The engine prints the resolution itself, so a device log answers it
+without instrumentation: `auto-fit: --backend "…vae=cpu…"` (`backend_fit.cpp:474`) and the
+per-component line `vae params … -> compute cpu` (`backend_fit.cpp:346`). Both land in
+`pocketllm.log` through `sd_log_cb`, next to the app's own `sd: metal n_cb=… vae=cpu …` line.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1275,6 +1309,9 @@ and for the ggml guard.
 | engine writes VAE-space latents for the 2D decoder | patch applies to `8cd731e7b` (`patch -p1 --dry-run` clean); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
+| presets restore slots and sampling | compile-only; the JSON round-trip is the same `Codable` pair used by `GalleryStore`, and the menu is a plain `Menu` |
+| a failed run rebuilds the context | compile-only: `needsReload` set at all three failure exits, cleared on success/load/unload; the resumed run re-enters `generate()` from `load()` |
+| `vae=cpu` puts the VAE on the CPU | code path: runner built from `runtime_backend(SDBackendModule::VAE)` (`model_builders.cpp:533`), module from `p.backend` (`ggml_extend_backend.cpp:80`); device log line to confirm: `auto-fit: --backend "…vae=cpu…"` + `vae … -> compute cpu` |
 | the Iris GGUF is the reason `new_sd_ctx` fails | real headers: `Iris-3B-Q3_K_S`/`Q4_K_S` store `blocks.0.mlp_x.w2.weight` as `[256, 68260]`; `speridlabs/iris-3b` safetensors has `[2560, 6826]`; sd.cpp registers `w2` as `[mlp_dim, hidden]` from `w1.ne[1]` (`iris.hpp:42`) |
 
 **Not verified:** anything requiring a device — iOS image generation, iOS vision output,
@@ -1391,7 +1428,13 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-9. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+9. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
+   confirm the steppers move, save the tab as a preset, relaunch and confirm it is still listed and
+   restores the slots, then force one failed run (a malformed model or a cancelled Metal step) and
+   confirm the next 生成 logs `sd: reloading the model after the failed run`, reloads, and runs once.
+   The same log should also settle the CPU-decode question: `auto-fit: --backend "…vae=cpu…"` plus
+   `vae … -> compute cpu`.
+10. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
    (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
    (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
    `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says

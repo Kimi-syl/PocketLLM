@@ -20,6 +20,9 @@ struct ImageGenView: View {
     /// The slot list is an escape hatch, not the normal flow: a bundle from the
     /// Models tab already sets every slot, so this starts collapsed.
     @State private var showAdvanced = false
+    /// Name prompt for "save the current settings as a preset".
+    @State private var isPresetNamePrompt = false
+    @State private var presetName = ""
 
     private enum Slot: String, Identifiable {
         case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora
@@ -91,6 +94,13 @@ struct ImageGenView: View {
                 case .failure(let err):
                     importNote = "匯入失敗：\(err.localizedDescription)"
                 }
+            }
+            .alert("儲存為預設", isPresented: $isPresetNamePrompt) {
+                TextField("名稱", text: $presetName)
+                Button("儲存") { engine.savePreset(named: presetName) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("記下目前的模型插槽與取樣參數；同名會覆蓋。")
             }
         }
     }
@@ -367,6 +377,8 @@ struct ImageGenView: View {
     private var paramsCard: some View {
         GroupBox("參數") {
             VStack(alignment: .leading, spacing: 8) {
+                presetRow
+                Divider()
                 sizeRow
                 stepper("寬", value: $engine.width, range: 256...1024, step: 64)
                 stepper("高", value: $engine.height, range: 256...1024, step: 64)
@@ -390,6 +402,50 @@ struct ImageGenView: View {
                 Divider()
                 vaeTilingRows
                 metalRows
+            }
+        }
+    }
+
+    /// Presets: the built-ins first (with the one that matches the loaded model
+    /// pulled out as 建議), then the user's saved snapshots, then save/delete.
+    /// A preset is applied with one tap and never merges — it is a snapshot.
+    private var presetRow: some View {
+        HStack {
+            Text("預設")
+            Spacer()
+            Menu {
+                if let recommended = engine.recommendedPreset {
+                    Section("建議（依目前模型）") {
+                        Button(recommended.name) { engine.apply(recommended) }
+                    }
+                }
+                Section("內建") {
+                    ForEach(GenPreset.builtins.filter { $0.name != engine.recommendedPreset?.name }) { preset in
+                        Button(preset.name) { engine.apply(preset) }
+                    }
+                }
+                Section("我的預設") {
+                    if engine.presets.isEmpty {
+                        Text("尚無")
+                    }
+                    ForEach(engine.presets) { preset in
+                        Button(preset.name) { engine.apply(preset) }
+                    }
+                }
+                Divider()
+                Button("儲存目前設定…") {
+                    presetName = ""
+                    isPresetNamePrompt = true
+                }
+                if !engine.presets.isEmpty {
+                    Menu("刪除我的預設") {
+                        ForEach(engine.presets) { preset in
+                            Button(preset.name, role: .destructive) { engine.deletePreset(preset) }
+                        }
+                    }
+                }
+            } label: {
+                Text("選擇預設")
             }
         }
     }
