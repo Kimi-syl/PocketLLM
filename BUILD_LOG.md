@@ -44,7 +44,7 @@ Latest APK: **`arm64-pocketllm-v0.6.1-rc7.apk`**
 | Image generation (stable-diffusion.cpp) | Metal step + MLX VAE decode; bundle picker; bundled ESRGAN upscale with 2-4x and a gated Core AI path (§2.22-§2.24); gallery (§2.26); FLUX.3 (§2.28); import classifies GGUF architecture and a split repo reports its missing parts before and after download (§2.29) |
 | Vision via `libmtmd` (mmproj) | built and linked — replies blank |
 
-Latest artifact: `PocketLLM-device-unsigned` from run `40076901359` (`d966f70`, optional post_quant_conv).
+Latest artifact: `PocketLLM-device-unsigned` from run `40089937623` (`53c2de8`, presets + reload after a failed run).
 
 ### Known-open
 
