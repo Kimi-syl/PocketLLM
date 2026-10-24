@@ -143,10 +143,12 @@ final class MLXVae {
 
     private(set) var weights: [String: MLXArray]
 
-    /// Compute dtype. The engine decodes in f32 (bf16 files are converted on
-    /// load) and the widest stage is only ~230 MB, so match it instead of
-    /// introducing a bf16 path the Metal kernels may or may not cover.
-    static let compute: DType = .float32
+    /// Compute dtype for the intermediates. f32 is the proven path and stays the
+    /// default; the large-canvas tiled path switches to f16, where the widest
+    /// stage would otherwise hold three or four live 128-channel tensors of
+    /// 536 MB each at 1024x1024. Weights are converted per call, so this can
+    /// change per decode.
+    private var compute: DType = .float32
 
     /// Alternate spellings of the same modules, as `(diffusers, engine)`. Only
     /// the decoder is aliased; the encoder is dropped at load.
@@ -305,7 +307,7 @@ final class MLXVae {
     private func convWeight(_ name: String) throws -> MLXArray {
         var w = try tensor(name)
         // MLX convolutions want one dtype throughout.
-        w = w.asType(Self.compute)
+        w = w.asType(compute)
         if w.ndim == 5 {
             w = w[0..., 0..., w.shape[2] - 1, 0..., 0...]
         }
@@ -318,7 +320,7 @@ final class MLXVae {
         let w = try convWeight(name + ".weight")
         var y = conv2d(x, w, stride: 1, padding: .init(padding))
         if let b = bias(name) {
-            y = y + b.asType(Self.compute).reshaped([1, 1, 1, b.size])
+            y = y + b.asType(compute).reshaped([1, 1, 1, b.size])
         }
         // Evaluate per convolution. MLX is lazy, so without this the whole
         // stage would fuse into one graph and hold every intermediate alive at
@@ -335,7 +337,7 @@ final class MLXVae {
         let meanSq = (x * x).mean(axis: -1, keepDims: true)
         var y = x / sqrt(meanSq + 1e-12)
         if let gamma {
-            y = y * gamma.asType(Self.compute).reshaped([1, 1, 1, gamma.size])
+            y = y * gamma.asType(compute).reshaped([1, 1, 1, gamma.size])
         }
         return y
     }
@@ -367,11 +369,40 @@ final class MLXVae {
         let qkv = split(y, parts: 3, axis: 2)
         let q = qkv[0], k = qkv[1], v = qkv[2]
         let scale = 1.0 / sqrt(Float(c))
-        let probs = softmax(matmul(q * scale, k.transposed(0, 2, 1)), axis: 2)
-        var out = matmul(probs, v)                             // [n, hw, c]
+        var out = try attend(q, k, v, scale: scale)            // [n, hw, c]
         out = out.reshaped([n, hh, ww, c])
         out = try conv(out, p + "proj", padding: 0)
         return out + identity
+    }
+
+    /// `softmax(q kᵀ * scale) v` with the query axis processed in blocks.
+    ///
+    /// The full score matrix is the single largest allocation in the decode and
+    /// grows with the square of the canvas: at 1024x1024 the latent is 128x128,
+    /// so `[hw, hw]` is 16384^2 floats = 1.07 GB, and softmax needs a second
+    /// buffer of the same size. Blocking the queries is mathematically
+    /// identical (every row of the softmax is over the full key set) and caps
+    /// the peak at `block x hw`, which is what makes the large canvases fit.
+    private func attend(_ q: MLXArray, _ k: MLXArray, _ v: MLXArray,
+                        scale: Float, block: Int = 1024) throws -> MLXArray {
+        let hw = q.shape[1]
+        guard hw > block else {
+            let probs = softmax(matmul(q * scale, k.transposed(0, 2, 1)), axis: 2)
+            return matmul(probs, v)
+        }
+        let kt = k.transposed(0, 2, 1)
+        var pieces: [MLXArray] = []
+        pieces.reserveCapacity((hw + block - 1) / block)
+        var start = 0
+        while start < hw {
+            let end = min(start + block, hw)
+            let probs = softmax(matmul(q[0..., start..<end, 0...] * scale, kt), axis: 2)
+            let piece = matmul(probs, v)
+            eval(piece)
+            pieces.append(piece)
+            start = end
+        }
+        return concatenated(pieces, axis: 1)
     }
 
     /// Nearest-neighbour 2x. Written with concatenate/reshape rather than the
@@ -395,6 +426,9 @@ final class MLXVae {
     /// - Parameter latents: `[N, C, 1, H, W]` or `[N, C, H, W]` diffusion latents.
     /// - Returns: `[N, H*8, W*8, 3]` (NHWC) in the range `[-1, 1]`.
     func decode(latents: MLXArray) throws -> MLXArray {
+        // f32 unless the tiled path below switches to f16; reset so a second
+        // decode on the same instance cannot inherit the large-canvas choice.
+        compute = .float32
         // MLX reports errors through a process-wide handler whose default is
         // `fatalError`. Scoping it converts them into a thrown Swift error, so
         // a bad tensor name or an allocation failure lands in the app log
@@ -429,7 +463,7 @@ final class MLXVae {
         var x = z.transposed(0, 2, 3, 1)
         let mean = MLXArray(Self.latentsMean).reshaped([1, 1, 1, zDim])
         let std = MLXArray(Self.latentsStd).reshaped([1, 1, 1, zDim])
-        x = (x * std + mean).asType(Self.compute)
+        x = (x * std + mean).asType(compute)
 
         // post_quant_conv is the engine's `conv2` block.
         x = try conv(x, "conv2", padding: 0)
@@ -499,32 +533,32 @@ final class MLXVae {
         y = y / sqrt(variance + eps)
         y = y.reshaped([n, h, w, c])
         if let gamma = weights[name + ".weight"] {
-            y = y * gamma.asType(Self.compute).reshaped([1, 1, 1, c])
+            y = y * gamma.asType(compute).reshaped([1, 1, 1, c])
         }
         if let beta = weights[name + ".bias"] {
-            y = y + beta.asType(Self.compute).reshaped([1, 1, 1, c])
+            y = y + beta.asType(compute).reshaped([1, 1, 1, c])
         }
         return y
     }
 
     private func conv2D(_ x: MLXArray, _ name: String, padding: Int) throws -> MLXArray {
-        let w = try tensor(name + ".weight").asType(Self.compute).transposed(0, 2, 3, 1)
+        let w = try tensor(name + ".weight").asType(compute).transposed(0, 2, 3, 1)
         var y = conv2d(x, w, stride: 1, padding: .init(padding))
         if let b = weights[name + ".bias"] {
-            y = y + b.asType(Self.compute).reshaped([1, 1, 1, b.size])
+            y = y + b.asType(compute).reshaped([1, 1, 1, b.size])
         }
         eval(y)
         return y
     }
 
     private func linear2D(_ x: MLXArray, _ name: String) throws -> MLXArray {
-        var w = try tensor(name + ".weight").asType(Self.compute)
+        var w = try tensor(name + ".weight").asType(compute)
         // The original LDM attention projects with 1x1 convolutions, diffusers
         // with Linear layers; both reduce to the same [out, in] matrix.
         if w.ndim == 4 { w = w.reshaped([w.shape[0], w.shape[1]]) }
         var y = matmul(x, w.transposed(1, 0))
         if let b = weights[name + ".bias"] {
-            y = y + b.asType(Self.compute)
+            y = y + b.asType(compute)
         }
         return y
     }
@@ -554,8 +588,7 @@ final class MLXVae {
         let k = try linear2D(y, p + "to_k")
         let v = try linear2D(y, p + "to_v")
         let scale = 1.0 / sqrt(Float(c))
-        let probs = softmax(matmul(q * scale, k.transposed(0, 2, 1)), axis: 2)
-        var out = matmul(probs, v)
+        var out = try attend(q, k, v, scale: scale)
         out = try linear2D(out, p + "to_out.0")
         out = out.reshaped([n, h, w, c])
         eval(out)
@@ -581,7 +614,7 @@ final class MLXVae {
 
         // The caller passes VAE-space latents (the engine applied its scale
         // factor and shift before writing the blob), so there is no scaling here.
-        var x = latents.transposed(0, 2, 3, 1).asType(Self.compute)
+        var x = latents.transposed(0, 2, 3, 1).asType(compute)
         if has("post_quant_conv.weight") {
             x = try conv2D(x, "post_quant_conv", padding: 0)
         }
@@ -593,9 +626,36 @@ final class MLXVae {
         x = try resnet2D(x, "decoder.mid_block.resnets.1.")
         eval(x)
 
-        var block = 0
+        // Counts come from the weights, not a hard-coded config: SD1.5, SDXL,
+        // FLUX and Z-Image differ in channels and in whether there is a
+        // post_quant_conv, not in this block layout.
+        var blocks = 0
+        while has("decoder.up_blocks.\(blocks).resnets.0.conv1.weight") { blocks += 1 }
+        guard blocks > 0 else {
+            throw VaeError.missing("decoder.up_blocks.0.resnets.0.conv1.weight")
+        }
+        var upsamples = 0
+        for b in 0..<blocks where has("decoder.up_blocks.\(b).upsamplers.0.conv.weight") {
+            upsamples += 1
+        }
+
+        let (h, w) = (x.shape[1], x.shape[2])
+        // 512x512 stays on the untiled f32 path the device runs proved. Above
+        // it the widest stage holds several live 128-channel tensors of 300 MB+
+        // each (536 MB at 1024x1024 f32), and that allocation is what fails;
+        // the tiled f16 path keeps one tile's worth live instead.
+        if h > Self.tileThreshold || w > Self.tileThreshold {
+            compute = .float16
+            return try decodeTailTiled(x.asType(compute), blocks: blocks, upsamples: upsamples)
+        }
+        return try decodeTail(x, blocks: blocks, log: true)
+    }
+
+    /// The up-blocks plus the output conv, on a whole latent or on one window.
+    private func decodeTail(_ input: MLXArray, blocks: Int, log: Bool) throws -> MLXArray {
+        var x = input
         let t0 = Date()
-        while has("decoder.up_blocks.\(block).resnets.0.conv1.weight") {
+        for block in 0..<blocks {
             var index = 0
             while has("decoder.up_blocks.\(block).resnets.\(index).conv1.weight") {
                 x = try resnet2D(x, "decoder.up_blocks.\(block).resnets.\(index).")
@@ -605,21 +665,91 @@ final class MLXVae {
                 x = try conv2D(nearest2x(x), "decoder.up_blocks.\(block).upsamplers.0.conv", padding: 1)
             }
             eval(x)
-            appLogMemory(String(format: "sd: mlx vae 2d block %d %dx%d %dch in %.2fs",
-                                block, x.shape[2], x.shape[1], x.shape[3],
-                                Date().timeIntervalSince(t0)), source: "sd")
-            block += 1
+            if log {
+                appLogMemory(String(format: "sd: mlx vae 2d block %d %dx%d %dch in %.2fs",
+                                    block, x.shape[2], x.shape[1], x.shape[3],
+                                    Date().timeIntervalSince(t0)), source: "sd")
+            }
         }
-        guard block > 0 else {
-            throw VaeError.missing("decoder.up_blocks.0.resnets.0.conv1.weight")
-        }
-
         x = try groupNorm2D(x, "decoder.conv_norm_out")
         x = silu(x)
         x = try conv2D(x, "decoder.conv_out", padding: 1)
         x = clip(x, min: -1.0, max: 1.0).asType(.float32)
         eval(x)
         return x
+    }
+
+    /// Latent pixels per tile edge, the overlap between neighbours, and the
+    /// canvas size above which tiling starts (64 latent px = 512 px).
+    ///
+    /// The tail is fully convolutional and its receptive field is about +-8
+    /// latent px (four 3x3 convs before the first 2x upsample), so cropping 12
+    /// px per interior edge is already past the margin needed; the overlap
+    /// exists to give every kept pixel that much real neighbourhood. The mid
+    /// block is *not* tiled: it holds the only global op (attention), and at
+    /// the latent resolution it is small (33 MB at 1024x1024, 512 channels).
+    private static let tileLatent = 80
+    private static let tileOverlap = 24
+    private static let tileThreshold = 64
+
+    /// Tile origins along one axis, all full size so only the image border ever
+    /// sees padding. The last origin is pinned to `total - tile`.
+    private static func tileStarts(_ total: Int, _ tile: Int, _ overlap: Int) -> [Int] {
+        guard total > tile else { return [0] }
+        var starts = [0]
+        let last = total - tile
+        var next = tile - overlap
+        while next < last {
+            starts.append(next)
+            next += tile - overlap
+        }
+        starts.append(last)
+        return starts
+    }
+
+    private func decodeTailTiled(_ x: MLXArray, blocks: Int, upsamples: Int) throws -> MLXArray {
+        let n = x.shape[0], h = x.shape[1], w = x.shape[2]
+        let scale = 1 << upsamples
+        let tile = min(Self.tileLatent, max(h, w))
+        let overlap = min(Self.tileOverlap, tile / 2)
+        let ys = Self.tileStarts(h, tile, overlap)
+        let xs = Self.tileStarts(w, tile, overlap)
+        let (outH, outW) = (h * scale, w * scale)
+        var out = [Float](repeating: 0, count: n * outH * outW * 3)
+        let t0 = Date()
+        appLog(String(format: "sd: mlx vae 2d tiled %dx%d latent -> %dx%d px in %d tile(s) of %d px (overlap %d, f16)",
+                      w, h, outW, outH, ys.count * xs.count, tile, overlap), source: "sd")
+
+        for (yi, y0) in ys.enumerated() {
+            for (xi, x0) in xs.enumerated() {
+                let th = min(tile, h - y0), tw = min(tile, w - x0)
+                let tileOut = try decodeTail(x[0..., y0..<y0 + th, x0..<x0 + tw, 0...],
+                                             blocks: blocks, log: false)
+                // Keep only the part of the tile that had real neighbours.
+                let cy0 = y0 + (y0 > 0 ? overlap / 2 : 0)
+                let cy1 = y0 + th - (y0 + th < h ? overlap / 2 : 0)
+                let cx0 = x0 + (x0 > 0 ? overlap / 2 : 0)
+                let cx1 = x0 + tw - (x0 + tw < w ? overlap / 2 : 0)
+                let srcY = (cy0 - y0) * scale, srcX = (cx0 - x0) * scale
+                let rows = (cy1 - cy0) * scale, cols = (cx1 - cx0) * scale
+                let core = tileOut[0..., srcY..<srcY + rows, srcX..<srcX + cols, 0...]
+                let values = core.asArray(Float.self)
+                // Paste on the host: MLX slice assignment would copy the whole
+                // output per tile, and this is 3 MB for a 384 px tile.
+                for b in 0..<n {
+                    for r in 0..<rows {
+                        let src = (b * rows + r) * cols * 3
+                        let dst = ((b * outH + cy0 * scale + r) * outW + cx0 * scale) * 3
+                        out.replaceSubrange(dst..<dst + cols * 3, with: values[src..<src + cols * 3])
+                    }
+                }
+                GPU.clearCache()
+                appLogMemory(String(format: "sd: mlx vae 2d tile %d/%d %.2fs",
+                                    yi * xs.count + xi + 1, ys.count * xs.count,
+                                    Date().timeIntervalSince(t0)), source: "sd")
+            }
+        }
+        return MLXArray(out).reshaped([n, outH, outW, 3])
     }
 
     // MARK: - Latent blob
