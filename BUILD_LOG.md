@@ -1249,7 +1249,9 @@ bounded:
   ~±8 px receptive field, and half of it is cropped per interior edge, so a seam would need the
   field to be three times wider than it is.
 - 512x512 and below stay on the untiled f32 path that the device runs proved, so the known-good
-  output is untouched. The switch is at 64 latent px (512 px) per axis.
+  output is untouched. The switch is at 64 latent px (512 px) per axis. Blocked attention does apply
+  at 512x512 too (4096 tokens > 1024), which is the same arithmetic with a smaller peak; only the
+  float summation order inside softmax changes.
 - `GPU.clearCache()` between tiles returns the freed buffers to the system instead of the MLX pool
   (`SdEngine` already caps the pool at 64 MB).
 
