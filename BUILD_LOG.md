@@ -1242,12 +1242,15 @@ bounded:
   the 3D and the 2D attention now go through it.
 - **The last stage.** At 1024x1024 the up-blocks reach 128 channels at full resolution: 536 MB per
   tensor in f32, and a resnet needs three or four live at once (norm temporaries, conv output).
-- **The whole-frame graph.** Tiling the canvas was the only way to bound that, so `decode2D` now
-  tiles the *tail* (up-blocks + `conv_norm_out` + `conv_out`) into 80-latent-pixel windows with a
-  24 px overlap, in f16. Only the tail: the mid block holds the one global op and is small (33 MB)
-  at latent resolution, so it stays whole and the tiles still agree. Overlap is 24 px against a
-  ~±8 px receptive field, and half of it is cropped per interior edge, so a seam would need the
-  field to be three times wider than it is.
+- **The whole-frame graph.** Tiling the canvas was the only way to bound that, so both decoders now
+  tile their *tail* (up-blocks + the output conv) into 80-latent-pixel windows with a 24 px overlap,
+  in f16: `decode2D` and the 3D Wan/Qwen path (`decodeChecked`, where the tail is the
+  `decoder.upsamples` walk plus the head). Only the tail: the mid block holds the one global op and
+  is small (33 MB) at latent resolution, so it stays whole and the tiles still agree. The 3D path
+  needed it just as much — at 1024x1024 its last stages are 96 channels at full resolution and 384
+  channels at half, i.e. 400 MB per tensor in f32. Overlap is 24 px against a ~±8 px receptive
+  field, and half of it is cropped per interior edge, so a seam would need the field to be three
+  times wider than it is.
 - 512x512 and below stay on the untiled f32 path that the device runs proved, so the known-good
   output is untouched. The switch is at 64 latent px (512 px) per axis. Blocked attention does apply
   at 512x512 too (4096 tokens > 1024), which is the same arithmetic with a smaller peak; only the
@@ -1256,7 +1259,8 @@ bounded:
   (`SdEngine` already caps the pool at 64 MB).
 
 Expected on device at 1024x1024: four tiles of 640x640, roughly 300-400 MB peak instead of >2 GB,
-and the per-tile log line (`sd: mlx vae 2d tile i/n`) makes the split visible. If a device still
+and the per-tile log line (`sd: mlx vae 2d tile i/n`, `sd: mlx vae 3d tile i/n`) makes the split
+visible. If a device still
 fails, the CPU fallback from §2.33 takes over; the next knob is `tileLatent`.
 
 ---
@@ -1338,7 +1342,7 @@ and for the ggml guard.
 | engine writes VAE-space latents for the 2D decoder | patch applies to `8cd731e7b` (`patch -p1 --dry-run` clean); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
-| large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile |
+| large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
 | presets restore slots and sampling | compile-only; the JSON round-trip is the same `Codable` pair used by `GalleryStore`, and the menu is a plain `Menu` |
 | a failed run rebuilds the context | compile-only: `needsReload` set at all three failure exits, cleared on success/load/unload; the resumed run re-enters `generate()` from `load()` |
 | `vae=cpu` puts the VAE on the CPU | code path: runner built from `runtime_backend(SDBackendModule::VAE)` (`model_builders.cpp:533`), module from `p.backend` (`ggml_extend_backend.cpp:80`); device log line to confirm: `auto-fit: --backend "…vae=cpu…"` + `vae … -> compute cpu` |
@@ -1458,9 +1462,10 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-9. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 (SDXL or Z-Image)
-   and read the tile lines: `sd: mlx vae 2d tiled 128x128 latent -> 1024x1024 px in 4 tile(s)`,
-   then one `sd: mlx vae 2d tile i/4`, then `peak N MB`. The number to watch is the peak; if the
+9. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
+   (SDXL/Z-Image for `2d`, Qwen-Image for `3d`) and read the tile lines:
+   `sd: mlx vae 2d tiled 128x128 latent -> 1024x1024 px in 4 tile(s)`, then one
+   `sd: mlx vae 2d tile i/4`, then `peak N MB`. A 3D run prints the same with `3d`. The number to watch is the peak; if the
    tiles still fail, halve `tileLatent`. Check the seams by comparing against the CPU decode of the
    same seed.
 10. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and

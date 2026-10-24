@@ -475,40 +475,75 @@ final class MLXVae {
         eval(x)
 
         // Mirror Decoder3d::Decoder3d in wan_vae.hpp, which is what wrote the
-        // tensor names. Its `dims` list starts with `dim_mult.last * dim`
-        // repeated, so for dim=96, dim_mult={1,2,4,4} it is
-        // [384, 384, 384, 192, 96, 96] and there are five groups, not four:
+        // tensor names. Its `dims` list starts with `dim_mult.last * dim`, so
+        // for dim=96, dim_mult={1,2,4,4} the walk is
         //
         //   upsamples.0-2   Residual(384)         upsamples.3  Resample(384)
         //   upsamples.4-6   Residual(192->384)    upsamples.7  Resample(384)
         //   upsamples.8-10  Residual(192)         upsamples.11 Resample(192)
         //   upsamples.12-14 Residual(96)
-        //   upsamples.15-17 Residual(96)
         //
         // The channel change sits on the *first* residual of a group; the
-        // engine's `in_dim / 2` quirk for i in 1...3 is already baked into
-        // those weights, so this loop only walks indices and resample slots.
-        let dims = [dimMult[dimMult.count - 1] * dim] + dimMult.reversed().map { dim * $0 }
-
-        var index = 0
-        let t0 = Date()
-        for i in 0..<(dims.count - 1) {
-            for _ in 0...numResBlocks {
-                x = try residualBlock(x, "decoder.upsamples.\(index).")
-                index += 1
+        // engine's `in_dim / 2` quirk is already baked into those weights, so
+        // the walk only needs the indices and which slot is a resample.
+        let groups = tailGroups3D()
+        let scale = 1 << groups.compactMap(\.upsample).count
+        let (h, w) = (x.shape[1], x.shape[2])
+        // Same threshold and the same reason as the 2D path: past 512 px the
+        // last stages hold 96-384 channels at full resolution, which is 400 MB
+        // per tensor in f32 at 1024x1024 with three or four live at once.
+        if h > Self.tileThreshold || w > Self.tileThreshold {
+            compute = .float16
+            return try decodeTiled(x.asType(compute), scale: scale, label: "3d") {
+                try self.decodeTail3D($0, groups: groups, log: false)
             }
-            if i != dimMult.count - 1 {
-                x = try upsampleBlock(x, "decoder.upsamples.\(index).")
-                index += 1
+        }
+        return try decodeTail3D(x, groups: groups, log: true)
+    }
+
+    private struct TailGroup {
+        let start: Int
+        let resnets: Int
+        let upsample: Int?
+    }
+
+    /// The upsample-block walk as indices rather than a running counter, so the
+    /// untiled and the tiled path cannot disagree about the layout.
+    private func tailGroups3D() -> [TailGroup] {
+        let dims = [dimMult[dimMult.count - 1] * dim] + dimMult.reversed().map { dim * $0 }
+        var groups: [TailGroup] = []
+        var index = 0
+        for i in 0..<(dims.count - 1) {
+            let resnets = numResBlocks + 1
+            let upsamples = i != dimMult.count - 1
+            groups.append(TailGroup(start: index,
+                                    resnets: resnets,
+                                    upsample: upsamples ? index + resnets : nil))
+            index += resnets + (upsamples ? 1 : 0)
+        }
+        return groups
+    }
+
+    /// The 3D up-blocks plus the head, on a whole latent or on one window.
+    private func decodeTail3D(_ input: MLXArray, groups: [TailGroup], log: Bool) throws -> MLXArray {
+        var x = input
+        let t0 = Date()
+        for (i, group) in groups.enumerated() {
+            for k in 0..<group.resnets {
+                x = try residualBlock(x, "decoder.upsamples.\(group.start + k).")
+            }
+            if let slot = group.upsample {
+                x = try upsampleBlock(x, "decoder.upsamples.\(slot).")
             }
             // Group markers: if MLX throws or the process dies, the last line
             // in the log names where.
             eval(x)
-            appLogMemory(String(format: "sd: mlx vae group %d/%d %dx%d %dch in %.2fs",
-                                i + 1, dims.count - 1, x.shape[2], x.shape[1], x.shape[3],
-                                Date().timeIntervalSince(t0)), source: "sd")
+            if log {
+                appLogMemory(String(format: "sd: mlx vae group %d/%d %dx%d %dch in %.2fs",
+                                    i + 1, groups.count, x.shape[2], x.shape[1], x.shape[3],
+                                    Date().timeIntervalSince(t0)), source: "sd")
+            }
         }
-
         x = rmsNorm(x, try? tensor("decoder.head.0.gamma"))
         x = silu(x)
         x = try conv(x, "decoder.head.2", padding: 1)
@@ -646,7 +681,9 @@ final class MLXVae {
         // the tiled f16 path keeps one tile's worth live instead.
         if h > Self.tileThreshold || w > Self.tileThreshold {
             compute = .float16
-            return try decodeTailTiled(x.asType(compute), blocks: blocks, upsamples: upsamples)
+            return try decodeTiled(x.asType(compute), scale: 1 << upsamples, label: "2d") {
+                try self.decodeTail($0, blocks: blocks, log: false)
+            }
         }
         return try decodeTail(x, blocks: blocks, log: true)
     }
@@ -679,6 +716,11 @@ final class MLXVae {
         return x
     }
 
+    /// Runs `tail` over overlapping windows of `x` and pastes the cores into one
+    /// image. Used by both decoders: their tails are the same shape (resnet
+    /// groups plus 2x upsamples), and both are fully convolutional, so a window
+    /// only differs from the full frame near its own edges.
+    ///
     /// Latent pixels per tile edge, the overlap between neighbours, and the
     /// canvas size above which tiling starts (64 latent px = 512 px).
     ///
@@ -707,9 +749,9 @@ final class MLXVae {
         return starts
     }
 
-    private func decodeTailTiled(_ x: MLXArray, blocks: Int, upsamples: Int) throws -> MLXArray {
+    private func decodeTiled(_ x: MLXArray, scale: Int, label: String,
+                             tail: (MLXArray) throws -> MLXArray) throws -> MLXArray {
         let n = x.shape[0], h = x.shape[1], w = x.shape[2]
-        let scale = 1 << upsamples
         let tile = min(Self.tileLatent, max(h, w))
         let overlap = min(Self.tileOverlap, tile / 2)
         let ys = Self.tileStarts(h, tile, overlap)
@@ -717,14 +759,13 @@ final class MLXVae {
         let (outH, outW) = (h * scale, w * scale)
         var out = [Float](repeating: 0, count: n * outH * outW * 3)
         let t0 = Date()
-        appLog(String(format: "sd: mlx vae 2d tiled %dx%d latent -> %dx%d px in %d tile(s) of %d px (overlap %d, f16)",
-                      w, h, outW, outH, ys.count * xs.count, tile, overlap), source: "sd")
+        appLog(String(format: "sd: mlx vae %@ tiled %dx%d latent -> %dx%d px in %d tile(s) of %d px (overlap %d, f16)",
+                      label, w, h, outW, outH, ys.count * xs.count, tile, overlap), source: "sd")
 
         for (yi, y0) in ys.enumerated() {
             for (xi, x0) in xs.enumerated() {
                 let th = min(tile, h - y0), tw = min(tile, w - x0)
-                let tileOut = try decodeTail(x[0..., y0..<y0 + th, x0..<x0 + tw, 0...],
-                                             blocks: blocks, log: false)
+                let tileOut = try tail(x[0..., y0..<y0 + th, x0..<x0 + tw, 0...])
                 // Keep only the part of the tile that had real neighbours.
                 let cy0 = y0 + (y0 > 0 ? overlap / 2 : 0)
                 let cy1 = y0 + th - (y0 + th < h ? overlap / 2 : 0)
@@ -744,8 +785,8 @@ final class MLXVae {
                     }
                 }
                 Memory.clearCache()
-                appLogMemory(String(format: "sd: mlx vae 2d tile %d/%d %.2fs",
-                                    yi * xs.count + xi + 1, ys.count * xs.count,
+                appLogMemory(String(format: "sd: mlx vae %@ tile %d/%d %.2fs",
+                                    label, yi * xs.count + xi + 1, ys.count * xs.count,
                                     Date().timeIntervalSince(t0)), source: "sd")
             }
         }
