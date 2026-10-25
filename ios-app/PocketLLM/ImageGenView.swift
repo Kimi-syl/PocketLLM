@@ -777,7 +777,7 @@ struct ImageGenView: View {
         // Downloaded on demand (放大 > 下載更多模型). Scanned rather than tracked
         // in state so a file downloaded in an earlier session is still there.
         if let files = try? FileManager.default.contentsOfDirectory(
-            at: UpscalerCatalog.directory, includingPropertiesForKeys: nil) {
+            at: UpscalerSource.directory, includingPropertiesForKeys: nil) {
             for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 add(file.path, file.lastPathComponent, bundled: false)
             }
