@@ -93,6 +93,28 @@ NS_ASSUME_NONNULL_BEGIN
                                       tileSize:(int32_t)tileSize
                                          error:(NSError * _Nullable * _Nullable)error;
 
+/// Video generation (Wan 2.2 TI2V and friends). Frames come back as images; the
+/// engine has no video container, so writing a file is the app's job.
+///
+/// This path deliberately has no MLX-VAE hand-off: the SD_LATENTS_DUMP hook
+/// lives in the image pipeline, and a real VAE decode of a dozen frames is
+/// minutes of GPU work - exactly the chain the watchdog kills. A tiny decoder
+/// (`taesd`, the `taew2_2.safetensors` that ships with these bundles) is what
+/// makes the decode cheap instead.
+- (nullable NSArray<SdImage *> *)generateVideo:(NSString *)prompt
+                                      negative:(nullable NSString *)negative
+                                         width:(int32_t)width
+                                        height:(int32_t)height
+                                        frames:(int32_t)frames
+                                           fps:(int32_t)fps
+                                         steps:(int32_t)steps
+                                           cfg:(float)cfg
+                                     flowShift:(float)flowShift
+                                          seed:(int64_t)seed
+                                     initImage:(nullable SdImage *)initImage
+                                      strength:(float)strength
+                                         error:(NSError * _Nullable * _Nullable)error;
+
 - (void)cancel;
 
 /// Routes the engine's own log (including ggml's abort reason) into `path`,

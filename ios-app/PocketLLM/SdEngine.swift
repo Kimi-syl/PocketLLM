@@ -57,6 +57,13 @@ final class SdEngine: ObservableObject {
     @Published var vae = SdEngine.restore("sd.vae") {   // vae_path
         didSet { SdEngine.store(vae, "sd.vae", oldValue) }
     }
+    /// A tiny decoder (`taesd_path`) used instead of the real VAE. Wan 2.2's
+    /// bundle ships `taew2_2.safetensors` for exactly this: decoding a dozen
+    /// frames through the full 1.4 GB VAE is minutes of GPU work in one chain,
+    /// which is the chain the watchdog kills, while the tiny decoder is cheap.
+    @Published var tae = SdEngine.restore("sd.tae") {
+        didSet { SdEngine.store(tae, "sd.tae", oldValue) }
+    }
     @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
     @Published var clipG       = ""   // clip_g_path (SDXL's OpenCLIP-G encoder)
     @Published var t5          = ""   // t5xxl_path
@@ -69,6 +76,16 @@ final class SdEngine: ObservableObject {
     /// carry into the next session's generation.
     @Published var initImage: UIImage?
     @Published var strength: Float = 0.6
+    /// Video: Wan 2.2 TI2V and friends go through generate_video, not
+    /// generate_image, and their checkpoints are refused in image mode on
+    /// purpose (a phone cannot hold a multi-frame graph plus the weights). The
+    /// frame count has to be 4n+1 for these models; the UI only offers those.
+    @Published var videoMode = false
+    @Published var videoFrames = 13
+    @Published var videoFps = 16
+    @Published var videoFlowShift: Float = 3
+    @Published private(set) var videoFramesOut: [UIImage] = []
+
     /// Hires: a second pass at `hiresScale` times the canvas, re-denoised for
     /// `hiresSteps` at `hiresStrength`. Costs roughly a second base pass plus a
     /// decode at the target size, which is why the strength is the knob that
@@ -236,10 +253,16 @@ final class SdEngine: ObservableObject {
     }
 
     func load() {
-        if let bad = [mainModel, textEncoder, vae, clipL, clipG, t5]
-            .first(where: { !$0.isEmpty && Self.isVideoCheckpoint($0) }) {
-            phase = .failed("這是影片模型（\(bad)）。手機記憶體放不下多幀影片，請改用圖片模型。")
-            appLog("sd: refused video checkpoint \(bad)", source: "sd")
+        // A video checkpoint is refused in image mode because the picture path
+        // cannot decode multiple frames and the weights plus a multi-frame graph
+        // do not fit. With 影片模式 the user is asking for exactly that run, so
+        // the slot is allowed through and the generate button routes to the
+        // video entry point instead.
+        if !videoMode,
+           let bad = [mainModel, textEncoder, vae, clipL, clipG, t5]
+               .first(where: { !$0.isEmpty && Self.isVideoCheckpoint($0) }) {
+            phase = .failed("這是影片模型（\(bad)）。手機記憶體放不下多幀影片：要跑請開「影片模式」，否則請改用圖片模型。")
+            appLog("sd: refused video checkpoint \(bad) (影片模式 is off)", source: "sd")
             return
         }
         guard !mainModel.isEmpty || !textEncoder.isEmpty else {
@@ -267,6 +290,7 @@ final class SdEngine: ObservableObject {
         // Weight loading reads gigabytes. On the main actor that alone is enough
         // to trip the watchdog, so the whole call happens off-main.
         let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae
+        let taePath = tae
         let clipLPath = clipL, clipGPath = clipG
         let full = isFullCheckpoint
         let (ncb, fuse, concurrent) = (metalCommandBuffers, metalFusion, metalConcurrency)
@@ -307,7 +331,7 @@ final class SdEngine: ObservableObject {
                     llm: encoder.isEmpty ? nil : encoder,
                     diffusion: full ? nil : (model.isEmpty ? nil : model),
                     vae: vaePath.isEmpty ? nil : vaePath,
-                    taesd: nil,
+                    taesd: taePath.isEmpty ? nil : taePath,
                     threads: threadCount,
                     vaeOnCPU: vaeCPU)
             } catch {
@@ -453,6 +477,113 @@ final class SdEngine: ObservableObject {
         if reload { needsReload = true }
         appLog("sd: refine pass — \(URL(fileURLWithPath: refinerModel).lastPathComponent) \(w8)x\(h8) strength \(refinerStrength)", source: "sd")
         generate()
+    }
+
+    /// Video generation: the same shape as `generate()` but through
+    /// `generate_video`, which returns frames instead of one image.
+    ///
+    /// No MLX-VAE hand-off here - the latents hook lives in the image pipeline,
+    /// and the engine's own decode is what the tiny decoder slot is for. There
+    /// is also no second fallback: a failed frame is not worth re-sampling a
+    /// dozen frames for, and the watchdog levers (flash attention, n_cb, the
+    /// tiny decoder) are already applied.
+    func generateVideo() {
+        guard let ctx = context else {
+            phase = .failed("尚未載入模型")
+            return
+        }
+        if needsReload {
+            needsReload = false
+            resumeAfterReload = true
+            appLog("sd: reloading the model after the failed run", source: "sd")
+            context = nil
+            load()
+            return
+        }
+        phase = .running(step: 0, steps: steps)
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(300))
+                } catch {
+                    return
+                }
+                guard let self, let c = self.context, !Task.isCancelled else { return }
+                let step = Int(c.progressStep)
+                let total = Int(c.progressSteps)
+                if total > 0, case .running = self.phase {
+                    self.phase = .running(step: step, steps: total)
+                    if step != self.lastLoggedStep {
+                        self.lastLoggedStep = step
+                        appLog(String(format: "sd: step %d/%d · %@",
+                                      step, total, LogStore.memoryDescription()), source: "sd")
+                    }
+                }
+            }
+        }
+
+        let promptText = prompt
+        let negativeText = negative
+        let (w, h, n) = (width, height, steps)
+        let (c, s0) = (cfg, seed)
+        let (frames, fps) = (videoFrames, videoFps)
+        let flow = videoFlowShift
+        let strengthValue = strength
+        let initSpec = initImage.flatMap { SdEngine.imageSpec(from: $0, width: w, height: h) }
+        let modelName = URL(fileURLWithPath: mainModel).lastPathComponent
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let started = Date()
+            appLog(String(format: "sd: entering generateVideo (%dx%d, %d frames @ %d fps, %d steps, cfg %.1f, flow %.1f%@) · %@",
+                          w, h, frames, fps, n, c, flow,
+                          initSpec != nil ? String(format: ", i2v %.2f", strengthValue) : "",
+                          LogStore.memoryDescription()), source: "sd")
+            var out: [UIImage] = []
+            do {
+                let images = try ctx.generateVideo(
+                    promptText, negative: negativeText.isEmpty ? nil : negativeText,
+                    width: Int32(w), height: Int32(h), frames: Int32(frames), fps: Int32(fps),
+                    steps: Int32(n), cfg: c, flowShift: flow, seed: s0,
+                    initImage: initSpec, strength: strengthValue)
+                out = (images ?? []).compactMap { SdEngine.bitmap(from: $0) }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.pollTask?.cancel()
+                    self.pollTask = nil
+                    self.needsReload = true
+                    self.phase = .failed(error.localizedDescription)
+                    appLog("sd video failed: \(error.localizedDescription)", source: "sd")
+                }
+                return
+            }
+            let secs = Date().timeIntervalSince(started)
+            await MainActor.run {
+                guard let self else { return }
+                self.pollTask?.cancel()
+                self.pollTask = nil
+                if out.isEmpty {
+                    self.needsReload = true
+                    self.phase = .failed("影片沒有輸出")
+                    appLog("sd video failed: no frames", source: "sd")
+                } else {
+                    self.videoFramesOut = out
+                    // The result area renders `images`, so a video is shown as
+                    // its frames; the archive keeps the first one as the still.
+                    self.images = out
+                    self.needsReload = false
+                    self.phase = .succeeded
+                    let archive = GalleryStore.Meta(
+                        prompt: promptText, negative: negativeText,
+                        width: w, height: h, steps: n, seed: s0, model: modelName)
+                    self.lastArchive = archive
+                    if let first = out.first { GalleryStore.shared.save(first, meta: archive) }
+                    appLog(String(format: "sd generated %d frame(s) · %.1fs · %@",
+                                  out.count, secs, LogStore.memoryDescription()), source: "sd")
+                }
+            }
+        }
     }
 
     // MARK: - Generation

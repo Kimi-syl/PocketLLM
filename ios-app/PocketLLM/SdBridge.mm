@@ -473,6 +473,85 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     return out;
 }
 
+- (NSArray<SdImage *> *)generateVideo:(NSString *)prompt
+                              negative:(nullable NSString *)negative
+                                 width:(int32_t)width
+                                height:(int32_t)height
+                                frames:(int32_t)frames
+                                   fps:(int32_t)fps
+                                 steps:(int32_t)steps
+                                   cfg:(float)cfg
+                             flowShift:(float)flowShift
+                                  seed:(int64_t)seed
+                             initImage:(nullable SdImage *)initImage
+                              strength:(float)strength
+                                 error:(NSError * _Nullable * _Nullable)error {
+    if (_ctx == nullptr) return nil;
+
+    std::string sPrompt = prompt.UTF8String;
+    std::string sNeg = negative ? negative.UTF8String : "";
+
+    sd_vid_gen_params_t vp;
+    sd_vid_gen_params_init(&vp);
+    vp.prompt = sPrompt.c_str();
+    vp.negative_prompt = sNeg.c_str();
+    vp.width = width;
+    vp.height = height;
+    vp.video_frames = frames;
+    vp.fps = fps;
+    vp.seed = seed;
+    if (initImage != nil && initImage.pixels.length > 0) {
+        vp.init_image.width = initImage.width;
+        vp.init_image.height = initImage.height;
+        vp.init_image.channel = initImage.channel;
+        vp.init_image.data = (uint8_t *)initImage.pixels.bytes;
+        vp.strength = strength;
+    }
+    // Euler + simple is what the Wan distilled checkpoints are documented
+    // against (and what Mirage's bundle uses); both indices are the engine's own
+    // tables, resolved by name here rather than hard-coded.
+    enum sample_method_t euler = str_to_sample_method("euler");
+    vp.sample_params.sample_method = euler < SAMPLE_METHOD_COUNT ? euler : EULER_SAMPLE_METHOD;
+    vp.sample_params.scheduler = (scheduler_t)SIMPLE_SCHEDULER;
+    vp.sample_params.sample_steps = steps;
+    vp.sample_params.guidance.txt_cfg = cfg;
+    vp.sample_params.flow_shift = flowShift;
+
+    g_step.store(0);
+    g_steps.store(0);
+
+    sd_image_t *outFrames = nullptr;
+    int num = 0;
+    int fpsOut = 0;
+    bool ok = generate_video(_ctx, &vp, &outFrames, &num, nullptr, &fpsOut);
+    if (!ok || outFrames == nullptr || num <= 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdContext"
+                                         code:5
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    @"generate_video produced no frames"}];
+        }
+        if (outFrames != nullptr) {
+            free_sd_images(outFrames, num);
+        }
+        return nil;
+    }
+    NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)num];
+    for (int i = 0; i < num; ++i) {
+        sd_image_t img = outFrames[i];
+        if (img.data == nullptr) continue;
+        size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
+        SdImage *wrapped = [[SdImage alloc] init];
+        wrapped.width = img.width;
+        wrapped.height = img.height;
+        wrapped.channel = img.channel;
+        wrapped.pixels = [NSData dataWithBytes:img.data length:bytes];
+        [out addObject:wrapped];
+    }
+    free_sd_images(outFrames, num);
+    return out;
+}
+
 - (void)cancel {
     if (_ctx != nullptr) {
         sd_cancel_generation(_ctx, SD_CANCEL_ALL);
