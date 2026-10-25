@@ -1,0 +1,164 @@
+--- a/include/stable-diffusion.h
++++ b/include/stable-diffusion.h
+@@ -555,6 +555,24 @@
+                            sd_audio_t** audio_out,
+                            int* fps_out);
+ 
++// Decode latents written by SD_LATENTS_DUMP, without sampling again.
++//
++// The public generate path always samples first, so an external decoder that
++// fails on the latents (the iOS app's MLX VAE) would otherwise cost a full
++// re-run to get the same picture out of this process's own decoder. `vae_space`
++// selects the ".vae" blob, whose values are already scaled/shifted for the VAE
++// (a 2D decoder cannot derive the scale factor from the weights); false reads
++// the raw sampler blob and applies the same conversion generate_image would.
++// Tiling is taken here rather than from a request struct, because that state is
++// per generate_image call and a decode-only caller has none: pass tile_size <= 0
++// to keep the engine's default (256).
++SD_API sd_image_t* sd_decode_latents(sd_ctx_t* sd_ctx,
++                                     const char* latents_path,
++                                     bool vae_space,
++                                     bool tiling,
++                                     int tile_size,
++                                     int* num_images);
++
+ typedef struct upscaler_ctx_t upscaler_ctx_t;
+ 
+ SD_API upscaler_ctx_t* new_upscaler_ctx(const char* esrgan_path,
+--- a/src/pipeline/diffusion_engine.h
++++ b/src/pipeline/diffusion_engine.h
+@@ -489,6 +489,14 @@
+ 
+     sd::Tensor<float> decode_first_stage(const sd::Tensor<float>& x, bool decode_video = false);
+ 
++    // The decode half of decode_first_stage, for callers that already hold
++    // VAE-space latents (an SD_LATENTS_DUMP ".vae" blob).
++    sd::Tensor<float> decode_vae_latents(const sd::Tensor<float>& latents, bool decode_video = false);
++
++    // Reads a latent blob (SD_LATENTS_DUMP) and decodes it: no sampling, and
++    // the same tiling and retry behaviour as a normal decode.
++    sd::Tensor<float> decode_latents_file(const std::string& path, bool vae_space);
++
+     sd::Tensor<float> normalize_ltx_video_latents(const sd::Tensor<float>& x);
+ 
+     sd::Tensor<float> un_normalize_ltx_video_latents(const sd::Tensor<float>& x);
+--- a/src/pipeline/diffusion_engine.cpp
++++ b/src/pipeline/diffusion_engine.cpp
+@@ -3,6 +3,8 @@
+ #include <algorithm>
+ #include <cinttypes>
+ #include <cmath>
++#include <cstdint>
++#include <cstdio>
+ #include <cstdlib>
+ #include <list>
+ #include <mutex>
+@@ -3127,7 +3129,11 @@
+     if (sd_version_is_pid(version) || sd_version_is_minit2i(version) || version == VERSION_IRIS) {
+         return sd::ops::clamp((x + 1.f) * 0.5f, 0.0f, 1.0f);
+     }
+-    auto latents                      = first_stage_model->diffusion_to_vae_latents(x);
++    auto latents = first_stage_model->diffusion_to_vae_latents(x);
++    return decode_vae_latents(latents, decode_video);
++}
++
++sd::Tensor<float> StableDiffusionGGML::decode_vae_latents(const sd::Tensor<float>& latents, bool decode_video) {
+     auto tiling_params                = first_stage_model->resolve_tiling_params(vae_tiling_params);
+     const bool prefer_temporal_tiling = decode_video && latents.dim() == 5 && latents.shape()[2] > 1 &&
+                                         first_stage_model->can_temporal_tile_decode();
+@@ -3150,6 +3156,52 @@
+     }
+ }
+ 
++sd::Tensor<float> StableDiffusionGGML::decode_latents_file(const std::string& path, bool vae_space) {
++    if (first_stage_model == nullptr) {
++        LOG_ERROR("decode_latents: this context has no VAE");
++        return {};
++    }
++    FILE* file = std::fopen(path.c_str(), "rb");
++    if (file == nullptr) {
++        LOG_ERROR("decode_latents: cannot open %s", path.c_str());
++        return {};
++    }
++    // The blob is the dump hook's own format: magic, version, ndim, one i32 per
++    // dimension in the tensor's shape order (the fastest axis first, which is
++    // this Tensor's shape()[0]), then contiguous f32.
++    uint32_t magic        = 0;
++    int32_t blob_version  = 0;
++    int32_t ndim          = 0;
++    bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
++              std::fread(&blob_version, sizeof(blob_version), 1, file) == 1 &&
++              std::fread(&ndim, sizeof(ndim), 1, file) == 1 &&
++              magic == 0x564C4C50u && blob_version == 1 && ndim >= 3 && ndim <= 5;
++    std::vector<int64_t> shape;
++    int64_t count = 1;
++    for (int32_t d = 0; ok && d < ndim; d++) {
++        int32_t dim = 0;
++        ok = std::fread(&dim, sizeof(dim), 1, file) == 1 && dim > 0;
++        if (ok) {
++            shape.push_back(dim);
++            count *= dim;
++        }
++    }
++    std::vector<float> data;
++    if (ok) {
++        data.resize(static_cast<size_t>(count));
++        ok = std::fread(data.data(), sizeof(float), static_cast<size_t>(count), file) == static_cast<size_t>(count);
++    }
++    std::fclose(file);
++    if (!ok) {
++        LOG_ERROR("decode_latents: %s is not a readable latent blob", path.c_str());
++        return {};
++    }
++    sd::Tensor<float> latents(std::move(shape), std::move(data));
++    LOG_INFO("decode_latents: %s %lld element(s), %s space", path.c_str(),
++             (long long)latents.numel(), vae_space ? "VAE" : "sampler");
++    return vae_space ? decode_vae_latents(latents, false) : decode_first_stage(latents, false);
++}
++
+ sd::Tensor<float> StableDiffusionGGML::normalize_ltx_video_latents(const sd::Tensor<float>& x) {
+     auto ltx_vae = std::dynamic_pointer_cast<LTXVideoVAE>(first_stage_model);
+     if (!ltx_vae) {
+--- a/src/stable-diffusion.cpp
++++ b/src/stable-diffusion.cpp
+@@ -678,6 +678,40 @@
+     }
+ }
+ 
++SD_API sd_image_t* sd_decode_latents(sd_ctx_t* sd_ctx,
++                                     const char* latents_path,
++                                     bool vae_space,
++                                     bool tiling,
++                                     int tile_size,
++                                     int* num_images) {
++    if (sd_ctx == nullptr || sd_ctx->sd == nullptr || latents_path == nullptr) {
++        return nullptr;
++    }
++    // Tiling normally arrives with the request; there is no request here, so set
++    // it on the context, exactly as generate_image would have.
++    sd_tiling_params_t tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
++    tiling_params.enabled            = tiling;
++    if (tile_size > 0) {
++        tiling_params.tile_size_w = tile_size;
++        tiling_params.tile_size_h = tile_size;
++    }
++    sd_ctx->sd->vae_tiling_params = tiling_params;
++    sd::Tensor<float> decoded = sd_ctx->sd->decode_latents_file(latents_path, vae_space);
++    if (decoded.empty()) {
++        LOG_ERROR("sd_decode_latents: decode failed for %s", latents_path);
++        return nullptr;
++    }
++    sd_image_t* images = (sd_image_t*)calloc(1, sizeof(sd_image_t));
++    if (images == nullptr) {
++        return nullptr;
++    }
++    images[0] = tensor_to_sd_image(decoded);
++    if (num_images != nullptr) {
++        *num_images = 1;
++    }
++    return images;
++}
++
+ void free_sd_audio(sd_audio_t* audio) {
+     if (audio == nullptr) {
+         return;

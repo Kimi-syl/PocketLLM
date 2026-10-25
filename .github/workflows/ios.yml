@@ -305,6 +305,13 @@ jobs:
           patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-latents-dump.patch"
           grep -q 'SD_LATENTS_DUMP' ci-sd/src/pipeline/image.cpp \
             || { echo "latents-dump patch did not apply"; exit 1; }
+          # Decode-only entry: with those blobs on disk, a failed external decode
+          # (MLX) re-decodes them here instead of paying a second sampling pass.
+          patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-decode-latents.patch"
+          grep -q sd_decode_latents ci-sd/include/stable-diffusion.h \
+            || { echo "decode-latents patch did not apply"; exit 1; }
+          grep -q sd_decode_latents ci-sd/src/pipeline/diffusion_engine.cpp \
+            || { echo "decode-latents patch did not apply (impl)"; exit 1; }
           cmake -S ci-sd -B build-sd-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \

@@ -184,14 +184,26 @@ final class MLXVae {
         return out
     }()
 
-    /// LDM attention module names, applied only inside `attentions.0.`.
-    private static let ldm2dAttention: [(String, String)] = [
-        ("norm.",     "group_norm."),
-        ("q.",        "to_q."),
-        ("k.",        "to_k."),
-        ("v.",        "to_v."),
-        ("proj_out.", "to_out.0."),
-    ]
+    /// The sub-module names inside one attention block, as the files in the
+    /// wild spell them: diffusers (`to_q`), original LDM (`q`), and the
+    /// `query/key/value` form some conversions emit. Most-specific first; the
+    /// canonical spellings are present as identities so a name cannot be
+    /// rewritten twice.
+    private static func attentionTail(_ tail: String) -> String {
+        let map: [(String, String)] = [
+            ("group_norm.", "group_norm."),
+            ("norm.",       "group_norm."),
+            ("to_q.",       "to_q."),     ("query.", "to_q."),     ("q.", "to_q."),
+            ("to_k.",       "to_k."),     ("key.",   "to_k."),     ("k.", "to_k."),
+            ("to_v.",       "to_v."),     ("value.", "to_v."),     ("v.", "to_v."),
+            ("to_out.0.",   "to_out.0."), ("to_out.", "to_out.0."),
+            ("proj_out.",   "to_out.0."), ("proj.",   "to_out.0."),
+        ]
+        for (from, to) in map where tail.hasPrefix(from) {
+            return to + tail.dropFirst(from.count)
+        }
+        return tail
+    }
 
     let layout: Inspection.Layout
     let zDim: Int
@@ -284,11 +296,11 @@ final class MLXVae {
                 break
             }
         }
-        if let r = k.range(of: "attentions.0.") {
-            let head = String(k[..<r.upperBound])
-            let tail = String(k[r.upperBound...])
-            for (from, to) in Self.ldm2dAttention where tail.hasPrefix(from) {
-                return head + to + tail.dropFirst(from.count)
+        // `attentions.0` in diffusers, `attention.0` in some conversions.
+        for marker in ["attentions.0.", "attention.0."] {
+            if let r = k.range(of: marker) {
+                let head = String(k[..<r.lowerBound]) + "attentions.0."
+                return head + Self.attentionTail(String(k[r.upperBound...]))
             }
         }
         if let r = k.range(of: "nin_shortcut.") {
@@ -617,6 +629,11 @@ final class MLXVae {
     /// with 1/sqrt(C), then the output projection and a residual.
     private func attention2D(_ x: MLXArray, _ p: String) throws -> MLXArray {
         let (n, h, w, c) = (x.shape[0], x.shape[1], x.shape[2], x.shape[3])
+        // Name the file's own spelling rather than just the name that was
+        // missing: an unanticipated variant has to be readable from the log.
+        guard has(p + "to_q.weight") else {
+            throw VaeError.missing("\(p)to_q.weight (this file's attention keys: \(attentionKeySample()))")
+        }
         var y = try groupNorm2D(x, p + "group_norm")
         y = y.reshaped([n, h * w, c])
         let q = try linear2D(y, p + "to_q")
@@ -628,6 +645,13 @@ final class MLXVae {
         out = out.reshaped([n, h, w, c])
         eval(out)
         return out + x
+    }
+
+    /// A few of the file's own attention key names, for the error above.
+    private func attentionKeySample() -> String {
+        let keys = weights.keys.filter { $0.contains("attn") || $0.contains("attention") }
+            .sorted().prefix(6)
+        return keys.isEmpty ? "none" : keys.joined(separator: ", ")
     }
 
     /// `post_quant_conv` -> `conv_in` -> mid -> every `up_blocks` entry, with an

@@ -383,6 +383,51 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     return out;
 }
 
+- (NSArray<SdImage *> *)decodeLatents:(NSString *)path
+                              vaeSpace:(BOOL)vaeSpace
+                                tiling:(BOOL)tiling
+                              tileSize:(int32_t)tileSize
+                                 error:(NSError * _Nullable * _Nullable)error {
+    if (_ctx == nullptr) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdContext"
+                                         code:3
+                                     userInfo:@{NSLocalizedDescriptionKey: @"no context"}];
+        }
+        return nil;
+    }
+    sd_image_t *images = nullptr;
+    int num = 0;
+    images = sd_decode_latents(_ctx, path.UTF8String, vaeSpace ? true : false,
+                              tiling ? true : false, tileSize, &num);
+    if (images == nullptr || num <= 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdContext"
+                                         code:4
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    @"sd_decode_latents produced no output"}];
+        }
+        if (images != nullptr) {
+            free_sd_images(images, num);
+        }
+        return nil;
+    }
+    NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)num];
+    for (int i = 0; i < num; ++i) {
+        sd_image_t img = images[i];
+        if (img.data == nullptr) continue;
+        size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
+        SdImage *wrapped = [[SdImage alloc] init];
+        wrapped.width = img.width;
+        wrapped.height = img.height;
+        wrapped.channel = img.channel;
+        wrapped.pixels = [NSData dataWithBytes:img.data length:bytes];
+        [out addObject:wrapped];
+    }
+    free_sd_images(images, num);
+    return out;
+}
+
 - (void)cancel {
     if (_ctx != nullptr) {
         sd_cancel_generation(_ctx, SD_CANCEL_ALL);

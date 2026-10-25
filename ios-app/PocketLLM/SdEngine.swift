@@ -406,11 +406,21 @@ final class SdEngine: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard let self, let c = self.context else { return }
+                // `do/catch`, not `try?`: a cancelled sleep throws immediately,
+                // and `try?` would swallow that and let the body run once more -
+                // overwriting the .succeeded (green) or .failed (red) phase the
+                // finishing task had just set with a stale .running.
+                do {
+                    try await Task.sleep(for: .milliseconds(300))
+                } catch {
+                    return
+                }
+                guard let self, let c = self.context, !Task.isCancelled else { return }
                 let step = Int(c.progressStep)
                 let total = Int(c.progressSteps)
-                if total > 0 {
+                // Only a live run may move the bar: a terminal phase is owned by
+                // the task that produced it.
+                if total > 0, case .running = self.phase {
                     self.phase = .running(step: step, steps: total)
                     if step != self.lastLoggedStep {
                         self.lastLoggedStep = step
@@ -483,6 +493,9 @@ final class SdEngine: ObservableObject {
 
             var decoded: [UIImage] = []
             var mlxFailure: String?
+            /// Which blob the MLX attempt read, so the engine retry reads the
+            /// same one: the ".vae" sibling for a 2D decoder, the raw blob for 3D.
+            var mlxVaeSpace = false
             if mlxVae {
                 // The engine wrote the latents and skipped its decode; run the
                 // MLX decoder on them. Any existing images are ignored because
@@ -492,6 +505,11 @@ final class SdEngine: ObservableObject {
                 let t0 = Date()
                 do {
                     let info = try MLXVae.inspect(vaePathForMLX)
+                    // A 2D decoder reads the ".vae" blob (the engine's scale
+                    // factor and shift are already applied); the 3D path reads
+                    // the raw one and applies Wan/Qwen statistics itself. The
+                    // engine's decode-only retry has to read the same file.
+                    mlxVaeSpace = info.layout == .diffusers2D
                     let dump = SdContext.latentsDumpPath()
                         + (info.layout == .diffusers2D ? ".vae" : "")
                     let url = URL(fileURLWithPath: dump)
@@ -522,13 +540,27 @@ final class SdEngine: ObservableObject {
                 }
             }
 
-            // Final fallback: the engine decodes the same latents itself, on the
-            // CPU. Sampling runs again (same seed, so the same latents) because
-            // the public API has no decode-only entry point, but the context was
-            // created with `vae=cpu` whenever MLX is armed, so this cannot end
-            // in the GPU watchdog that made MLX the default decoder.
+            // Fallback, cheapest first:
+            //   1. the engine decodes the *same* latents on the CPU (sd_decode_latents
+            //      reads the blob MLX just failed on, so no sampling happens),
+            //   2. only if that fails too, a full re-run with the same seed - the
+            //      public generate path samples first, so this is the expensive one.
+            // The context was created with `vae=cpu` whenever MLX is armed, so
+            // neither can end in the GPU watchdog that made MLX the default.
             if let failure = mlxFailure {
-                appLog("sd: MLX 解碼失敗（\(failure)），改用 CPU 解碼重跑", source: "sd")
+                appLog("sd: MLX 解碼失敗（\(failure)），改用引擎 CPU 解碼同一批 latent", source: "sd")
+                let dump = SdContext.latentsDumpPath() + (mlxVaeSpace ? ".vae" : "")
+                if let images = try? ctx.decodeLatents(dump, vaeSpace: mlxVaeSpace,
+                                                       tiling: true, tileSize: Int32(tileSize)),
+                   !images.isEmpty {
+                    decoded = images.compactMap { SdEngine.bitmap(from: $0) }
+                    if !decoded.isEmpty {
+                        appLog("sd: 引擎 CPU 解碼 latent 成功（\(decoded.count) 張），未重新取樣", source: "sd")
+                    }
+                }
+            }
+            if let failure = mlxFailure, decoded.isEmpty {
+                appLog("sd: 引擎解碼 latent 也失敗，重跑（同 seed）", source: "sd")
                 do {
                     result = try ctx.generatePrompt(
                         promptText, negative: negativeText.isEmpty ? nil : negativeText,

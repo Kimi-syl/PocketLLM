@@ -1263,6 +1263,40 @@ and the per-tile log line (`sd: mlx vae 2d tile i/n`, `sd: mlx vae 3d tile i/n`)
 visible. If a device still
 fails, the CPU fallback from §2.33 takes over; the next knob is `tileLatent`.
 
+### 2.36 The progress bar's colour never appeared, a missing attention name, and a decode-only entry (2026-10-25)
+
+Three unrelated complaints, one of them a real bug with a clear cause.
+
+**The bar never turned green (or red).** `generate()` polls progress from a `Task`, and that task's
+loop read `try? await Task.sleep(...)`. A cancelled sleep throws *immediately*, and `try?` swallowed
+it, so after the finishing task cancelled the poll the loop body still ran once more and overwrote
+the just-set `.succeeded` (green + 「完成」) or `.failed` (red + message) with a stale
+`.running(step: steps)`. The log was right, the bar was not. Now the sleep is in `do/catch` and
+returns on cancellation, and the body additionally refuses to move a phase that is not `.running`.
+The `.succeeded`/`.failed` colours themselves have been in since §2.33 — this is why they were never
+visible.
+
+**`tensor missing: decoder.mid_block.attentions.0.to_q.weight`.** The 2D loader rewrites the file's
+key vocabulary into one canonical form, and the attention block only knew diffusers (`to_q`) and
+original LDM (`q`) spellings. The rewrite now goes through `attentionTail`, which also accepts
+`query/key/value`, `to_out` without the `.0`, and the singular `attention.0` block name, and
+`attention2D` fails with the file's own key names in the message (`this file's attention keys: …`)
+instead of a bare missing-tensor error, so an unanticipated spelling is readable from the log
+rather than guessed at.
+
+**A failed MLX decode no longer pays for a second sampling pass.** The public engine API only had
+`generate_image`, which samples first, so the §2.33 fallback had to re-run the sampler to get
+decoded pixels. `stable-diffusion-decode-latents.patch` adds:
+
+- `sd_decode_latents(ctx, latents_path, vae_space, tiling, tile_size, num_images)`, plus
+  `decode_vae_latents`/`decode_latents_file` on the engine. The blob reader takes the dump hook's own
+  format, so the latents MLX just failed on are decoded directly; `vae_space` picks the `.vae` sibling
+  (2D) or the raw blob (3D, where `decode_first_stage` re-applies Wan/Qwen statistics), and tiling is
+  an explicit argument because that state is per `generate_image` call and a decode-only caller has
+  none.
+- `SdEngine` now tries the engine decode of those latents *first* and only re-runs the sampler if
+  that also fails — so the common failure costs one CPU decode, not a second full generation.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1343,6 +1377,8 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| the progress bar keeps its outcome | the poll task returned inside `do/catch` on cancellation and only rewrites `.running` phases, so a finished run's `.succeeded`/`.failed` is what stays on screen |
+| a failed MLX decode does not re-sample | engine patch `stable-diffusion-decode-latents.patch`: applies to `8cd731e7b` (`patch -p1 --dry-run` clean), compiles CPU-only on aarch64 Linux (0 errors), and `nm -D` on the built `libstable-diffusion.so` shows `T sd_decode_latents` |
 | presets restore slots and sampling | compile-only; the JSON round-trip is the same `Codable` pair used by `GalleryStore`, and the menu is a plain `Menu` |
 | a failed run rebuilds the context | compile-only: `needsReload` set at all three failure exits, cleared on success/load/unload; the resumed run re-enters `generate()` from `load()` |
 | `vae=cpu` puts the VAE on the CPU | code path: runner built from `runtime_backend(SDBackendModule::VAE)` (`model_builders.cpp:533`), module from `p.backend` (`ggml_extend_backend.cpp:80`); device log line to confirm: `auto-fit: --backend "…vae=cpu…"` + `vae … -> compute cpu` |
@@ -1462,19 +1498,23 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-9. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
+9. **The decode-only fallback on device** — §2.36 compiles only (the patch also builds on Linux;
+   CI is the real check, since it patches and builds the pinned tree). On a forced MLX failure the
+   log should read `sd: MLX 解碼失敗（…），改用引擎 CPU 解碼同一批 latent` and then
+   `sd: 引擎 CPU 解碼 latent 成功（1 張），未重新取樣` - no second `sd: entering generatePrompt`.
+10. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
    (SDXL/Z-Image for `2d`, Qwen-Image for `3d`) and read the tile lines:
    `sd: mlx vae 2d tiled 128x128 latent -> 1024x1024 px in 4 tile(s)`, then one
    `sd: mlx vae 2d tile i/4`, then `peak N MB`. A 3D run prints the same with `3d`. The number to watch is the peak; if the
    tiles still fail, halve `tileLatent`. Check the seams by comparing against the CPU decode of the
    same seed.
-10. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
+11. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
    confirm the steppers move, save the tab as a preset, relaunch and confirm it is still listed and
    restores the slots, then force one failed run (a malformed model or a cancelled Metal step) and
    confirm the next 生成 logs `sd: reloading the model after the failed run`, reloads, and runs once.
    The same log should also settle the CPU-decode question: `auto-fit: --backend "…vae=cpu…"` plus
    `vae … -> compute cpu`.
-11. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+12. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
    (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
    (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
    `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says

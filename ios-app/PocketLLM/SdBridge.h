@@ -64,6 +64,19 @@ NS_ASSUME_NONNULL_BEGIN
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error;
 
+/// Decodes latents the engine dumped (`SD_LATENTS_DUMP`) without sampling again.
+///
+/// The public generate path always samples first, so this is what makes an
+/// external decode failure (the MLX VAE) cheap: the same picture comes out of
+/// the engine's own decoder instead of a second sampling pass. `vaeSpace`
+/// selects the ".vae" sibling, whose values are already scaled/shifted for the
+/// VAE; NO reads the raw sampler latents. Returns one image, or nil on failure.
+- (nullable NSArray<SdImage *> *)decodeLatents:(NSString *)path
+                                      vaeSpace:(BOOL)vaeSpace
+                                        tiling:(BOOL)tiling
+                                      tileSize:(int32_t)tileSize
+                                         error:(NSError * _Nullable * _Nullable)error;
+
 - (void)cancel;
 
 /// Routes the engine's own log (including ggml's abort reason) into `path`,
