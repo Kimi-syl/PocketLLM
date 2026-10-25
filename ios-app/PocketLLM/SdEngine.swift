@@ -71,6 +71,13 @@ final class SdEngine: ObservableObject {
     /// `hiresSteps` at `hiresStrength`. Costs roughly a second base pass plus a
     /// decode at the target size, which is why the strength is the knob that
     /// keeps it from redoing the whole picture.
+    /// A second checkpoint used as a refiner: the last result goes back through
+    /// img2img at `refinerStrength`. Persisted like the VAE, because it is a slot
+    /// the user picked deliberately and an all-in-one file cannot declare it.
+    @Published var refinerModel = SdEngine.restore("sd.refiner") {
+        didSet { SdEngine.store(refinerModel, "sd.refiner", oldValue) }
+    }
+    @Published var refinerStrength: Float = 0.3
     @Published var hiresEnabled = false
     @Published var hiresScale: Float = 2
     @Published var hiresSteps = 10
@@ -392,6 +399,39 @@ final class SdEngine: ObservableObject {
     func deletePreset(_ preset: GenPreset) {
         presets.removeAll { $0.id == preset.id }
         GenPreset.persist(presets)
+    }
+
+    /// Re-runs the last image through the refiner at low strength.
+    ///
+    /// This is the img2img path with another checkpoint, not a second engine
+    /// feature: the source is the picture itself, so the base pass is skipped
+    /// and only the low-strength pass runs. The main slot becomes the refiner,
+    /// which the reload path already handles; the file should be the same kind
+    /// as the base model (all-in-one for all-in-one), because the encoder slots
+    /// are left as they are rather than guessed at.
+    func refineLast() {
+        guard let last = images.last else {
+            phase = .failed("還沒有可精修的圖片")
+            return
+        }
+        guard !refinerModel.isEmpty else {
+            phase = .failed("先在「進階」選精修模型")
+            return
+        }
+        // img2img stretches the source to width/height, so match the picture
+        // being refined instead of the tab's canvas.
+        let w8 = max(256, min(1024, (Int(last.size.width) / 8) * 8))
+        let h8 = max(256, min(1024, (Int(last.size.height) / 8) * 8))
+        width = w8
+        height = h8
+        initImage = last
+        strength = refinerStrength
+        hiresEnabled = false
+        let reload = context != nil && refinerModel != mainModel
+        mainModel = refinerModel
+        if reload { needsReload = true }
+        appLog("sd: refine pass — \(URL(fileURLWithPath: refinerModel).lastPathComponent) \(w8)x\(h8) strength \(refinerStrength)", source: "sd")
+        generate()
     }
 
     // MARK: - Generation

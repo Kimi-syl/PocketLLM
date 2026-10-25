@@ -29,7 +29,7 @@ struct ImageGenView: View {
     @State private var presetName = ""
 
     private enum Slot: String, Identifiable {
-        case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora
+        case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora, refiner
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -40,6 +40,7 @@ struct ImageGenView: View {
             case .t5:          return "T5 (t5xxl)"
             case .vae:         return "VAE"
             case .upscaler:    return "放大模型 (ESRGAN)"
+            case .refiner:     return "精修模型 (img2img)"
             case .lora:        return "LoRA"
             }
         }
@@ -52,6 +53,7 @@ struct ImageGenView: View {
             case .t5:          return "SD3 / Flux 的 T5"
             case .vae:         return "單檔模型加這個就能用 MLX 解碼"
             case .upscaler:    return "RealESRGAN / 4x-UltraSharp（.pth 或 .safetensors）"
+            case .refiner:     return "低強度重繪最後一張的模型，格式要和主要模型相同"
             case .lora:        return "path|強度，多個以分號分隔"
             }
         }
@@ -153,6 +155,7 @@ struct ImageGenView: View {
         case .t5:          engine.t5 = path
         case .vae:         engine.vae = path
         case .upscaler:    engine.upscaler = path
+        case .refiner:     engine.refinerModel = path
         case .lora:
             // Append as path|<current strength> so several can accumulate.
             let entry = "\(path)|1.0"
@@ -268,6 +271,13 @@ struct ImageGenView: View {
                 slotRow(.t5, value: engine.t5)
                 slotRow(.vae, value: engine.vae)
                 slotRow(.upscaler, value: engine.upscaler)
+                slotRow(.refiner, value: engine.refinerModel)
+                HStack {
+                    Text("精修強度")
+                    Slider(value: $engine.refinerStrength, in: 0.05...0.8)
+                    Text(String(format: "%.2f", engine.refinerStrength)).monospacedDigit()
+                }
+                .font(.callout)
                 slotRow(.lora, value: engine.loras)
                 Toggle("放大用 GPU", isOn: $engine.upscaleOnGPU)
                     .font(.callout)
@@ -365,6 +375,7 @@ struct ImageGenView: View {
         case .t5:          engine.t5 = ""
         case .vae:         engine.vae = ""
         case .upscaler:    engine.upscaler = ""
+        case .refiner:     engine.refinerModel = ""
         case .lora:        engine.loras = ""
         }
     }
@@ -797,6 +808,9 @@ struct ImageGenView: View {
                     .font(.callout)
 
                 HStack {
+                    Button("精修最後一張（用上面的精修模型）") { engine.refineLast() }
+                        .disabled(engine.images.isEmpty || engine.refinerModel.isEmpty
+                                  || engine.phase == .loading)
                     Button("放大最後一張") {
                         if let last = engine.images.last { engine.upscale(last) }
                     }
