@@ -67,6 +67,14 @@ final class SdEngine: ObservableObject {
     /// carry into the next session's generation.
     @Published var initImage: UIImage?
     @Published var strength: Float = 0.6
+    /// Hires: a second pass at `hiresScale` times the canvas, re-denoised for
+    /// `hiresSteps` at `hiresStrength`. Costs roughly a second base pass plus a
+    /// decode at the target size, which is why the strength is the knob that
+    /// keeps it from redoing the whole picture.
+    @Published var hiresEnabled = false
+    @Published var hiresScale: Float = 2
+    @Published var hiresSteps = 10
+    @Published var hiresStrength: Float = 0.45
     @Published var width = 512
     @Published var height = 512
     @Published var steps = 20
@@ -442,8 +450,17 @@ final class SdEngine: ObservableObject {
         let promptText = prompt
         let negativeText = negative
         let (w, h) = (width, height)
-        // Plain values for the detached task: `strength` is main-actor state.
+        // Plain values for the detached task: these are main-actor state.
         let strengthValue = strength
+        let hiresOn = hiresEnabled
+        let hiresScaleValue = hiresScale
+        // The engine wants a size in image pixels, a multiple of 8 (16 for the
+        // 2D VAEs' three 2x stages would be safest); 8 keeps the aspect right
+        // and the engine rounds further down itself.
+        let hiresTargetW = Int32(max(8, (Int(Float(w) * hiresScale) / 8) * 8))
+        let hiresTargetH = Int32(max(8, (Int(Float(h) * hiresScale) / 8) * 8))
+        let hiresStepCount = Int32(hiresSteps)
+        let hiresDenoise = hiresStrength
         let (n, c) = (steps, cfg)
         let (s0, b) = (seed, batch)
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
@@ -472,8 +489,10 @@ final class SdEngine: ObservableObject {
             let started = Date()
             // Stage logs: a native crash produces no line of its own, so the last
             // line before death is the only evidence of where it died.
-            appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d, vaeTiling %@%d) · %@",
+            appLog(String(format: "sd: entering generatePrompt (%dx%d, %d steps, cfg %.1f, batch %d, vaeTiling %@%d%@%@) · %@",
                           w, h, n, c, b, tile ? "on " : "off ", tile ? tileSize : 0,
+                          initSpec != nil ? String(format: ", img2img %.2f", strengthValue) : "",
+                          hiresOn ? String(format: ", hires %gx->%dx%d %.2f", hiresScaleValue, hiresTargetW, hiresTargetH, hiresDenoise) : "",
                           LogStore.memoryDescription()), source: "sd")
             var result: [SdImage]?
             do {
@@ -487,6 +506,8 @@ final class SdEngine: ObservableObject {
                     mlxVae: mlxVae,
                     initImage: initSpec,
                     strength: strengthValue,
+                    hires: hiresOn, hiresTargetW: hiresTargetW, hiresTargetH: hiresTargetH,
+                    hiresSteps: hiresStepCount, hiresStrength: hiresDenoise,
                     loras: loraSpec.isEmpty ? nil : loraSpec)
             } catch {
                 await MainActor.run {
@@ -587,6 +608,8 @@ final class SdEngine: ObservableObject {
                         mlxVae: false,
                         initImage: initSpec,
                         strength: strengthValue,
+                        hires: hiresOn, hiresTargetW: hiresTargetW, hiresTargetH: hiresTargetH,
+                        hiresSteps: hiresStepCount, hiresStrength: hiresDenoise,
                         loras: loraSpec.isEmpty ? nil : loraSpec)
                 } catch {
                     await MainActor.run {

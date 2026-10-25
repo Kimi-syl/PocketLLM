@@ -64,6 +64,7 @@ struct ImageGenView: View {
                     modelCard
                     promptCard
                     img2imgCard
+                    hiresCard
                     paramsCard
                     generateButton
                     upscaleCard
@@ -376,6 +377,50 @@ struct ImageGenView: View {
                 TextField("負向提示詞（可留空）", text: $engine.negative, axis: .vertical)
                     .lineLimit(1...3)
             }
+        }
+    }
+
+    /// What the hires pass will end up at, computed the same way the engine
+    /// call computes it (scale, then round down to a multiple of 8).
+    private var hiresTargetText: String {
+        let w = max(8, Int(Float(engine.width) * engine.hiresScale) / 8 * 8)
+        let h = max(8, Int(Float(engine.height) * engine.hiresScale) / 8 * 8)
+        return "\(w) × \(h)"
+    }
+
+    /// Hires: a second pass on upscaled latents, all inside one generate call.
+    /// The final size is the base canvas times the scale, rounded down to 8.
+    private var hiresCard: some View {
+        GroupBox("精修（Hires）") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("第二輪精修", isOn: $engine.hiresEnabled)
+                if engine.hiresEnabled {
+                    HStack {
+                        Text("倍率")
+                        Spacer()
+                        Picker("倍率", selection: $engine.hiresScale) {
+                            ForEach([Float(1.5), 2, 3], id: \.self) { v in
+                                Text(String(format: "%gx", v)).tag(v)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    stepper("第二輪步數", value: $engine.hiresSteps, range: 0...40, step: 1)
+                    HStack {
+                        Text("重繪強度")
+                        Slider(value: $engine.hiresStrength, in: 0.1...0.8)
+                        Text(String(format: "%.2f", engine.hiresStrength)).monospacedDigit()
+                    }
+                    Text("第一輪完成後把 latent 放大 \(String(format: "%g", engine.hiresScale)) 倍再跑一輪，目標 \(hiresTargetText)。代價是第二輪取樣加上目標尺寸的解碼；強度低於約 0.3 幾乎不會改變畫面。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("開啟後先出小圖再放大重繪，細節比直接生成大圖好，但要多跑一輪。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.top, 4)
         }
     }
 

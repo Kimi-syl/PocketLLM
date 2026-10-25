@@ -42,6 +42,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// loras: "path|multiplier;path|multiplier", or nil. Each LoRA is applied to the
 /// generation, matching the Android side's sd_lora_t[] handling.
 ///
+/// hires: after the base pass the latents are upscaled to
+/// hiresTargetW x hiresTargetH and re-denoised for hiresSteps at
+/// hiresStrength, all inside the same call. hiresTargetW/H of 0 fall back to the
+/// engine's own scale-based sizing.
+///
 /// img2img: `initImage` becomes the starting point and `strength` (0-1) is how
 /// much of it to replace — 1 ignores it, low values keep it. Pass nil for
 /// text-to-image. The engine resizes the image to width/height itself.
@@ -67,6 +72,11 @@ NS_ASSUME_NONNULL_BEGIN
                                          mlxVae:(BOOL)mlxVae
                                       initImage:(nullable SdImage *)initImage
                                        strength:(float)strength
+                                          hires:(BOOL)hires
+                                   hiresTargetW:(int32_t)hiresTargetW
+                                   hiresTargetH:(int32_t)hiresTargetH
+                                     hiresSteps:(int32_t)hiresSteps
+                                   hiresStrength:(float)hiresStrength
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error;
 

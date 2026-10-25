@@ -273,6 +273,11 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                          mlxVae:(BOOL)mlxVae
                                       initImage:(nullable SdImage *)initImage
                                        strength:(float)strength
+                                          hires:(BOOL)hires
+                                   hiresTargetW:(int32_t)hiresTargetW
+                                   hiresTargetH:(int32_t)hiresTargetH
+                                     hiresSteps:(int32_t)hiresSteps
+                                   hiresStrength:(float)hiresStrength
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error {
     if (_ctx == nullptr) return nil;
@@ -333,6 +338,19 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         gp.init_image.channel = initImage.channel;
         gp.init_image.data = (uint8_t *)initImage.pixels.bytes;
         gp.strength = strength;
+    }
+
+    // Hires: a second denoise pass on upscaled latents, in the same call. The
+    // upscaler is a latent one (no extra model), chosen for resize quality; the
+    // engine clamps the strength and ignores the pass entirely if it is NONE.
+    if (hires) {
+        gp.hires.enabled = true;
+        gp.hires.upscaler = SD_HIRES_UPSCALER_LATENT_BICUBIC_ANTIALIASED;
+        gp.hires.scale = 0.f;
+        gp.hires.target_width = hiresTargetW;
+        gp.hires.target_height = hiresTargetH;
+        gp.hires.steps = hiresSteps;
+        gp.hires.denoising_strength = hiresStrength;
     }
 
     sd_sample_params_init(&gp.sample_params);
