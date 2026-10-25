@@ -442,6 +442,8 @@ final class SdEngine: ObservableObject {
         let promptText = prompt
         let negativeText = negative
         let (w, h) = (width, height)
+        // Plain values for the detached task: `strength` is main-actor state.
+        let strengthValue = strength
         let (n, c) = (steps, cfg)
         let (s0, b) = (seed, batch)
         let (sm, sc, cs2) = (sampleMethod, scheduler, clipSkip)
@@ -484,7 +486,7 @@ final class SdEngine: ObservableObject {
                     vaeTiling: tile, vaeTileSize: Int32(tileSize),
                     mlxVae: mlxVae,
                     initImage: initSpec,
-                    strength: strength,
+                    strength: strengthValue,
                     loras: loraSpec.isEmpty ? nil : loraSpec)
             } catch {
                 await MainActor.run {
@@ -584,7 +586,7 @@ final class SdEngine: ObservableObject {
                         vaeTiling: true, vaeTileSize: Int32(tileSize),
                         mlxVae: false,
                         initImage: initSpec,
-                        strength: strength,
+                        strength: strengthValue,
                         loras: loraSpec.isEmpty ? nil : loraSpec)
                 } catch {
                     await MainActor.run {
