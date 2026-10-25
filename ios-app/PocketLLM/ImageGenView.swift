@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,6 +21,9 @@ struct ImageGenView: View {
     /// The slot list is an escape hatch, not the normal flow: a bundle from the
     /// Models tab already sets every slot, so this starts collapsed.
     @State private var showAdvanced = false
+    /// img2img source, as a picker item rather than an image: the transfer is
+    /// asynchronous and the engine only ever needs the decoded UIImage.
+    @State private var photoItem: PhotosPickerItem?
     /// Name prompt for "save the current settings as a preset".
     @State private var isPresetNamePrompt = false
     @State private var presetName = ""
@@ -59,6 +63,7 @@ struct ImageGenView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     modelCard
                     promptCard
+                    img2imgCard
                     paramsCard
                     generateButton
                     upscaleCard
@@ -371,6 +376,63 @@ struct ImageGenView: View {
                 TextField("負向提示詞（可留空）", text: $engine.negative, axis: .vertical)
                     .lineLimit(1...3)
             }
+        }
+    }
+
+    /// img2img: the prompt still describes the result, this only adds a starting
+    /// image and how much of it to keep. strength is the engine's own parameter
+    /// (0 keeps the source, 1 ignores it).
+    private var img2imgCard: some View {
+        GroupBox("圖生圖") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        Text(engine.initImage == nil ? "選擇來源圖片" : "換一張來源圖片")
+                    }
+                    .onChange(of: photoItem) { _, item in
+                        guard let item else { return }
+                        Task {
+                            guard let data = try? await item.loadTransferable(type: Data.self),
+                                  let ui = UIImage(data: data) else {
+                                appLog("img2img: could not decode the picked item", source: "app")
+                                return
+                            }
+                            // Same cap as the chat attach: a full-resolution
+                            // asset decodes to ~190 MB and is redrawn anyway.
+                            engine.initImage = ui.scaled(maxDimension: 1280)
+                        }
+                    }
+                    Spacer()
+                    if engine.initImage != nil {
+                        Button("清除") {
+                            engine.initImage = nil
+                            photoItem = nil
+                        }
+                    }
+                }
+                if let source = engine.initImage {
+                    HStack(spacing: 10) {
+                        Image(uiImage: source)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 64)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        Text("\(Int(source.size.width)) × \(Int(source.size.height))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Text("重繪強度")
+                    Slider(value: $engine.strength, in: 0.05...1)
+                        .disabled(engine.initImage == nil)
+                    Text(String(format: "%.2f", engine.strength)).monospacedDigit()
+                }
+                Text("0 保留原圖、1 完全重繪。強度越低越接近來源，步數要夠高才看得出變化；來源圖片會被拉伸到上面的寬高。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
         }
     }
 

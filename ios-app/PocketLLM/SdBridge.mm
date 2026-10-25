@@ -271,6 +271,8 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                       vaeTiling:(BOOL)vaeTiling
                                     vaeTileSize:(int32_t)vaeTileSize
                                          mlxVae:(BOOL)mlxVae
+                                      initImage:(nullable SdImage *)initImage
+                                       strength:(float)strength
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error {
     if (_ctx == nullptr) return nil;
@@ -320,6 +322,17 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         gp.vae_tiling_params.tile_size_w = vaeTileSize > 0 ? vaeTileSize : 256;
         gp.vae_tiling_params.tile_size_h = vaeTileSize > 0 ? vaeTileSize : 256;
         gp.vae_tiling_params.target_overlap = 0.5f;
+    }
+
+    // img2img: the engine takes the pixels as-is and resizes them to width x
+    // height. `pixels` is kept alive by this method's own strong reference for
+    // the duration of the call, which is all generate_image needs.
+    if (initImage != nil && initImage.pixels.length > 0) {
+        gp.init_image.width = initImage.width;
+        gp.init_image.height = initImage.height;
+        gp.init_image.channel = initImage.channel;
+        gp.init_image.data = (uint8_t *)initImage.pixels.bytes;
+        gp.strength = strength;
     }
 
     sd_sample_params_init(&gp.sample_params);

@@ -62,6 +62,11 @@ final class SdEngine: ObservableObject {
 
     @Published var prompt = ""
     @Published var negative = ""
+    /// img2img: the starting image, and how much of it to replace (1 ignores it).
+    /// Not persisted: a UIImage from the gallery is not something to silently
+    /// carry into the next session's generation.
+    @Published var initImage: UIImage?
+    @Published var strength: Float = 0.6
     @Published var width = 512
     @Published var height = 512
     @Published var steps = 20
@@ -454,6 +459,12 @@ final class SdEngine: ObservableObject {
         let (tile, tileSize) = (vaeTiling && !vaeOnCPU && !mlxVae, vaeTileSize)
         let vaePathForMLX = vae
         let modelName = URL(fileURLWithPath: mainModel).lastPathComponent
+        // Snapshot the img2img input on the main actor: UIImage is not sendable,
+        // and the engine wants raw interleaved RGB at the target size.
+        let initSpec = initImage.flatMap { SdEngine.imageSpec(from: $0, width: w, height: h) }
+        if initImage != nil && initSpec == nil {
+            appLog("sd: img2img source could not be converted, running text-to-image", source: "sd")
+        }
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = Date()
@@ -472,6 +483,8 @@ final class SdEngine: ObservableObject {
                     clipSkip: Int32(cs2),
                     vaeTiling: tile, vaeTileSize: Int32(tileSize),
                     mlxVae: mlxVae,
+                    initImage: initSpec,
+                    strength: strength,
                     loras: loraSpec.isEmpty ? nil : loraSpec)
             } catch {
                 await MainActor.run {
@@ -570,6 +583,8 @@ final class SdEngine: ObservableObject {
                         clipSkip: Int32(cs2),
                         vaeTiling: true, vaeTileSize: Int32(tileSize),
                         mlxVae: false,
+                        initImage: initSpec,
+                        strength: strength,
                         loras: loraSpec.isEmpty ? nil : loraSpec)
                 } catch {
                     await MainActor.run {
@@ -792,6 +807,33 @@ final class SdEngine: ObservableObject {
                                shouldInterpolate: false, intent: .defaultIntent)
         else { return nil }
         return UIImage(cgImage: cg)
+    }
+
+    /// Redraws an image into the engine's `sd_image_t` form: interleaved RGB8 at
+    /// exactly width x height. The engine would scale it too, but doing it here
+    /// keeps the aspect-ratio decision (a plain stretch) visible in the app
+    /// instead of hidden in C, and costs one draw.
+    nonisolated static func imageSpec(from image: UIImage, width: Int, height: Int) -> SdImage? {
+        guard width > 0, height > 0 else { return nil }
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        guard let cg = image.cgImage else { return nil }
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: &rgba, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var rgb = [UInt8](repeating: 0, count: width * height * 3)
+        for i in 0..<(width * height) {
+            rgb[i * 3]     = rgba[i * 4]
+            rgb[i * 3 + 1] = rgba[i * 4 + 1]
+            rgb[i * 3 + 2] = rgba[i * 4 + 2]
+        }
+        return SdImage(width: Int32(width), height: Int32(height), channel: 3,
+                       pixels: Data(rgb))
     }
 
     /// MLX decoder output is NHWC `[N, H, W, 3]` in `[-1, 1]` (mlx-swift's

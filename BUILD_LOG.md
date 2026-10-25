@@ -1297,6 +1297,42 @@ decoded pixels. `stable-diffusion-decode-latents.patch` adds:
 - `SdEngine` now tries the engine decode of those latents *first* and only re-runs the sampler if
   that also fails — so the common failure costs one CPU decode, not a second full generation.
 
+### 2.37 img2img (2026-10-25)
+
+The engine has always taken a starting image (`sd_img_gen_params_t.init_image` plus `strength`), so
+this is a thin path rather than a new pipeline:
+
+- `SdBridge.generatePrompt` gained `initImage:`/`strength:`. The `SdImage`'s pixels are handed to
+  the engine as-is (interleaved RGB8) and the method's own strong reference keeps them alive for the
+  call.
+- `SdEngine` gained `initImage`/`strength` (deliberately *not* persisted: a gallery UIImage is not
+  something to carry into the next session unseen) and `imageSpec(from:width:height:)`, which redraws
+  the source into the engine's `sd_image_t` form at exactly the target size. Redrawing here rather
+  than in C keeps the aspect-ratio decision — a plain stretch — visible in the app.
+- `ImageGenView` gained a 圖生圖 card: a `PhotosPicker` (capped at 1280 px like the chat attach, since
+  a 48 MP asset decodes to ~190 MB), a thumbnail, the strength slider, and 清除.
+- The prompt still describes the result; strength is the engine's own parameter (0 keeps the source,
+  1 ignores it).
+
+Next: the refiner slot, and the video path for Wan (see §2.38).
+
+### 2.38 The Wan 2.2 TI2V bundle is Mirage's, but the engine could run it (2026-10-25)
+
+`jc-builds/Wan2.2-TI2V-5B-Turbo-iOS` (3.1 GB Q4_K_S DiT + 2.9 GB UMT5-XXL Q3_K_S + a 23 MB
+`taew2_2.safetensors` tiny decoder, ~6.0 GB total) is built for **Mirage**
+(`github.com/haplollc/Mirage`), a different iOS engine. The *weights* are the shapes this engine
+wants, and the pinned tree supports them: `VERSION_WAN2_2_TI2V` exists
+(`diffusion_engine.cpp:82`, desc `Wan2.2-TI2V-5B`), text-to-image-to-video has its own path
+(`video.cpp:956` handles a start image), and the TAE loads through `taesd_path` ->
+`init_from_file(..., "tae.")` (`diffusion_engine.cpp:815-818`), which reads safetensors.
+
+What the app would need first: it refuses video checkpoints outright (`SdEngine.isVideoCheckpoint`),
+the bridge only calls `generate_image` (frames come from `generate_video` +
+`sd_vid_gen_params_t`), there is no TAE slot (`taesd` is hardcoded nil), and no multi-frame UI.
+Memory is the other half: with `te=cpu` the encoder's params can stay in RAM, so the GPU side is the
+3.1 GB DiT + 23 MB TAE — plausible on 8 GB, but the DiT's attention over the whole spatiotemporal
+sequence (13 frames at 480x832 is ~18.7k tokens) is the real peak.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1377,6 +1413,7 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| img2img is wired to the engine | engine 8cd731e7b has `sd_img_gen_params_t.init_image`/`strength`; the bridge fills them and the app passes a redrawn RGB8 image at the target size (compile-only on device) |
 | the progress bar keeps its outcome | the poll task returned inside `do/catch` on cancellation and only rewrites `.running` phases, so a finished run's `.succeeded`/`.failed` is what stays on screen |
 | a failed MLX decode does not re-sample | engine patch `stable-diffusion-decode-latents.patch`: applies to `8cd731e7b` (`patch -p1 --dry-run` clean), compiles CPU-only on aarch64 Linux (0 errors), and `nm -D` on the built `libstable-diffusion.so` shows `T sd_decode_latents` |
 | presets restore slots and sampling | compile-only; the JSON round-trip is the same `Codable` pair used by `GalleryStore`, and the menu is a plain `Menu` |

@@ -42,6 +42,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// loras: "path|multiplier;path|multiplier", or nil. Each LoRA is applied to the
 /// generation, matching the Android side's sd_lora_t[] handling.
 ///
+/// img2img: `initImage` becomes the starting point and `strength` (0-1) is how
+/// much of it to replace — 1 ignores it, low values keep it. Pass nil for
+/// text-to-image. The engine resizes the image to width/height itself.
+///
 /// vaeTiling decodes the VAE in overlapping tiles rather than in one pass, which
 /// lowers the VAE's peak compute buffer; vaeTileSize is the tile edge in image
 /// pixels (the engine rounds it down to a VAE-scale multiple). Ignored when
@@ -61,6 +65,8 @@ NS_ASSUME_NONNULL_BEGIN
                                       vaeTiling:(BOOL)vaeTiling
                                     vaeTileSize:(int32_t)vaeTileSize
                                          mlxVae:(BOOL)mlxVae
+                                      initImage:(nullable SdImage *)initImage
+                                       strength:(float)strength
                                           loras:(nullable NSString *)loras
                                           error:(NSError * _Nullable * _Nullable)error;
 
