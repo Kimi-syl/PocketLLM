@@ -1333,6 +1333,32 @@ Memory is the other half: with `te=cpu` the encoder's params can stay in RAM, so
 3.1 GB DiT + 23 MB TAE — plausible on 8 GB, but the DiT's attention over the whole spatiotemporal
 sequence (13 frames at 480x832 is ~18.7k tokens) is the real peak.
 
+### 2.39 Hires refine, a refiner checkpoint, and downloadable upscalers (2026-10-25)
+
+The three things asked for after img2img, and what each turned out to be.
+
+**Hires refine.** The engine already has the second pass (`sd_hires_params_t`: upscale the latents,
+re-denoise for its own steps at its own strength, in the same call), so this is wiring:
+`resolve_hires` (`request.cpp:214`) disables the pass unless the upscaler is not `NONE` and there is a
+positive scale or target, so the bridge sets latent bicubic-antialiased plus explicit
+`target_width/height` (rounded down to 8 in Swift, so the UI can show the real size) and the image tab
+grew a 精修（Hires）card: toggle, 1.5x/2x/3x, second-pass steps, strength, and the resulting size.
+
+**Refiner checkpoint.** There is no refiner *slot* in this engine — `refiner` appears only as internal
+block names in a few architectures. What is available is the img2img path just added, which is what a
+refiner is in practice: run the finished picture back through a model at low strength. So 精修模型 is a
+persisted slot (same file kind as the base model: the encoder slots are deliberately left alone rather
+than guessed at) with a strength, and 精修最後一張 sets the source to the last image, the main slot to
+the refiner, and generates — the §2.34 reload path loads the new model.
+
+**Downloadable upscalers.** One bundled Real-ESRGAN makes 放大 work on a fresh install; the right model
+after that depends on the picture, and four 67 MB files do not belong in the bundle. `UpscalerCatalog`
+lists 4x-UltraSharp, its UltraMix Balanced/Smooth interpolations and Real-ESRGAN x4 (all public, all
+verified to answer 200 with the expected length), downloads into `Documents/Upscalers` with a progress
+bar, and the picker scans that directory so a download from an earlier session is still listed. All
+four are 4x on purpose: the app treats the upscaler's native factor as 4 and resamples down for a 2x or
+3x setting, so a 1x or 8x file would silently produce the wrong size.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1413,6 +1439,9 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| hires pass | engine `sd_hires_params_t` (`request.cpp:resolve_hires` needs a non-NONE upscaler and a scale or target); the bridge sets latent bicubic-antialiased and explicit target w/h, compile-only on device |
+| refiner checkpoint | reuses the img2img path: `refineLast()` sets the source to the last image and the main slot to the refiner, then the reload path loads it; compile-only |
+| downloadable upscalers | the four catalogue URLs answer 200 with `x-linked-size` ~67 MB (curl -IL, no token); the app compiles and the picker scans Documents/Upscalers (device run pending) |
 | img2img is wired to the engine | engine 8cd731e7b has `sd_img_gen_params_t.init_image`/`strength`; the bridge fills them and the app passes a redrawn RGB8 image at the target size (compile-only on device) |
 | the progress bar keeps its outcome | the poll task returned inside `do/catch` on cancellation and only rewrites `.running` phases, so a finished run's `.succeeded`/`.failed` is what stays on screen |
 | a failed MLX decode does not re-sample | engine patch `stable-diffusion-decode-latents.patch`: applies to `8cd731e7b` (`patch -p1 --dry-run` clean), compiles CPU-only on aarch64 Linux (0 errors), and `nm -D` on the built `libstable-diffusion.so` shows `T sd_decode_latents` |
@@ -1535,23 +1564,28 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-9. **The decode-only fallback on device** — §2.36 compiles only (the patch also builds on Linux;
+9. **Hires, refiner and downloaded upscalers on device** — §2.39 compiles only. Hires: the log's
+   `sd: entering generatePrompt (…, hires 2x->1024x1024 0.45)` line, then check the saved picture is
+   the target size and that the second pass actually changed detail. Refiner: pick a refiner file,
+   press 精修最後一張, and watch for `sd: refine pass - …` followed by the reload. Upscalers: download
+   one from 放大 > 下載更多模型 and confirm it appears in the picker and runs.
+10. **The decode-only fallback on device** — §2.36 compiles only (the patch also builds on Linux;
    CI is the real check, since it patches and builds the pinned tree). On a forced MLX failure the
    log should read `sd: MLX 解碼失敗（…），改用引擎 CPU 解碼同一批 latent` and then
    `sd: 引擎 CPU 解碼 latent 成功（1 張），未重新取樣` - no second `sd: entering generatePrompt`.
-10. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
+11. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
    (SDXL/Z-Image for `2d`, Qwen-Image for `3d`) and read the tile lines:
    `sd: mlx vae 2d tiled 128x128 latent -> 1024x1024 px in 4 tile(s)`, then one
    `sd: mlx vae 2d tile i/4`, then `peak N MB`. A 3D run prints the same with `3d`. The number to watch is the peak; if the
    tiles still fail, halve `tileLatent`. Check the seams by comparing against the CPU decode of the
    same seed.
-11. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
+12. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
    confirm the steppers move, save the tab as a preset, relaunch and confirm it is still listed and
    restores the slots, then force one failed run (a malformed model or a cancelled Metal step) and
    confirm the next 生成 logs `sd: reloading the model after the failed run`, reloads, and runs once.
    The same log should also settle the CPU-decode question: `auto-fit: --backend "…vae=cpu…"` plus
    `vae … -> compute cpu`.
-12. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+13. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
    (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
    (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
    `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says
