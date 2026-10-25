@@ -25,7 +25,9 @@ final class SdEngine: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var phase: Phase = .idle {
+        didSet { SdEngine.keepScreenAwake(while: phase) }
+    }
     @Published private(set) var images: [UIImage] = []
     /// Set when a run ended in `.failed`. A Metal fault, a watchdog kill or an
     /// aborted sampler can leave the engine's graph and state caches
@@ -212,6 +214,25 @@ final class SdEngine: ObservableObject {
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init)
         return tokens.contains { markers.contains($0) }
+    }
+
+    /// Holds the screen awake while the GPU has work queued.
+    ///
+    /// The iOS GPU watchdog kills a command buffer that stops making progress
+    /// for ~10 s, and a dimmed or locked screen is exactly how that happens to a
+    /// run that would otherwise finish: once the display sleeps, GPU scheduling
+    /// is throttled and the buffer that was mid-flight times out. Loading
+    /// counts too - it is minutes of weight traffic on a big checkpoint.
+    private static func keepScreenAwake(while phase: Phase) {
+        let busy: Bool
+        switch phase {
+        case .loading, .running: busy = true
+        case .idle, .succeeded, .failed: busy = false
+        }
+        if UIApplication.shared.isIdleTimerDisabled != busy {
+            UIApplication.shared.isIdleTimerDisabled = busy
+            appLog("app: idle timer \(busy ? "disabled (generating)" : "restored")", source: "app")
+        }
     }
 
     func load() {

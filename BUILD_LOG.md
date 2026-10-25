@@ -1359,6 +1359,50 @@ bar, and the picker scans that directory so a download from an earlier session i
 four are 4x on purpose: the app treats the upscaler's native factor as 4 and resamples down for a 2x or
 3x setting, so a 1x or 8x file would silently produce the wrong size.
 
+### 2.40 Why the GPU timeout is so frequent, and what actually bounds it (2026-10-25)
+
+The watchdog that kills these runs is not a "too slow" timer on the whole generation: it is a
+**progress timeout per command buffer** (~10 s), reported as `bug_type 284` with
+`restart_reason_desc = "progress timeout"`. A buffer whose GPU work has not completed inside that
+window kills the app with `kIOGPUCommandBufferCallbackErrorInnocentVictim`. Everything below follows
+from that one rule.
+
+**Why it fires so often here**
+
+1. *The budget is per buffer, and one buffer can be one giant op.* The §2.15/patch splits a graph into
+   `n_cb + 1` buffers by node count, which cannot cut *inside* an op. A measured 1024x768 SD step was
+   ~10 s on an M2 - one desktop-class chip, one step - and a phone is slower still. Raising `n_cb`
+   stops helping the moment a single op is the whole budget.
+2. *Attention is that op.* Without flash attention every attention layer materialises the full
+   `[tokens, tokens]` score matrix plus the softmax buffer (1.07 GB at a 128x128 latent, see §2.35) and
+   streams it three times. With it, the same layer is one fused op over K/V blocks.
+3. *Flash attention was being decided per backend, and the rule is "all or nothing".*
+   `flash_attention_for` probes each runtime backend of a module and disables flash attention for the
+   entire module if any backend fails (`diffusion_engine.cpp:1220-1235`, logged as
+   `flash attention auto: … -> off (compute devices disagree)`). The diffusion graph is routinely split
+   across Metal *and* CPU by graph-cut layer splitting, so this was a live path to losing it.
+   `sd_ctx_params_init` leaves both `flash_attn_mode` and `diffusion_flash_attn` empty/false, so the
+   app was relying on the probe.
+4. *The VAE decode dwarfs everything else.* Measured 1035 s in one chain for one image - a hundred
+   times the timeout - which is why MLX does the decode now (§2.19-§2.35) and `vae=cpu` is the floor.
+5. *Competing work and the screen.* The GPU is shared with the LLM's Metal context (freed before
+   `new_sd_ctx`, §2.13), MLX decoder buffers, and - easily forgotten - a dimming or locking display,
+   which throttles GPU scheduling and times out a buffer that was mid-flight. Weight staging from disk
+   mid-graph stalls it the same way (`params_backend` / the auto-fit plan lines name that case).
+
+**What the app now does about it**
+
+- `p.diffusion_flash_attn = true`: flash attention is forced on for the diffusion model, bypassing the
+  probe's all-or-nothing verdict. The legacy flag takes the same path as `flash_attn_mode = "on"`
+  (`diffusion_engine.cpp:1213`) but only for `SDBackendModule::DIFFUSION`, so the text encoder and the
+  VAE keep whatever the probe decided about them.
+- `UIApplication.shared.isIdleTimerDisabled` is set while loading or generating and restored after
+  (`SdEngine.phase.didSet`), logged as `app: idle timer …` so a device run can confirm it.
+- The already-present levers remain the real bounds: decode on MLX (stage-by-stage, one `eval` per
+  conv, so submissions stay short) or `vae=cpu`; `n_cb` for the sampler; chunked attention and tiled
+  f16 stages for large canvases; and, for the sampler itself, a smaller canvas or fewer steps - because
+  below ~10 s per *op*, no command-buffer setting can help.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1439,6 +1483,8 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| flash attention is forced on for diffusion | engine: `flash_attention_for` returns true immediately when `diffusion_flash_attn` is set (`diffusion_engine.cpp:1213`), bypassing the per-backend probe whose "compute devices disagree" rule disables it for the whole module |
+| the screen stays awake while generating | `SdEngine.phase.didSet` sets/clears `UIApplication.shared.isIdleTimerDisabled`, logged as `app: idle timer …` |
 | hires pass | engine `sd_hires_params_t` (`request.cpp:resolve_hires` needs a non-NONE upscaler and a scale or target); the bridge sets latent bicubic-antialiased and explicit target w/h, compile-only on device |
 | refiner checkpoint | reuses the img2img path: `refineLast()` sets the source to the last image and the main slot to the refiner, then the reload path loads it; compile-only |
 | downloadable upscalers | the four catalogue URLs answer 200 with `x-linked-size` ~67 MB (curl -IL, no token); the app compiles and the picker scans Documents/Upscalers (device run pending) |

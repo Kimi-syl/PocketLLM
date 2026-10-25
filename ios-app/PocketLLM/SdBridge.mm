@@ -224,6 +224,20 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     if (vaeOnCPU) backendSpec += ",vae=cpu";
     p.backend = backendSpec.c_str();
 
+    // Flash attention, forced ON for the diffusion model.
+    //
+    // Otherwise this is decided by an auto probe *per backend*, and the rule is
+    // "every backend of the module must pass, or the module loses it": the
+    // diffusion graph is routinely split across Metal and CPU (graph-cut layer
+    // splitting), and when the two disagree the model runs without flash
+    // attention. That is the worst possible trade here, because without it every
+    // attention layer materialises the full [tokens, tokens] score matrix - the
+    // single biggest op in a step, and the one that does not fit the ~10 s
+    // command-buffer budget the iOS GPU watchdog enforces. The legacy flag takes
+    // the same path as `flash_attn_mode = "on"` but only for this module, so the
+    // text encoder and the VAE keep whatever the probe says about them.
+    p.diffusion_flash_attn = true;
+
     if (!sModel.empty())     p.model_path = sModel.c_str();
     if (!sClipL.empty())     p.clip_l_path = sClipL.c_str();
     if (!sClipG.empty())     p.clip_g_path = sClipG.c_str();
