@@ -310,8 +310,10 @@ jobs:
           patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-decode-latents.patch"
           grep -q sd_decode_latents ci-sd/include/stable-diffusion.h \
             || { echo "decode-latents patch did not apply"; exit 1; }
-          grep -q sd_decode_latents ci-sd/src/pipeline/diffusion_engine.cpp \
+          grep -q decode_latents_file ci-sd/src/pipeline/diffusion_engine.cpp \
             || { echo "decode-latents patch did not apply (impl)"; exit 1; }
+          grep -q sd_decode_latents ci-sd/src/stable-diffusion.cpp \
+            || { echo "decode-latents patch did not apply (api)"; exit 1; }
           cmake -S ci-sd -B build-sd-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
