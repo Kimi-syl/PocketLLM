@@ -1403,6 +1403,33 @@ from that one rule.
   f16 stages for large canvases; and, for the sampler itself, a smaller canvas or fewer steps - because
   below ~10 s per *op*, no command-buffer setting can help.
 
+### 2.41 Video mode for Wan 2.2 TI2V (2026-10-25)
+
+§2.38 established that the weights are the shapes this engine wants and that the app was the missing
+half. That half is now in:
+
+- **微型解碼器 (taesd) slot**, persisted and passed to `sd_ctx_params_t.taesd_path` (it was hardcoded
+  nil). This is not a convenience: `taew2_2.safetensors` replaces a 1.4 GB VAE with a 23 MB tiny
+  decoder, and decoding a dozen frames through the full VAE is one minutes-long GPU chain - precisely
+  what the progress timeout kills (§2.40). Video mode warns in the card when the slot is empty.
+- **`generateVideo` in the bridge**: `sd_vid_gen_params_t` with the prompt, size, frame count, fps,
+  steps, CFG, flow shift, seed and an optional `init_image` (which is how text-to-video becomes
+  image-to-video, reusing §2.37's source picker). Frames come back as `SdImage`s; the engine has no
+  video container.
+- **`SdEngine.generateVideo()`** mirrors `generate()`: same progress polling, same
+  `needsReload`/reload path, same idle-timer rule. No MLX-VAE hand-off (the latents hook lives in the
+  image pipeline) and no CPU-decode fallback (a failed frame is not worth re-sampling a dozen).
+- **`isVideoCheckpoint` now yields to video mode.** Image mode still refuses a video checkpoint, with a
+  message that says how to run it instead; video mode lets it through and routes 生成 to the video
+  entry point.
+- **影片 card**: 4n+1 frame counts only (5/9/13/17/21/25 - the models require that shape), steps
+  1-20, CFG 1-5, flow shift 1-8, fps. The card also states the distilled settings (4-8 steps, CFG 1,
+  Euler + simple), that Wan's native canvas is 480x832, and that memory is the other failure mode.
+
+Deferred: writing the frames to a video file (AVAssetWriter) - the result area shows the filmstrip and
+the gallery keeps the first frame. Also open: teaching the model classifier that a TAE satisfies a
+video checkpoint's decoder, and that `umt5` belongs in the T5 slot.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1483,6 +1510,7 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| video mode (Wan 2.2 TI2V) | engine: `VERSION_WAN2_2_TI2V` + the start-image path (`video.cpp:956`) + `taesd_path` -> `init_from_file(..., "tae.")`; app: TAE slot wired into `sd_ctx_params_t.taesd_path`, `generate_video` in the bridge, `SdEngine.generateVideo()`; compile-only, device run pending |
 | flash attention is forced on for diffusion | engine: `flash_attention_for` returns true immediately when `diffusion_flash_attn` is set (`diffusion_engine.cpp:1213`), bypassing the per-backend probe whose "compute devices disagree" rule disables it for the whole module |
 | the screen stays awake while generating | `SdEngine.phase.didSet` sets/clears `UIApplication.shared.isIdleTimerDisabled`, logged as `app: idle timer …` |
 | hires pass | engine `sd_hires_params_t` (`request.cpp:resolve_hires` needs a non-NONE upscaler and a scale or target); the bridge sets latent bicubic-antialiased and explicit target w/h, compile-only on device |
@@ -1610,28 +1638,34 @@ replaced the single dual-ABI APK.
    then every CI prerelease has a different signature and cannot upgrade in place.
 8. **`llama.cpp` upgrade** — a re-vendor, not a merge: replace the tree wholesale and re-apply
    the deltas (`llama_jni.cpp`, the CMake flags, `LLAMA_COMMIT`).
-9. **Hires, refiner and downloaded upscalers on device** — §2.39 compiles only. Hires: the log's
+9. **Wan 2.2 video on device** — §2.41 compiles only. Needs the three files from
+   `jc-builds/Wan2.2-TI2V-5B-Turbo-iOS` (3.1 GB DiT gguf -> 主要模型, 2.9 GB umt5 gguf -> T5,
+   23 MB `taew2_2.safetensors` -> 微型解碼器), 影片模式 on, 480x832, 13 frames, 4-8 steps, CFG 1,
+   flow 3. Watch the log for the TAE load line and the auto-fit plan (the encoder should be CPU
+   params). If the DiT is classified 不完整 it is the classifier demanding a VAE - the TAE covers it
+   at load time, but the classifier should learn that.
+10. **Hires, refiner and downloaded upscalers on device** — §2.39 compiles only. Hires: the log's
    `sd: entering generatePrompt (…, hires 2x->1024x1024 0.45)` line, then check the saved picture is
    the target size and that the second pass actually changed detail. Refiner: pick a refiner file,
    press 精修最後一張, and watch for `sd: refine pass - …` followed by the reload. Upscalers: download
    one from 放大 > 下載更多模型 and confirm it appears in the picker and runs.
-10. **The decode-only fallback on device** — §2.36 compiles only (the patch also builds on Linux;
+11. **The decode-only fallback on device** — §2.36 compiles only (the patch also builds on Linux;
    CI is the real check, since it patches and builds the pinned tree). On a forced MLX failure the
    log should read `sd: MLX 解碼失敗（…），改用引擎 CPU 解碼同一批 latent` and then
    `sd: 引擎 CPU 解碼 latent 成功（1 張），未重新取樣` - no second `sd: entering generatePrompt`.
-11. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
+12. **Large-canvas MLX decode on device** — §2.35 compiles only. Run 1024x1024 on both families
    (SDXL/Z-Image for `2d`, Qwen-Image for `3d`) and read the tile lines:
    `sd: mlx vae 2d tiled 128x128 latent -> 1024x1024 px in 4 tile(s)`, then one
    `sd: mlx vae 2d tile i/4`, then `peak N MB`. A 3D run prints the same with `3d`. The number to watch is the peak; if the
    tiles still fail, halve `tileLatent`. Check the seams by comparing against the CPU decode of the
    same seed.
-12. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
+13. **iOS presets and the auto-reload** — §2.34 compiles only. On device: apply a built-in and
    confirm the steppers move, save the tab as a preset, relaunch and confirm it is still listed and
    restores the slots, then force one failed run (a malformed model or a cancelled Metal step) and
    confirm the next 生成 logs `sd: reloading the model after the failed run`, reloads, and runs once.
    The same log should also settle the CPU-decode question: `auto-fit: --backend "…vae=cpu…"` plus
    `vae … -> compute cpu`.
-13. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
+14. **iOS Core AI upscaler (optional)** — gate, `.aimodel` discovery and disabled state are in place
    (§2.24), and the asset problem is solved: `coreai-export.yml` builds EDSR on a Linux runner
    (§2.25), dynamic 8-256 px, 5.3 MB. What is left is the Swift inference (`AIModel` +
    `InferenceFunction` + `NDArray`) and an iOS 27 device to run it on. Until then the button says
