@@ -24,6 +24,10 @@ struct ImageGenView: View {
     /// img2img source, as a picker item rather than an image: the transfer is
     /// asynchronous and the engine only ever needs the decoded UIImage.
     @State private var photoItem: PhotosPickerItem?
+    /// Upscaler download: which entry is in flight, its fraction, and the error.
+    @State private var downloadingUpscaler: String?
+    @State private var upscalerProgress: Double?
+    @State private var upscalerError: String?
     /// Name prompt for "save the current settings as a preset".
     @State private var isPresetNamePrompt = false
     @State private var presetName = ""
@@ -770,12 +774,84 @@ struct ImageGenView: View {
                 add(upscaler.path, upscaler.lastPathComponent, bundled: false)
             }
         }
+        // Downloaded on demand (放大 > 下載更多模型). Scanned rather than tracked
+        // in state so a file downloaded in an earlier session is still there.
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: UpscalerCatalog.directory, includingPropertiesForKeys: nil) {
+            for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                add(file.path, file.lastPathComponent, bundled: false)
+            }
+        }
         if !engine.upscaler.isEmpty {
             add(engine.upscaler,
                 URL(fileURLWithPath: engine.upscaler).lastPathComponent,
                 bundled: SdEngine.bundledUpscalerPath == engine.upscaler)
         }
         return options
+    }
+
+    /// The on-demand upscalers. Each is ~67 MB and the right one depends on the
+    /// picture, so they are listed with a one-line character note instead of
+    /// being bundled; a downloaded file goes to Documents/Upscalers and shows up
+    /// in the picker above on the next pass.
+    private var upscalerDownloads: some View {
+        DisclosureGroup("下載更多模型") {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(UpscalerSource.catalog) { source in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(source.name).font(.callout)
+                            Spacer()
+                            if let installed = source.installedPath {
+                                Button("使用") { engine.upscaler = installed }
+                                    .font(.caption)
+                            } else if downloadingUpscaler == source.id {
+                                ProgressView(value: upscalerProgress ?? 0, total: 1)
+                                    .frame(width: 80)
+                            } else {
+                                Button("下載") { download(source) }
+                                    .font(.caption)
+                            }
+                        }
+                        Text("\(source.note) · \(source.megabytes) MB")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let upscalerError {
+                    Text(upscalerError).font(.caption2).foregroundStyle(.red)
+                }
+                Text("來源是 Hugging Face（Kim2091/UltraSharp、ai-forever/Real-ESRGAN）。全都會被縮成 4x 再依上面的倍率縮小。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+        }
+        .font(.callout)
+    }
+
+    private func download(_ source: UpscalerSource) {
+        downloadingUpscaler = source.id
+        upscalerProgress = nil
+        upscalerError = nil
+        Task {
+            do {
+                let url = try await UpscalerSource.download(source) { fraction in
+                    Task { @MainActor in upscalerProgress = fraction }
+                }
+                await MainActor.run {
+                    engine.upscaler = url.path
+                    downloadingUpscaler = nil
+                    appLog("upscaler: downloaded \(source.file)", source: "app")
+                }
+            } catch {
+                await MainActor.run {
+                    downloadingUpscaler = nil
+                    upscalerError = "\(source.name) 下載失敗：\(error.localizedDescription)"
+                    appLog("upscaler: download failed — \(error.localizedDescription)", source: "app")
+                }
+            }
+        }
     }
 
     private var upscaleCard: some View {
@@ -842,6 +918,7 @@ struct ImageGenView: View {
                 if let error = engine.upscaleError {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
+                upscalerDownloads
             }
         }
     }
