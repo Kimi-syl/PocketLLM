@@ -1460,6 +1460,15 @@ The app-side needs nothing for MOSS beyond what the classifier already had: `mos
 `ModelAudit.imageArchitectures`, so an imported checkpoint is recognised as a diffusion model and
 goes through the same slots as every other DiT.
 
+**The bump also reshaped the public API**, which the CI caught as three compile errors and is worth
+recording because it will bite on the next bump too: `generate_image`, `generate_video` and `upscale`
+no longer take `(sd_image_t** images, int* count)`. They take one out-parameter,
+`sd_image_generation_result_t**` / `sd_video_generation_result_t**`, which carries the pixels *and* a
+`generation_info` JSON string (upstream #2206), and they are freed with
+`free_sd_image_generation_result` / `free_sd_video_generation_result`, not `free_sd_images`. The
+bridge now goes through `result->items[i].image` / `result->frames[i]`. `free_sd_images` still exists
+and is still what the app's own `sd_decode_latents` returns, because that allocates a plain array.
+
 ---
 
 ## 3. Recurring failure patterns

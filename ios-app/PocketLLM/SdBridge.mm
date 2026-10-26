@@ -388,13 +388,17 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         setenv("SD_LATENTS_DUMP", sLatentsPath.c_str(), 1);
     }
 
-    sd_image_t *images = nullptr;
-    int num = 0;
-    bool generated = generate_image(_ctx, &gp, &images, &num);
+    // The engine owns its results now (`sd_image_generation_result_t`, which
+    // carries the pixels plus a generation_info JSON string); free it with the
+    // matching helper, never `free`.
+    sd_image_generation_result_t *result = nullptr;
+    bool generated = generate_image(_ctx, &gp, &result);
     if (mlxVae) {
         unsetenv("SD_LATENTS_DUMP");
     }
-    if (!generated || images == nullptr || (num <= 0 && !mlxVae)) {
+    int num = result != nullptr ? result->count : 0;
+    if (!generated || result == nullptr || (num <= 0 && !mlxVae)) {
+        if (result != nullptr) free_sd_image_generation_result(result);
         if (error) {
             *error = [NSError errorWithDomain:@"SdContext"
                                          code:2
@@ -406,13 +410,13 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     // With mlxVae there are no images by design; an empty array tells the caller
     // the latents file is the result.
     if (num <= 0) {
-        free_sd_images(images, 0);
+        free_sd_image_generation_result(result);
         return @[];
     }
 
     NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)num];
     for (int i = 0; i < num; ++i) {
-        sd_image_t img = images[i];
+        sd_image_t img = result->items[i].image;
         if (img.data == nullptr) continue;
         size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
         SdImage *wrapped = [[SdImage alloc] init];
@@ -422,9 +426,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         wrapped.pixels = [NSData dataWithBytes:img.data length:bytes];
         [out addObject:wrapped];
     }
-    // The header is explicit that C API callers must use free_sd_images rather
-    // than free(): the struct owns allocations beyond the array itself.
-    free_sd_images(images, num);
+    free_sd_image_generation_result(result);
     return out;
 }
 
@@ -520,25 +522,22 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     g_step.store(0);
     g_steps.store(0);
 
-    sd_image_t *outFrames = nullptr;
-    int num = 0;
-    int fpsOut = 0;
-    bool ok = generate_video(_ctx, &vp, &outFrames, &num, nullptr, &fpsOut);
-    if (!ok || outFrames == nullptr || num <= 0) {
+    sd_video_generation_result_t *result = nullptr;
+    bool ok = generate_video(_ctx, &vp, &result);
+    int num = result != nullptr ? result->frame_count : 0;
+    if (!ok || result == nullptr || num <= 0) {
+        if (result != nullptr) free_sd_video_generation_result(result);
         if (error) {
             *error = [NSError errorWithDomain:@"SdContext"
                                          code:5
                                      userInfo:@{NSLocalizedDescriptionKey:
                                                     @"generate_video produced no frames"}];
         }
-        if (outFrames != nullptr) {
-            free_sd_images(outFrames, num);
-        }
         return nil;
     }
     NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)num];
     for (int i = 0; i < num; ++i) {
-        sd_image_t img = outFrames[i];
+        sd_image_t img = result->frames[i];
         if (img.data == nullptr) continue;
         size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
         SdImage *wrapped = [[SdImage alloc] init];
@@ -548,7 +547,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         wrapped.pixels = [NSData dataWithBytes:img.data length:bytes];
         [out addObject:wrapped];
     }
-    free_sd_images(outFrames, num);
+    free_sd_video_generation_result(result);
     return out;
 }
 
@@ -643,10 +642,10 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     input.channel = 3;
     input.data = (uint8_t *)image.pixels.bytes;
 
-    sd_image_t *images = nullptr;
-    int count = 0;
-    if (!upscale(_upscaler, input, (uint32_t)MAX(factor, 1), &images, &count) || count <= 0) {
-        if (images != nullptr) free_sd_images(images, count);
+    sd_image_generation_result_t *result = nullptr;
+    if (!upscale(_upscaler, input, (uint32_t)MAX(factor, 1), &result) ||
+        result == nullptr || result->count <= 0) {
+        if (result != nullptr) free_sd_image_generation_result(result);
         if (error) {
             *error = [NSError errorWithDomain:@"SdUpscaler" code:5
                                     userInfo:@{NSLocalizedDescriptionKey:
@@ -655,9 +654,10 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
         return nil;
     }
 
+    int count = result->count;
     NSMutableArray<SdImage *> *out = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
     for (int i = 0; i < count; ++i) {
-        sd_image_t img = images[i];
+        sd_image_t img = result->items[i].image;
         if (img.data == nullptr) continue;
         size_t bytes = (size_t)img.width * (size_t)img.height * (size_t)img.channel;
         [out addObject:[SdImage imageWithWidth:(int32_t)img.width
@@ -665,7 +665,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                        channel:(int32_t)img.channel
                                         pixels:[NSData dataWithBytes:img.data length:bytes]]];
     }
-    free_sd_images(images, count);
+    free_sd_image_generation_result(result);
     return out;
 }
 
