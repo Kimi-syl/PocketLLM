@@ -1,8 +1,8 @@
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
-@@ -555,6 +555,24 @@
-                            sd_audio_t** audio_out,
-                            int* fps_out);
+@@ -578,6 +578,24 @@
+                            const sd_vid_gen_params_t* sd_vid_gen_params,
+                            sd_video_generation_result_t** result_out);
  
 +// Decode latents written by SD_LATENTS_DUMP, without sampling again.
 +//
@@ -27,7 +27,7 @@
  SD_API upscaler_ctx_t* new_upscaler_ctx(const char* esrgan_path,
 --- a/src/pipeline/diffusion_engine.h
 +++ b/src/pipeline/diffusion_engine.h
-@@ -489,6 +489,14 @@
+@@ -499,6 +499,14 @@
  
      sd::Tensor<float> decode_first_stage(const sd::Tensor<float>& x, bool decode_video = false);
  
@@ -53,7 +53,7 @@
  #include <cstdlib>
  #include <list>
  #include <mutex>
-@@ -3127,7 +3129,11 @@
+@@ -3007,7 +3009,11 @@
      if (sd_version_is_pid(version) || sd_version_is_minit2i(version) || version == VERSION_IRIS) {
          return sd::ops::clamp((x + 1.f) * 0.5f, 0.0f, 1.0f);
      }
@@ -66,7 +66,7 @@
      auto tiling_params                = first_stage_model->resolve_tiling_params(vae_tiling_params);
      const bool prefer_temporal_tiling = decode_video && latents.dim() == 5 && latents.shape()[2] > 1 &&
                                          first_stage_model->can_temporal_tile_decode();
-@@ -3150,6 +3156,52 @@
+@@ -3030,6 +3036,52 @@
      }
  }
  
@@ -121,7 +121,7 @@
      if (!ltx_vae) {
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
-@@ -678,6 +678,40 @@
+@@ -683,6 +683,40 @@
      }
  }
  

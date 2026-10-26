@@ -1430,6 +1430,36 @@ Deferred: writing the frames to a video file (AVAssetWriter) - the result area s
 the gallery keeps the first frame. Also open: teaching the model classifier that a TAE satisfies a
 video checkpoint's decoder, and that `umt5` belongs in the T5 slot.
 
+### 2.42 Engine pin to the MOSS-Image work (2026-10-25)
+
+MOSS-Image is a newer architecture than the pin knew: at `8cd731e7b` there is no `moss_image` code at
+all (`grep -ri moss src/ include/` is empty). Upstream added it in #2148, then #2160 (split QKV
+weights + batch host loading - what the checkpoints in the wild actually need), then #2208/#2209
+(perf). The pin is now `e6370bf093c`, the newest commit carrying all four, 41 commits on from the
+old one and dated a day later.
+
+A pin bump is only safe if the three local patches still apply, and this one had to be checked, not
+assumed:
+
+- `include/stable-diffusion.h`, `src/pipeline/diffusion_engine.h`, `src/stable-diffusion.cpp` and
+  `src/pipeline/image.cpp` are unchanged between the two pins;
+- `src/pipeline/diffusion_engine.cpp` moved by 8 insertions / 3 deletions, so the decode-only hunks
+  lost their exact context;
+- the ggml submodule moved `d25b121c` -> `a5915eb0`, so the Metal command-buffer patch (which edits
+  `ggml/src/ggml-metal/*`) lost its context too.
+
+Dry runs confirmed all three still applied, but two hunks needed fuzz (`Hunk #1 succeeded … with fuzz
+2` in the public header, `fuzz 1` in each ggml file). Fuzz means `patch` ignored context lines to find
+a match, which is exactly the kind of thing that silently lands a hunk in the wrong function on the
+next bump, so all three patches were **regenerated** from this base: apply with fuzz, then re-diff the
+patched files against `git show HEAD:<path>` (and `git -C ggml show HEAD:<path>` for the submodule),
+which produces hunks whose context matches by construction. All three now dry-run with no fuzz and no
+offset on a clean worktree at `e6370bf093c`.
+
+The app-side needs nothing for MOSS beyond what the classifier already had: `moss_image` is in
+`ModelAudit.imageArchitectures`, so an imported checkpoint is recognised as a diffusion model and
+goes through the same slots as every other DiT.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1506,19 +1536,20 @@ and for the ggml guard.
 | Iris-3B needs no VAE | pinned engine: `decode_first_stage` rescales `(x+1)/2` for `VERSION_IRIS`/`PID`/`MINIT2I` (`diffusion_engine.cpp:3127`); real GGUF header: `general.architecture = iris`, 639 tensors, no `first_stage_model.` |
 | a VAE is recognised without "vae" in the name | role table built from diffusers/sd.cpp tensor prefixes; `kl-f8-anime2`, `ae`, `diffusion_pytorch_model` in `vae/` all resolve to `.vae` |
 | 2D VAE layout matches the engine | pinned `auto_encoder_kl.hpp`: `GroupNorm32` (32 groups, 1e-6), mid = resnet/attention/resnet, `up_blocks.N.resnets.{0..2}` + `upsamplers.0.conv`, `conv_norm_out` -> silu -> `conv_out`; LDM spelling mapped from `name_conversion.cpp:1057-1120` |
-| engine writes VAE-space latents for the 2D decoder | patch applies to `8cd731e7b` (`patch -p1 --dry-run` clean); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
+| engine writes VAE-space latents for the 2D decoder | patch regenerated for `e6370bf093c` (`patch -p1 --dry-run` clean, no fuzz); `diffusion_to_vae_latents` is the same call `decode_first_stage` makes (`diffusion_engine.cpp:3131`) |
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| engine pin carries MOSS-Image | `e6370bf093c` is 41 commits on from `8cd731e7b`; `src/model/diffusion/moss_image.hpp` exists there (it does not at the old pin), and the three patches dry-run clean against it with zero fuzz/offset (`patch -p1 --dry-run`, worktree at that commit + ggml `a5915eb0`) |
 | video mode (Wan 2.2 TI2V) | engine: `VERSION_WAN2_2_TI2V` + the start-image path (`video.cpp:956`) + `taesd_path` -> `init_from_file(..., "tae.")`; app: TAE slot wired into `sd_ctx_params_t.taesd_path`, `generate_video` in the bridge, `SdEngine.generateVideo()`; compile-only, device run pending |
 | flash attention is forced on for diffusion | engine: `flash_attention_for` returns true immediately when `diffusion_flash_attn` is set (`diffusion_engine.cpp:1213`), bypassing the per-backend probe whose "compute devices disagree" rule disables it for the whole module |
 | the screen stays awake while generating | `SdEngine.phase.didSet` sets/clears `UIApplication.shared.isIdleTimerDisabled`, logged as `app: idle timer …` |
 | hires pass | engine `sd_hires_params_t` (`request.cpp:resolve_hires` needs a non-NONE upscaler and a scale or target); the bridge sets latent bicubic-antialiased and explicit target w/h, compile-only on device |
 | refiner checkpoint | reuses the img2img path: `refineLast()` sets the source to the last image and the main slot to the refiner, then the reload path loads it; compile-only |
 | downloadable upscalers | the four catalogue URLs answer 200 with `x-linked-size` ~67 MB (curl -IL, no token); the app compiles and the picker scans Documents/Upscalers (device run pending) |
-| img2img is wired to the engine | engine 8cd731e7b has `sd_img_gen_params_t.init_image`/`strength`; the bridge fills them and the app passes a redrawn RGB8 image at the target size (compile-only on device) |
+| img2img is wired to the engine | engine `e6370bf093c` has `sd_img_gen_params_t.init_image`/`strength`; the bridge fills them and the app passes a redrawn RGB8 image at the target size (compile-only on device) |
 | the progress bar keeps its outcome | the poll task returned inside `do/catch` on cancellation and only rewrites `.running` phases, so a finished run's `.succeeded`/`.failed` is what stays on screen |
-| a failed MLX decode does not re-sample | engine patch `stable-diffusion-decode-latents.patch`: applies to `8cd731e7b` (`patch -p1 --dry-run` clean), compiles CPU-only on aarch64 Linux (0 errors), and `nm -D` on the built `libstable-diffusion.so` shows `T sd_decode_latents` |
+| a failed MLX decode does not re-sample | engine patch `stable-diffusion-decode-latents.patch`: regenerated for `e6370bf093c` (`patch -p1 --dry-run` clean, no fuzz), compiled CPU-only on aarch64 Linux (0 errors) on the previous base, and `nm -D` on the built `libstable-diffusion.so` shows `T sd_decode_latents` |
 | presets restore slots and sampling | compile-only; the JSON round-trip is the same `Codable` pair used by `GalleryStore`, and the menu is a plain `Menu` |
 | a failed run rebuilds the context | compile-only: `needsReload` set at all three failure exits, cleared on success/load/unload; the resumed run re-enters `generate()` from `load()` |
 | `vae=cpu` puts the VAE on the CPU | code path: runner built from `runtime_backend(SDBackendModule::VAE)` (`model_builders.cpp:533`), module from `p.backend` (`ggml_extend_backend.cpp:80`); device log line to confirm: `auto-fit: --backend "…vae=cpu…"` + `vae … -> compute cpu` |

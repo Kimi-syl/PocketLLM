@@ -1,7 +1,6 @@
-diff --git a/src/pipeline/image.cpp b/src/pipeline/image.cpp
 --- a/src/pipeline/image.cpp
 +++ b/src/pipeline/image.cpp
-@@ -2,8 +2,11 @@
+@@ -3,8 +3,11 @@
  
  #include <algorithm>
  #include <cmath>
@@ -13,7 +12,7 @@ diff --git a/src/pipeline/image.cpp b/src/pipeline/image.cpp
  
  #include "core/rng.hpp"
  #include "diffusion_engine.h"
-@@ -544,6 +547,66 @@
+@@ -595,6 +598,66 @@
              LOG_ERROR("no latent images to decode");
              return nullptr;
          }

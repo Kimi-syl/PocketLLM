@@ -41,13 +41,19 @@ env:
   LLAMA_COMMIT: f280b26983ad0fdb705a0d9ebf0503e76f2899b0
   # Image generation engine. Pinned like llama.cpp so both platforms
   # build the same code.
-  # 8cd731e7b = upstream "add FLUX.3 Image Klein and Klein Base support"
-  # (#2143). The older pin had no VERSION_FLUX3, so FLUX.3 loaded as
-  # VERSION_COUNT and stalled in model init. The header is additive, both
-  # local patches still apply, and FLUX.3 needs no new app-side plumbing: its
-  # text encoder is a Qwen3-VL GGUF (the existing llm_path slot) and its VAE is
-  # the FLUX.2 ae.safetensors (the existing vae_path slot).
-  SD_COMMIT: 8cd731e7b4667eb8f40a153315b9a7125d09a58d
+  # e6370bf093c = upstream "perf: avoid redundant MOSS QKV and value layout
+  # copies" (#2209), the newest commit carrying all of the MOSS-Image work:
+  # #2148 added the architecture, #2160 taught it split QKV weights and batch
+  # host loading (needed for the checkpoints in the wild), and #2208/#2209 are
+  # its perf fixes. 41 commits on from the previous pin (8cd731e7b, FLUX.3),
+  # whose VERSION_FLUX3 must stay: dropping back would stall FLUX.3 in model
+  # init again.
+  #
+  # The bump moves the ggml submodule too (d25b121c -> a5915eb0), and it touched
+  # src/pipeline/diffusion_engine.cpp, so all three local patches were
+  # regenerated against this exact base: they now apply with no fuzz and no
+  # offset (`patch -p1 --dry-run` clean), which is what the guards below assert.
+  SD_COMMIT: e6370bf093c50260190159237ac80954634cdf3b
   # Part of the DerivedData cache key: a tree built by a different Xcode must
   # not be reused, or a preview run would poison the pinned one.
   XCODE_MAJOR: ${{ inputs.xcode || '26' }}
