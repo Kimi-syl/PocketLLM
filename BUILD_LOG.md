@@ -1603,12 +1603,12 @@ compile-and-link evidence only.
 
 | item | value |
 |---|---|
-| tag | `v0.7.0` → `76fd712` |
-| run | `40321700911` (ios, success) |
-| asset | `PocketLLM-v0.7.0-unsigned.ipa` (47 798 845 bytes, unsigned, arm64, iOS 17+) |
-| sha256 | `170fa4f83138fbfc417cadd8029f898354e795547f134569029d195cd1ca49c2` |
+| tag | `v0.7.0` → `4969720` |
+| run | `40330935925` (ios, success; the first 0.7.0 build, `40321700911`, predates the residency-chunk fix) |
+| asset | `PocketLLM-v0.7.0-unsigned.ipa` (47 798 849 bytes, unsigned, arm64, iOS 17+) |
+| sha256 | `7918bdd414739f7a80dfd97afa3c4583d439fb5b0d7a0d3c0326068787885fe7` |
 | version metadata | `CFBundleShortVersionString 0.7.0`, `CFBundleVersion 3`; Android `versionCode 22`, `versionName 0.7.0` |
-| contents | Video tab + Wan 2.2 TI2V + one-click bundle download; MOSS-Image with the tokenizer slot; 2D/3D MLX VAE with blocked attention and tiled f16; decode-only fallback; img2img, hires refine, refiner checkpoint; presets; downloadable upscalers; forced flash attention and the idle-timer hold |
+| contents | Video tab + Wan 2.2 TI2V + one-click bundle download; 256 MiB residency chunks (the Wan 933 MiB allocation fix); MOSS-Image with the tokenizer slot; 2D/3D MLX VAE with blocked attention and tiled f16; decode-only fallback; img2img, hires refine, refiner checkpoint; presets; downloadable upscalers; forced flash attention and the idle-timer hold |
 
 The artifact is 18 MB larger than 0.6.0's because it now carries the video path, the second MLX
 decoder and the upscaler catalogue downloads' plumbing; the engine dylib grew with the MOSS-Image
