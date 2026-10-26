@@ -79,6 +79,10 @@ struct ModelBundle: Identifiable, Hashable {
     let mainModel: URL
     let textEncoder: URL?
     let vae: URL?
+    /// A tiny decoder (`taesd_path`). Wan 2.2's bundle carries one because a
+    /// full VAE decode of a dozen frames is the chain that trips the GPU
+    /// watchdog; it is not a VAE and does not go in the vae slot.
+    let tae: URL?
     let clipL: URL?
     let clipG: URL?
     let t5: URL?
@@ -146,6 +150,7 @@ extension ModelInspector {
         var mains: [URL] = []
         var textEncoders: [URL] = []
         var vaes: [URL] = []
+        var taes: [URL] = []
         var upscalers: [URL] = []
         var clipL: URL?
         var clipG: URL?
@@ -201,6 +206,7 @@ extension ModelInspector {
                 }
                 switch ModelAudit.facts(of: url).role {
                 case .vae: vaes.append(url)
+                case .tae: taes.append(url)
                 case .textEncoder: textEncoders.append(url)
                 default: resolved.append(url)
                 }
@@ -211,6 +217,7 @@ extension ModelInspector {
         guard let main = mains.max(by: { fileSize($0) < fileSize($1) }) else { return nil }
         let encoder = textEncoders.max(by: { fileSize($0) < fileSize($1) })
         let vae = vaes.max(by: { fileSize($0) < fileSize($1) })
+        let tae = taes.max(by: { fileSize($0) < fileSize($1) })
         let upscaler = upscalers.max(by: { fileSize($0) < fileSize($1) })
         let allInOne = encoder == nil && vae == nil
 
@@ -221,6 +228,7 @@ extension ModelInspector {
             mainModel: main,
             textEncoder: encoder,
             vae: vae,
+            tae: tae,
             clipL: clipL,
             clipG: clipG,
             t5: t5,

@@ -15,13 +15,14 @@ import Foundation
 /// download) and from the files on disk (after it).
 struct RepoAudit {
     enum Part: String, CaseIterable, Identifiable {
-        case textEncoder, vae
+        case textEncoder, vae, tae
 
         var id: String { rawValue }
         var label: String {
             switch self {
             case .textEncoder: return "文字編碼器 (TE)"
             case .vae: return "VAE"
+            case .tae: return "微型解碼器 (TAE)"
             }
         }
     }
@@ -239,6 +240,9 @@ enum ModelAudit {
     enum Role {
         case diffusion
         case vae
+        /// A tiny decoder (TAESD / TAEHV). Loaded through `taesd_path`, not
+        /// `vae_path`, so it is its own role rather than a kind of VAE.
+        case tae
         case textEncoder
         /// Readable, but none of the above (a LoRA, a projector, …).
         case other
@@ -253,6 +257,11 @@ enum ModelAudit {
         /// The model writes pixels directly, so no VAE is involved.
         var isPixelSpace = false
         var hasVAE = false
+        /// A tiny decoder rather than a full VAE: `encoder.<N>.…` /
+        /// `decoder.<N>.…` with numeric blocks and no `up_blocks`/`conv_in`.
+        /// Wan 2.2's `taew2_2.safetensors` is one, and without it a dozen-frame
+        /// decode is minutes of GPU work.
+        var isTAE = false
         var hasConditioner = false
     }
 
@@ -296,9 +305,29 @@ enum ModelAudit {
         "text_encoder.", "text_encoder_2.", "te.", "te1.", "te2.", "llm.",
         // Standalone T5/CLIP files saved without any of the above prefixes.
         "encoder.block.", "text_model.",
+        // The GGUF spelling stable-diffusion.cpp's own T5/umt5 conversion uses,
+        // which is what the Wan bundles ship (`enc.blk.0.attn_q.weight`,
+        // verified against umt5-xxl-encoder-Q3_K_S.gguf).
+        "enc.blk.", "dec.blk.", "shared.",
     ]
 
     private static let pixelSpaceTensorPrefixes = ["pixel_blocks.", "pixel_embedder."]
+
+    /// A tiny decoder by shape, not by name: `encoder.<N>.…` / `decoder.<N>.…`
+    /// with a numeric block index. The real VAEs spell their blocks
+    /// `up_blocks`/`down_blocks`/`mid_block` (diffusers) or `up.N.block.M` (LDM),
+    /// so a numeric block cannot collide with them.
+    private static func looksLikeTinyDecoder(_ names: [String]) -> Bool {
+        var numeric = 0
+        for name in names {
+            for stem in ["encoder.", "decoder."] where name.hasPrefix(stem) {
+                let rest = name.dropFirst(stem.count)
+                if let first = rest.first, first.isNumber { numeric += 1 }
+                break
+            }
+        }
+        return numeric >= 8
+    }
 
     private static func hasPrefix(_ names: [String], _ prefixes: [String]) -> Bool {
         names.contains { name in prefixes.contains { name.hasPrefix($0) } }
@@ -347,11 +376,14 @@ enum ModelAudit {
         }
 
         facts.hasVAE = hasPrefix(names, vaeTensorPrefixes)
+        facts.isTAE = !facts.hasVAE && looksLikeTinyDecoder(names)
         facts.hasConditioner = hasPrefix(names, conditionerPrefixes)
         facts.isPixelSpace = hasPrefix(names, pixelSpaceTensorPrefixes)
             || (facts.architecture.map { pixelSpaceArchitectures.contains($0) } ?? false)
 
-        if let arch = facts.architecture, imageArchitectures.contains(arch) {
+        if facts.isTAE {
+            facts.role = .tae
+        } else if let arch = facts.architecture, imageArchitectures.contains(arch) {
             facts.role = .diffusion
         } else if let arch = facts.architecture, conditionerArchitectures.contains(arch) {
             facts.role = .textEncoder
@@ -389,8 +421,30 @@ enum ModelAudit {
 
         var parts: [RepoAudit.Part] = []
         if !bundle.hasConditioner && !facts.hasConditioner { parts.append(.textEncoder) }
-        if bundle.vae == nil && !facts.isPixelSpace { parts.append(.vae) }
+        // A decoder can be the file's own VAE, a separate VAE, a tiny decoder
+        // (which is what a video checkpoint actually needs — `taesd_path`, not
+        // `vae_path`), or nothing at all for the pixel-space models.
+        let hasDecoder = bundle.vae != nil || bundle.tae != nil || facts.hasVAE || facts.isTAE
+        if !hasDecoder && !facts.isPixelSpace {
+            parts.append(isVideoModel(bundle, facts) ? .tae : .vae)
+        }
         return parts
+    }
+
+    /// Architectures whose decode is a tiny decoder rather than a full VAE.
+    private static let videoArchitectures: Set<String> = [
+        "wan", "wan2", "hunyuan_video", "ltx", "ltxv", "cosmos", "lingbot", "minimax_h3",
+    ]
+
+    /// Whether this bundle's main file is a video model. The architecture tag is
+    /// the answer when the converter wrote one; `wan`-family GGUFs often do not,
+    /// so the file name is the fallback.
+    private static func isVideoModel(_ bundle: ModelBundle, _ facts: Facts) -> Bool {
+        if let arch = facts.architecture?.lowercased(), videoArchitectures.contains(arch) {
+            return true
+        }
+        let name = bundle.mainModel.lastPathComponent.lowercased()
+        return ["wan2", "wan_2", "hunyuan_video", "ltxv", "ltx-video"].contains { name.contains($0) }
     }
 
     /// Key names from a safetensors header; only the names, no tensor data.

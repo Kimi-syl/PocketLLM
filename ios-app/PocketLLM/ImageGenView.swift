@@ -33,7 +33,7 @@ struct ImageGenView: View {
     @State private var presetName = ""
 
     private enum Slot: String, Identifiable {
-        case textEncoder, mainModel, clipL, clipG, t5, vae, tae, upscaler, lora, refiner
+        case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora, refiner
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -43,7 +43,6 @@ struct ImageGenView: View {
             case .clipG:       return "CLIP-G"
             case .t5:          return "T5 (t5xxl)"
             case .vae:         return "VAE"
-            case .tae:         return "微型解碼器 (taesd)"
             case .upscaler:    return "放大模型 (ESRGAN)"
             case .refiner:     return "精修模型 (img2img)"
             case .lora:        return "LoRA"
@@ -57,7 +56,6 @@ struct ImageGenView: View {
             case .clipG:       return "SDXL 的 OpenCLIP-G"
             case .t5:          return "SD3 / Flux 的 T5"
             case .vae:         return "單檔模型加這個就能用 MLX 解碼"
-            case .tae:         return "Wan 2.2 的 taew2_2.safetensors；影片模式的解碼靠它"
             case .upscaler:    return "RealESRGAN / 4x-UltraSharp（.pth 或 .safetensors）"
             case .refiner:     return "低強度重繪最後一張的模型，格式要和主要模型相同"
             case .lora:        return "path|強度，多個以分號分隔"
@@ -71,7 +69,6 @@ struct ImageGenView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     modelCard
                     promptCard
-                    videoCard
                     img2imgCard
                     hiresCard
                     paramsCard
@@ -161,7 +158,6 @@ struct ImageGenView: View {
         case .clipG:       engine.clipG = path
         case .t5:          engine.t5 = path
         case .vae:         engine.vae = path
-        case .tae:         engine.tae = path
         case .upscaler:    engine.upscaler = path
         case .refiner:     engine.refinerModel = path
         case .lora:
@@ -278,7 +274,7 @@ struct ImageGenView: View {
                 slotRow(.clipG, value: engine.clipG)
                 slotRow(.t5, value: engine.t5)
                 slotRow(.vae, value: engine.vae)
-                slotRow(.tae, value: engine.tae)
+
                 slotRow(.upscaler, value: engine.upscaler)
                 slotRow(.refiner, value: engine.refinerModel)
                 HStack {
@@ -335,6 +331,9 @@ struct ImageGenView: View {
         engine.clipG = bundle.clipG?.path ?? ""
         engine.t5 = bundle.t5?.path ?? ""
         if let vae = bundle.vae { engine.vae = vae.path }
+        // A tiny decoder is not a VAE: it belongs in the taesd slot, which is
+        // what the video path decodes through.
+        if let tae = bundle.tae { engine.tae = tae.path }
         if let upscaler = bundle.upscaler { engine.upscaler = upscaler.path }
         mirroredBundleId = bundle.id
         importNote = "已套用：\(bundle.name)"
@@ -383,7 +382,6 @@ struct ImageGenView: View {
         case .clipG:       engine.clipG = ""
         case .t5:          engine.t5 = ""
         case .vae:         engine.vae = ""
-        case .tae:         engine.tae = ""
         case .upscaler:    engine.upscaler = ""
         case .refiner:     engine.refinerModel = ""
         case .lora:        engine.loras = ""
@@ -437,58 +435,6 @@ struct ImageGenView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     Text("開啟後先出小圖再放大重繪，細節比直接生成大圖好，但要多跑一輪。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.top, 4)
-        }
-    }
-
-    /// Video mode. Wan 2.2 TI2V needs its own entry point in the engine
-    /// (generate_video, frames instead of one image) and a tiny decoder, and the
-    /// frame count has to be 4n+1 - so the picker only offers those values.
-    private var videoCard: some View {
-        GroupBox("影片（Wan 2.2 TI2V）") {
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle("影片模式", isOn: $engine.videoMode)
-                if engine.videoMode {
-                    HStack {
-                        Text("影格數")
-                        Spacer()
-                        Picker("影格數", selection: $engine.videoFrames) {
-                            ForEach([5, 9, 13, 17, 21, 25], id: \.self) { f in
-                                Text("\(f)").tag(f)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    stepper("步數", value: $engine.steps, range: 1...20, step: 1)
-                    HStack {
-                        Text("CFG")
-                        Slider(value: $engine.cfg, in: 1...5)
-                        Text(String(format: "%.1f", engine.cfg)).monospacedDigit()
-                    }
-                    HStack {
-                        Text("Flow shift")
-                        Slider(value: $engine.videoFlowShift, in: 1...8)
-                        Text(String(format: "%.1f", engine.videoFlowShift)).monospacedDigit()
-                    }
-                    HStack {
-                        Text("FPS")
-                        Spacer()
-                        Picker("FPS", selection: $engine.videoFps) {
-                            ForEach([8, 12, 16, 24], id: \.self) { f in
-                                Text("\(f)").tag(f)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    if engine.tae.isEmpty {
-                        Text("⚠️ 還沒選微型解碼器：影片模式一定要有 taew2_2.safetensors（見「進階」），否則整個 VAE 解碼會是十幾分鐘的 GPU 鏈。")
-                            .font(.caption2).foregroundStyle(.orange)
-                    }
-                    Text("蒸餾模型用 4–8 步、CFG 1、Euler + simple；原生尺寸是 480×832，其他尺寸會明顯變差。要圖生影片就在上面的「圖生圖」選一張來源圖。記憶體很緊：13 影格的 DiT 注意力是上萬個 token，失敗通常是 watchdog 或 jetsam。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -775,9 +721,7 @@ struct ImageGenView: View {
     private var generateButton: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button(engine.videoMode ? "生成影片" : "生成圖片") {
-                    if engine.videoMode { engine.generateVideo() } else { engine.generate() }
-                }
+                Button("生成圖片") { engine.generate() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!engine.isReady)
                 Button("取消") { engine.cancel() }

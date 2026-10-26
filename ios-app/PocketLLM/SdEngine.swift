@@ -186,6 +186,26 @@ final class SdEngine: ObservableObject {
         UserDefaults.standard.set(value, forKey: key)
     }
 
+    /// Engines that currently hold a context. The image and video tabs each own
+    /// an engine so their defaults stay apart, which means two live contexts is
+    /// possible - two Metal backends and two weight sets, the same conflict the
+    /// LLM hand-off exists for. Loading in one tab releases the other.
+    private final class LiveBox {
+        weak var engine: SdEngine?
+        init(_ engine: SdEngine) { self.engine = engine }
+    }
+    private static var live: [LiveBox] = []
+
+    private static func takeSoleOwnership(_ keep: SdEngine) {
+        live.removeAll { $0.engine == nil }
+        for box in live where box.engine !== keep {
+            box.engine?.unload()
+        }
+        if !live.contains(where: { $0.engine === keep }) {
+            live.append(LiveBox(keep))
+        }
+    }
+
     /// Metal backend tuning, applied once when the context is created (the
     /// backend reads these environment knobs at init, not per graph). Kept
     /// user-visible because a full-resolution diffusion graph is exactly the
@@ -270,6 +290,9 @@ final class SdEngine: ObservableObject {
             return
         }
         phase = .loading
+        // Two sd.cpp contexts at once do not fit, so loading here releases the
+        // other tab's engine (and its Metal backend) first.
+        SdEngine.takeSoleOwnership(self)
         appLogMemory("sd pre-load", source: "sd")
         // Free every text/vision engine and its ggml-Metal context before sdcpp
         // builds its own. Two live Metal users abort llama at context creation
