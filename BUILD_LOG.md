@@ -1469,6 +1469,32 @@ no longer take `(sd_image_t** images, int* count)`. They take one out-parameter,
 bridge now goes through `result->items[i].image` / `result->frames[i]`. `free_sd_images` still exists
 and is still what the app's own `sd_decode_latents` returns, because that allocates a plain array.
 
+### 2.43 The Wan OOM was one 933 MiB allocation, not the text encoder (2026-10-26)
+
+The device log settles what "GPU timeout" had been blamed for:
+
+```
+get_learned_condition completed, taking 34.45s          <- TE encoded, memory released (resident 423MB)
+generate_video 480x832x13
+ggml_metal_host_malloc: error: posix_memalign failed
+ggml_metal_buffer_init: error: failed to allocate buffer, size = 933.05 MiB
+model manager alloc params backend buffer failed, size = 933.03MB
+Wan2.2-TI2V-5B segment 1/1 (graph) failed during weight preparation
+```
+
+The text encoder was already fully off the GPU (`Conditioner -> compute CPU, params disk`) and its
+memory was back to 423 MB before the diffusion model started. The failure is one **contiguous 933 MiB
+host allocation** for the DiT's weights: `ModelManager` packs a component's weights into residency
+blocks capped at `MAX_RESIDENCY_BLOCK_BYTES`, which was **1 GiB** (`model_manager.h:35`). A single
+allocation that large is the first thing to fail when the process already holds the app, the MLX
+buffers and the rest of the weights, and `posix_memalign` failing is a host-memory failure rather
+than a VRAM one.
+
+`stable-diffusion-residency-chunks.patch` lowers the cap to 256 MiB. Nothing about what is loaded or
+where changes - only that the same bytes arrive as four ~233 MiB allocations instead of one 933 MiB
+one. If a run still fails, the next lever is `max_vram`, which forces the graph cut to prepare the
+weights in more, smaller segments.
+
 ---
 
 ## 3. Recurring failure patterns
@@ -1549,6 +1575,7 @@ and for the ggml guard.
 | MLX failure falls back to a CPU decode | compile-only: `vae=cpu` is in the backend spec whenever MLX is armed, so the retry cannot reach the GPU decoder; the fallback is a full re-run with the same seed |
 | Z-Image VAE has no post_quant_conv | real header: 244 keys, `decoder`/`encoder` only, `decoder.conv_in.weight` `[512, 16, 3, 3]`; the engine skips it when `use_quant` is false (`auto_encoder_kl.hpp:611`) |
 | large-canvas MLX decode fits in memory | compile-only; the allocation arithmetic is stated above (1.07 GB score matrix, 536 MB f32 stage tensor) and the tiling keeps every live tensor at one 640x640 tile, for both the 2D and the 3D decoder |
+| iOS OOM is a 1 GiB residency chunk | device log (`Pocketllm 7.txt`): `model manager alloc params backend buffer failed, size = 933.03MB` -> `ggml_metal_host_malloc: posix_memalign failed`; `MAX_RESIDENCY_BLOCK_BYTES` was 1 GiB (`model_manager.h:35`), the patch makes it 256 MiB, and it dry-runs clean on `e6370bf093c` |
 | engine pin carries MOSS-Image | `e6370bf093c` is 41 commits on from `8cd731e7b`; `src/model/diffusion/moss_image.hpp` exists there (it does not at the old pin), and the three patches dry-run clean against it with zero fuzz/offset (`patch -p1 --dry-run`, worktree at that commit + ggml `a5915eb0`) |
 | video mode (Wan 2.2 TI2V) | engine: `VERSION_WAN2_2_TI2V` + the start-image path (`video.cpp:956`) + `taesd_path` -> `init_from_file(..., "tae.")`; app: TAE slot wired into `sd_ctx_params_t.taesd_path`, `generate_video` in the bridge, `SdEngine.generateVideo()`; compile-only, device run pending |
 | flash attention is forced on for diffusion | engine: `flash_attention_for` returns true immediately when `diffusion_flash_attn` is set (`diffusion_engine.cpp:1213`), bypassing the per-backend probe whose "compute devices disagree" rule disables it for the whole module |

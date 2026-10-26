@@ -320,6 +320,11 @@ jobs:
             || { echo "decode-latents patch did not apply (impl)"; exit 1; }
           grep -q sd_decode_latents ci-sd/src/stable-diffusion.cpp \
             || { echo "decode-latents patch did not apply (api)"; exit 1; }
+          # iOS OOM fix: 1 GiB residency chunks asked for one 933 MiB Metal
+          # buffer for the Wan DiT and failed; 256 MiB allocations fit instead.
+          patch -p1 -d ci-sd -i "$GITHUB_WORKSPACE/ios-app/patches/stable-diffusion-residency-chunks.patch"
+          grep -q '256ULL \* 1024ULL \* 1024ULL' ci-sd/src/model_manager.h \
+            || { echo "residency-chunks patch did not apply"; exit 1; }
           cmake -S ci-sd -B build-sd-dev \
             -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \

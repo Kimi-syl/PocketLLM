@@ -1,0 +1,21 @@
+--- a/src/model_manager.h
++++ b/src/model_manager.h
+@@ -32,7 +32,17 @@
+     };
+ 
+ private:
+-    static constexpr size_t MAX_RESIDENCY_BLOCK_BYTES = 1024ULL * 1024ULL * 1024ULL;
++    // Largest single allocation used when a component's weights are placed in
++    // residency blocks. It was 1 GiB, and on iOS that is what failed: preparing
++    // a Wan 2.2 5B DiT asked for one 933 MiB Metal buffer and got
++    // `posix_memalign failed` / "failed to allocate Metal buffer (out of
++    // memory)" even though the same total, split up, fits - a large contiguous
++    // host allocation is the first thing to fail when the process is already
++    // holding the text encoder's reserve and the rest of the weights.
++    //
++    // 256 MiB keeps the allocations small enough to fit in the gaps without
++    // changing what is loaded or where; the cost is a handful more buffers.
++    static constexpr size_t MAX_RESIDENCY_BLOCK_BYTES = 256ULL * 1024ULL * 1024ULL;
+ 
+     struct TensorState {
+         std::string name;
