@@ -83,6 +83,9 @@ struct ModelBundle: Identifiable, Hashable {
     /// full VAE decode of a dozen frames is the chain that trips the GPU
     /// watchdog; it is not a VAE and does not go in the vae slot.
     let tae: URL?
+    /// `tokenizer.json`, for the models whose conditioner is an LLM the engine
+    /// cannot tokenize itself (MOSS-Image's Qwen3.5, PiD, Lens).
+    let tokenizer: URL?
     let clipL: URL?
     let clipG: URL?
     let t5: URL?
@@ -135,6 +138,9 @@ extension ModelInspector {
     static func bundle(in folder: URL, repoId: String? = nil, evidence: Bool = false) -> ModelBundle? {
         let fileManager = FileManager.default
         var weights: [URL] = []
+        // Not a weight, but a load requirement for the LLM-conditioned models
+        // (MOSS-Image's Qwen3.5, PiD, Lens), so it is collected on the same walk.
+        var tokenizer: URL?
         guard let enumerator = fileManager.enumerator(
             at: folder, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
         else { return nil }
@@ -142,6 +148,10 @@ extension ModelInspector {
             let ext = url.pathExtension.lowercased()
             // .pth/.pt only ever qualify as an ESRGAN model; diffusion weights
             // in those formats are not something the engine loads.
+            if url.lastPathComponent.lowercased() == "tokenizer.json" {
+                tokenizer = url
+                continue
+            }
             guard ["gguf", "safetensors", "sft", "pth", "pt"].contains(ext) else { continue }
             weights.append(url)
         }
@@ -229,6 +239,7 @@ extension ModelInspector {
             textEncoder: encoder,
             vae: vae,
             tae: tae,
+            tokenizer: tokenizer,
             clipL: clipL,
             clipG: clipG,
             t5: t5,

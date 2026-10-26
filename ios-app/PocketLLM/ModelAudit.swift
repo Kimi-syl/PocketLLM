@@ -15,7 +15,7 @@ import Foundation
 /// download) and from the files on disk (after it).
 struct RepoAudit {
     enum Part: String, CaseIterable, Identifiable {
-        case textEncoder, vae, tae
+        case textEncoder, vae, tae, tokenizer
 
         var id: String { rawValue }
         var label: String {
@@ -23,6 +23,7 @@ struct RepoAudit {
             case .textEncoder: return "文字編碼器 (TE)"
             case .vae: return "VAE"
             case .tae: return "微型解碼器 (TAE)"
+            case .tokenizer: return "Tokenizer (tokenizer.json)"
             }
         }
     }
@@ -428,8 +429,18 @@ enum ModelAudit {
         if !hasDecoder && !facts.isPixelSpace {
             parts.append(isVideoModel(bundle, facts) ? .tae : .vae)
         }
+        if let arch = facts.architecture?.lowercased(),
+           tokenizerArchitectures.contains(arch),
+           bundle.tokenizer == nil {
+            parts.append(.tokenizer)
+        }
         return parts
     }
+
+    /// Architectures whose conditioner is an LLM the engine cannot tokenize on
+    /// its own: they need the official `tokenizer.json`, and without it
+    /// `new_sd_ctx` fails with "… requires the official … tokenizer.json".
+    private static let tokenizerArchitectures: Set<String> = ["moss_image", "pid", "lens"]
 
     /// Architectures whose decode is a tiny decoder rather than a full VAE.
     private static let videoArchitectures: Set<String> = [

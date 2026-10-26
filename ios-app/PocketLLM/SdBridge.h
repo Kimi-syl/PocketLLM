@@ -26,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// through a callback, which keeps the sampler thread from re-entering Swift.
 @interface SdContext : NSObject
 
+/// tokenizer: a `tokenizer.json` for the models whose text encoder is an LLM the
+/// engine cannot tokenize itself (MOSS-Image, PiD, Lens). nil for the rest, which
+/// carry their tokenizer inside the GGUF.
 - (nullable instancetype)initWithModel:(nullable NSString *)model
                                  clipL:(nullable NSString *)clipL
                                  clipG:(nullable NSString *)clipG
@@ -35,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
                              diffusion:(nullable NSString *)diffusion
                                    vae:(nullable NSString *)vae
                                  taesd:(nullable NSString *)taesd
+                             tokenizer:(nullable NSString *)tokenizer
                                threads:(int32_t)threads
                               vaeOnCPU:(BOOL)vaeOnCPU
                                  error:(NSError * _Nullable * _Nullable)error;

@@ -64,6 +64,13 @@ final class SdEngine: ObservableObject {
     @Published var tae = SdEngine.restore("sd.tae") {
         didSet { SdEngine.store(tae, "sd.tae", oldValue) }
     }
+    /// `tokenizer.json` for models whose text encoder is an LLM the engine
+    /// cannot tokenize itself: MOSS-Image (Qwen3.5), PiD and Lens. Without it
+    /// new_sd_ctx fails with "MOSS-Image requires the official Qwen3.5
+    /// tokenizer.json", which is what a MOSS load looked like before this slot.
+    @Published var tokenizer = SdEngine.restore("sd.tokenizer") {
+        didSet { SdEngine.store(tokenizer, "sd.tokenizer", oldValue) }
+    }
     @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
     @Published var clipG       = ""   // clip_g_path (SDXL's OpenCLIP-G encoder)
     @Published var t5          = ""   // t5xxl_path
@@ -314,6 +321,7 @@ final class SdEngine: ObservableObject {
         // to trip the watchdog, so the whole call happens off-main.
         let model = mainModel, encoder = textEncoder, t5v = t5, vaePath = vae
         let taePath = tae
+        let tokenizerPath = tokenizer
         let clipLPath = clipL, clipGPath = clipG
         let full = isFullCheckpoint
         let (ncb, fuse, concurrent) = (metalCommandBuffers, metalFusion, metalConcurrency)
@@ -355,6 +363,7 @@ final class SdEngine: ObservableObject {
                     diffusion: full ? nil : (model.isEmpty ? nil : model),
                     vae: vaePath.isEmpty ? nil : vaePath,
                     taesd: taePath.isEmpty ? nil : taePath,
+                    tokenizer: tokenizerPath.isEmpty ? nil : tokenizerPath,
                     threads: threadCount,
                     vaeOnCPU: vaeCPU)
             } catch {

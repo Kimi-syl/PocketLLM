@@ -33,7 +33,7 @@ struct ImageGenView: View {
     @State private var presetName = ""
 
     private enum Slot: String, Identifiable {
-        case textEncoder, mainModel, clipL, clipG, t5, vae, upscaler, lora, refiner
+        case textEncoder, mainModel, clipL, clipG, t5, vae, tokenizer, upscaler, lora, refiner
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -43,6 +43,7 @@ struct ImageGenView: View {
             case .clipG:       return "CLIP-G"
             case .t5:          return "T5 (t5xxl)"
             case .vae:         return "VAE"
+            case .tokenizer:   return "Tokenizer (tokenizer.json)"
             case .upscaler:    return "放大模型 (ESRGAN)"
             case .refiner:     return "精修模型 (img2img)"
             case .lora:        return "LoRA"
@@ -56,6 +57,7 @@ struct ImageGenView: View {
             case .clipG:       return "SDXL 的 OpenCLIP-G"
             case .t5:          return "SD3 / Flux 的 T5"
             case .vae:         return "單檔模型加這個就能用 MLX 解碼"
+            case .tokenizer:   return "MOSS-Image（Qwen3.5）與 PiD/Lens 必填，其他模型不需要"
             case .upscaler:    return "RealESRGAN / 4x-UltraSharp（.pth 或 .safetensors）"
             case .refiner:     return "低強度重繪最後一張的模型，格式要和主要模型相同"
             case .lora:        return "path|強度，多個以分號分隔"
@@ -158,6 +160,7 @@ struct ImageGenView: View {
         case .clipG:       engine.clipG = path
         case .t5:          engine.t5 = path
         case .vae:         engine.vae = path
+        case .tokenizer:   engine.tokenizer = path
         case .upscaler:    engine.upscaler = path
         case .refiner:     engine.refinerModel = path
         case .lora:
@@ -274,6 +277,7 @@ struct ImageGenView: View {
                 slotRow(.clipG, value: engine.clipG)
                 slotRow(.t5, value: engine.t5)
                 slotRow(.vae, value: engine.vae)
+                slotRow(.tokenizer, value: engine.tokenizer)
 
                 slotRow(.upscaler, value: engine.upscaler)
                 slotRow(.refiner, value: engine.refinerModel)
@@ -334,6 +338,7 @@ struct ImageGenView: View {
         // A tiny decoder is not a VAE: it belongs in the taesd slot, which is
         // what the video path decodes through.
         if let tae = bundle.tae { engine.tae = tae.path }
+        if let tokenizer = bundle.tokenizer { engine.tokenizer = tokenizer.path }
         if let upscaler = bundle.upscaler { engine.upscaler = upscaler.path }
         mirroredBundleId = bundle.id
         importNote = "已套用：\(bundle.name)"
@@ -382,6 +387,7 @@ struct ImageGenView: View {
         case .clipG:       engine.clipG = ""
         case .t5:          engine.t5 = ""
         case .vae:         engine.vae = ""
+        case .tokenizer:   engine.tokenizer = ""
         case .upscaler:    engine.upscaler = ""
         case .refiner:     engine.refinerModel = ""
         case .lora:        engine.loras = ""

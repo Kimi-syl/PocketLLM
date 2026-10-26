@@ -185,6 +185,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                              diffusion:(nullable NSString *)diffusion
                                    vae:(nullable NSString *)vae
                                  taesd:(nullable NSString *)taesd
+                             tokenizer:(nullable NSString *)tokenizer
                                threads:(int32_t)threads
                               vaeOnCPU:(BOOL)vaeOnCPU
                                  error:(NSError * _Nullable * _Nullable)error {
@@ -202,6 +203,7 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     std::string sDiff = diffusion ? diffusion.UTF8String : "";
     std::string sVae = vae ? vae.UTF8String : "";
     std::string sTaesd = taesd ? taesd.UTF8String : "";
+    std::string sTokenizer = tokenizer ? tokenizer.UTF8String : "";
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
@@ -248,6 +250,10 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     if (!sDiff.empty())      p.diffusion_model_path = sDiff.c_str();
     if (!sVae.empty())       p.vae_path = sVae.c_str();
     if (!sTaesd.empty())     p.taesd_path = sTaesd.c_str();
+    // MOSS-Image's conditioner is a Qwen3.5 LLM and the engine refuses to build
+    // its runner without the official tokenizer.json ("MOSS-Image requires the
+    // official Qwen3.5 tokenizer.json"); PiD and Lens have the same need.
+    if (!sTokenizer.empty()) p.tokenizer = sTokenizer.c_str();
     if (threads > 0)         p.n_threads = threads;
     // wtype is left at sd_ctx_params_init's default on purpose: forcing F16
     // breaks quantized checkpoints, which is how these models usually ship.
