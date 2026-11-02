@@ -61,8 +61,23 @@ final class PhononTTSEngine: ObservableObject {
     /// Realtime factor of the last utterance, from the runtime's own stats.
     @Published private(set) var lastRealtimeFactor: Double?
 
-    private var phonon: Phonon?
-    private var player: PhononPlayer?
+    /// The loaded model and its player.
+    ///
+    /// Held as `AnyObject` because a stored property cannot have an
+    /// `@available(iOS 18)` type in a class that is also compiled for iOS 17 —
+    /// the property would be unreachable but still ill-typed. The concrete holder
+    /// is itself annotated, so every read is a cast inside an availability check
+    /// and the compiler keeps the boundary honest.
+    @available(iOS 18.0, *)
+    private final class Backend {
+        let phonon: Phonon
+        let player: PhononPlayer
+        init(phonon: Phonon, player: PhononPlayer) {
+            self.phonon = phonon
+            self.player = player
+        }
+    }
+    private var backend: AnyObject?
 
     /// Fallback voice, used on iOS 17 or when no model is installed.
     private var synthesizer: AVSpeechSynthesizer?
@@ -151,8 +166,7 @@ final class PhononTTSEngine: ObservableObject {
             }
             let engine = try await Phonon.load(models: directory, language: .english)
             let audioPlayer = try PhononPlayer()
-            phonon = engine
-            player = audioPlayer
+            backend = Backend(phonon: engine, player: audioPlayer)
             voices = engine.voices
             selectedVoice = engine.voice
             state = .ready
@@ -173,7 +187,9 @@ final class PhononTTSEngine: ObservableObject {
         guard !trimmed.isEmpty else { return }
         stop()
 
-        if #available(iOS 18.0, *), let engine = phonon, let player {
+        if #available(iOS 18.0, *), let backend = backend as? Backend {
+            let engine = backend.phonon
+            let player = backend.player
             playback = Task { [weak self] in
                 do {
                     // `speak` delivers each chunk on a background thread and
@@ -222,7 +238,7 @@ final class PhononTTSEngine: ObservableObject {
         playback?.cancel()
         playback = nil
         if #available(iOS 18.0, *) {
-            player?.stop()
+            (backend as? Backend)?.player.stop()
         }
         synthesizer?.stopSpeaking(at: .immediate)
     }
@@ -230,7 +246,7 @@ final class PhononTTSEngine: ObservableObject {
     /// Switches voice. The runtime re-conditions the model (~0.6 s), so this
     /// applies to the next utterance rather than mid-sentence.
     func setVoice(_ name: String) {
-        if #available(iOS 18.0, *), let engine = phonon {
+        if #available(iOS 18.0, *), let engine = (backend as? Backend)?.phonon {
             Task {
                 do {
                     try await engine.setVoice(name)
