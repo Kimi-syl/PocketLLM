@@ -264,6 +264,11 @@ enum ModelAudit {
         /// decode is minutes of GPU work.
         var isTAE = false
         var hasConditioner = false
+        /// Highest tensor rank in the file's header. 5 or more means a 3D
+        /// (video) architecture, 4 means 2D, 0 means nothing decisive was read.
+        /// This is `SlotCompat`'s only input, and it is deliberately a property
+        /// of the bytes rather than of the filename or the architecture tag.
+        var maxTensorRank: UInt32 = 0
     }
 
     /// Architectures whose decode step is a rescale, not a VAE pass:
@@ -355,8 +360,13 @@ enum ModelAudit {
     }
 
     private static func cacheKey(_ url: URL) -> String {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        return "\(url.path)|\(size)"
+        // Size alone is not enough: a slot re-imported over an existing file of
+        // the same size would otherwise keep the previous file's verdict, which
+        // is exactly the stale answer that lets a mismatched slot through.
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let size = values?.fileSize ?? 0
+        let stamp = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
+        return "\(url.path)|\(size)|\(Int(stamp))"
     }
 
     private static func readFacts(of url: URL) -> Facts {
@@ -368,10 +378,12 @@ enum ModelAudit {
             // its VAE and encoder after several thousand diffusion tensors.
             guard let info = GGUFHeader.read(url, tensorSample: 100_000) else { return facts }
             facts.architecture = info.architecture?.lowercased()
+            facts.maxTensorRank = info.maxTensorRank
             names = info.tensorNames.map { $0.lowercased() }
         case "safetensors", "sft":
-            guard let keys = safetensorsKeys(url) else { return facts }
-            names = keys.map { $0.lowercased() }
+            guard let header = safetensorsHeader(url) else { return facts }
+            facts.maxTensorRank = header.ranks.max() ?? 0
+            names = header.keys.map { $0.lowercased() }
         default:
             return facts
         }
@@ -459,7 +471,11 @@ enum ModelAudit {
     }
 
     /// Key names from a safetensors header; only the names, no tensor data.
-    private static func safetensorsKeys(_ url: URL) -> [String]? {
+    /// Tensor names plus the rank of each tensor's `shape`. The rank is read
+    /// here because a safetensors header is plain JSON and the shape array is
+    /// already in it — parsing it is what lets `SlotCompat` tell a 3D Wan weight
+    /// file from a 2D one without opening the weights.
+    private static func safetensorsHeader(_ url: URL) -> (keys: [String], ranks: [UInt32])? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let lengthBytes = try? handle.read(upToCount: 8), lengthBytes.count == 8 else {
@@ -470,6 +486,16 @@ enum ModelAudit {
               let json = try? handle.read(upToCount: Int(length)),
               let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
         else { return nil }
-        return object.keys.filter { $0 != "__metadata__" }
+
+        var keys: [String] = []
+        var ranks: [UInt32] = []
+        for (key, value) in object where key != "__metadata__" {
+            keys.append(key)
+            if let entry = value as? [String: Any],
+               let shape = entry["shape"] as? [Any] {
+                ranks.append(UInt32(shape.count))
+            }
+        }
+        return (keys, ranks)
     }
 }

@@ -26,6 +26,22 @@ NS_ASSUME_NONNULL_BEGIN
 /// through a callback, which keeps the sampler thread from re-entering Swift.
 @interface SdContext : NSObject
 
+/// Architecture check for the slots that get merged into the main model.
+///
+/// stable-diffusion.cpp does not validate `taesd_path` or `vae_path` against the
+/// checkpoint it is building: it merges their tensors by name and then creates
+/// the tensors the architecture expects, so a Wan 3D tiny decoder under an SDXL
+/// model reaches ggml_new_tensor with the wrong shape and hits GGML_ABORT — a
+/// fatal abort, not a NULL return, so nothing downstream can recover.
+///
+/// Runs before `new_sd_ctx` for that reason. Returns nil when the slots can be
+/// loaded together, otherwise a message naming the slot, the file and the two
+/// families. The signal is tensor rank (5-D convolution = 3D/video, 4-D = 2D)
+/// read from the file header, so it trusts neither filenames nor arch tags.
++ (nullable NSString *)validateSlotsWithModel:(nullable NSString *)model
+                                          vae:(nullable NSString *)vae
+                                        taesd:(nullable NSString *)taesd;
+
 /// tokenizer: a `tokenizer.json` for the models whose text encoder is an LLM the
 /// engine cannot tokenize itself (MOSS-Image, PiD, Lens). nil for the rest, which
 /// carry their tokenizer inside the GGUF.

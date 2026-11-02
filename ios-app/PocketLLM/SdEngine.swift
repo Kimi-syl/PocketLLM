@@ -16,6 +16,27 @@ extension SdContext: @unchecked Sendable {}
 @MainActor
 final class SdEngine: ObservableObject {
 
+    /// Which tab this engine belongs to.
+    ///
+    /// The two tabs each own an engine, but they used to share one set of
+    /// UserDefaults keys for the persisted slots. That is what produced the
+    /// `wrong shape in model metadata` abort: loading the Wan bundle in 影片 mode
+    /// wrote `taew2_2.safetensors` into `sd.tae`, the Images tab restored that
+    /// value on the next launch and handed Wan's 3D tiny decoder to a 2D model,
+    /// which stable-diffusion.cpp merges into the model it is building and then
+    /// aborts on. A track gives every persisted slot its own key, so a video
+    /// slot can no longer be read back as an image slot.
+    enum Track: String {
+        case image
+        case video
+
+        /// Prefix for the persisted slot keys. `image` keeps the historic `sd`
+        /// prefix so existing installs need no rename; `video` is new and empty.
+        var keyPrefix: String { self == .image ? "sd" : "sdvideo" }
+    }
+
+    let track: Track
+
     enum Phase: Equatable {
         case idle
         case loading
@@ -35,6 +56,10 @@ final class SdEngine: ObservableObject {
     /// reusing it — the alternative is a run that keeps failing on the same
     /// context until the user thinks to press 卸載.
     private var needsReload = false
+    /// The architecture verdict of the last `load()`, so the UI can show which
+    /// family each slot was read as (and why a load was refused) instead of
+    /// leaving the user to guess from a crash log.
+    @Published private(set) var lastSlotVerdict: SlotCompat.Verdict?
     /// Set when the reload was started *because* a run failed, so the load
     /// resumes the generation the user asked for instead of stopping at idle.
     private var resumeAfterReload = false
@@ -54,23 +79,26 @@ final class SdEngine: ObservableObject {
     /// Persisted: an all-in-one checkpoint has no VAE inside it that the MLX
     /// decoder can read, so the separate VAE the user attaches has to survive a
     /// relaunch or it would be re-imported every session.
-    @Published var vae = SdEngine.restore("sd.vae") {   // vae_path
-        didSet { SdEngine.store(vae, "sd.vae", oldValue) }
+    @Published var vae: String {   // vae_path
+        didSet { SdEngine.store(vae, slotKey("vae"), oldValue) }
     }
     /// A tiny decoder (`taesd_path`) used instead of the real VAE. Wan 2.2's
     /// bundle ships `taew2_2.safetensors` for exactly this: decoding a dozen
     /// frames through the full 1.4 GB VAE is minutes of GPU work in one chain,
     /// which is the chain the watchdog kills, while the tiny decoder is cheap.
-    @Published var tae = SdEngine.restore("sd.tae") {
-        didSet { SdEngine.store(tae, "sd.tae", oldValue) }
+    /// It is scoped to this engine's track: this is the slot whose cross-tab
+    /// leak used to abort the image path at load.
+    @Published var tae: String {
+        didSet { SdEngine.store(tae, slotKey("tae"), oldValue) }
     }
     /// `tokenizer.json` for models whose text encoder is an LLM the engine
     /// cannot tokenize itself: MOSS-Image (Qwen3.5), PiD and Lens. Without it
     /// new_sd_ctx fails with "MOSS-Image requires the official Qwen3.5
     /// tokenizer.json", which is what a MOSS load looked like before this slot.
-    @Published var tokenizer = SdEngine.restore("sd.tokenizer") {
-        didSet { SdEngine.store(tokenizer, "sd.tokenizer", oldValue) }
+    @Published var tokenizer: String {
+        didSet { SdEngine.store(tokenizer, slotKey("tokenizer"), oldValue) }
     }
+
     @Published var clipL       = ""   // clip_l_path (SD1.5/SDXL encoders)
     @Published var clipG       = ""   // clip_g_path (SDXL's OpenCLIP-G encoder)
     @Published var t5          = ""   // t5xxl_path
@@ -88,10 +116,50 @@ final class SdEngine: ObservableObject {
     /// purpose (a phone cannot hold a multi-frame graph plus the weights). The
     /// frame count has to be 4n+1 for these models; the UI only offers those.
     @Published var videoMode = false
-    @Published var videoFrames = 13
-    @Published var videoFps = 16
-    @Published var videoFlowShift: Float = 3
+    @Published var videoFrames = SdEngine.wanTurboFrames
+    @Published var videoFps = SdEngine.wanTurboFps
+    @Published var videoFlowShift: Float = SdEngine.wanTurboFlowShift
     @Published private(set) var videoFramesOut: [UIImage] = []
+
+    // MARK: - Wan 2.2 Turbo defaults
+    //
+    // The distilled TI2V 5B checkpoint is trained for 4-8 steps at CFG 1, on the
+    // 480x832 canvas it was trained at, with 4n+1 frames (the VAE's temporal
+    // stride is 4, so any other count is silently truncated while the sampler
+    // still budgets for it). Running it at the generic 20 steps / CFG 7 defaults
+    // produces noise rather than a worse picture, so the values live here as
+    // constants and are applied whenever video mode is switched on, instead of
+    // being a suggestion the UI makes and the engine might not honour.
+    static let wanTurboSteps = 8
+    static let wanTurboCfg: Float = 1.0
+    static let wanTurboWidth = 480
+    static let wanTurboHeight = 832
+    static let wanTurboFps = 12
+    static let wanTurboFrames = 13
+    static let wanTurboFlowShift: Float = 3
+
+    /// Rounds a requested frame count to the nearest valid 4n+1 at or below it,
+    /// never below 1. Wan's temporal VAE compresses four frames into one latent
+    /// step, so 4n+1 is the only count that decodes without dropping frames.
+    nonisolated static func normalizeFrameCount(_ requested: Int) -> Int {
+        guard requested > 4 else { return 1 }
+        let n = (requested - 1) / 4
+        return n * 4 + 1
+    }
+
+    /// Puts every Wan-specific parameter back to the distilled defaults. Called
+    /// when video mode is enabled and after the Wan bundle finishes downloading,
+    /// so a tab that was left on image defaults still runs the checkpoint the
+    /// way it was trained.
+    func applyWanTurboDefaults() {
+        steps = SdEngine.wanTurboSteps
+        cfg = SdEngine.wanTurboCfg
+        width = SdEngine.wanTurboWidth
+        height = SdEngine.wanTurboHeight
+        videoFrames = SdEngine.wanTurboFrames
+        videoFps = SdEngine.wanTurboFps
+        videoFlowShift = SdEngine.wanTurboFlowShift
+    }
 
     /// Hires: a second pass at `hiresScale` times the canvas, re-denoised for
     /// `hiresSteps` at `hiresStrength`. Costs roughly a second base pass plus a
@@ -100,8 +168,8 @@ final class SdEngine: ObservableObject {
     /// A second checkpoint used as a refiner: the last result goes back through
     /// img2img at `refinerStrength`. Persisted like the VAE, because it is a slot
     /// the user picked deliberately and an all-in-one file cannot declare it.
-    @Published var refinerModel = SdEngine.restore("sd.refiner") {
-        didSet { SdEngine.store(refinerModel, "sd.refiner", oldValue) }
+    @Published var refinerModel: String {
+        didSet { SdEngine.store(refinerModel, slotKey("refiner"), oldValue) }
     }
     @Published var refinerStrength: Float = 0.3
     @Published var hiresEnabled = false
@@ -172,12 +240,36 @@ final class SdEngine: ObservableObject {
         Bundle.main.url(forResource: bundledUpscalerName, withExtension: "pth")?.path
     }
 
+    /// Persisted key for one of this engine's slots. Every slot is namespaced by
+    /// track so the Images and Video tabs cannot read each other's files back.
+    private func slotKey(_ name: String) -> String {
+        "\(track.keyPrefix).\(name)"
+    }
+
     private static func restore(_ key: String) -> String {
         UserDefaults.standard.string(forKey: key) ?? ""
     }
 
-    /// An explicit clear (stored "") must stick, so only fall back to the bundled
-    /// model when the key has never been written.
+    /// One-time cleanup for installs that already have the poisoned value.
+    ///
+    /// Before the tracks were separated, `sd.tae` held whichever TAE was last
+    /// picked, in either tab. If it holds a 3D (Wan) tiny decoder it belongs to
+    /// the video engine: move it there so the Images tab stops restoring it and
+    /// aborting at load. A 2D TAE stays where it is, because that is already the
+    /// image engine's own key.
+    private static func migrateLegacySlots() {
+        let defaults = UserDefaults.standard
+        guard let legacy = defaults.string(forKey: "sd.tae"), !legacy.isEmpty else { return }
+        let destination = "\(Track.video.keyPrefix).tae"
+        // Only act once: after the move the legacy key is empty.
+        if SlotCompat.family(ofPath: legacy) == .video3D,
+           defaults.string(forKey: destination)?.isEmpty ?? true {
+            appLog("sd: moving the Wan tiny decoder out of the image TAE slot (\(legacy))", source: "sd")
+            defaults.set(legacy, forKey: destination)
+        }
+        defaults.set("", forKey: "sd.tae")
+    }
+
     private static func restoreUpscaler() -> String {
         if let stored = UserDefaults.standard.string(forKey: "sd.upscaler") { return stored }
         return bundledUpscalerPath ?? ""
@@ -230,7 +322,19 @@ final class SdEngine: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var lastLoggedStep = -1
 
-    init() {
+    init(track: Track = .image) {
+        self.track = track
+        // Repair installs that already stored the Wan tiny decoder in the
+        // shared image key, before any slot is restored from it.
+        SdEngine.migrateLegacySlots()
+
+        // The persisted slots are namespaced by track, so they are assigned here
+        // rather than in a property initializer (which cannot see `track`).
+        self.vae = SdEngine.restore("\(track.keyPrefix).vae")
+        self.tae = SdEngine.restore("\(track.keyPrefix).tae")
+        self.tokenizer = SdEngine.restore("\(track.keyPrefix).tokenizer")
+        self.refinerModel = SdEngine.restore("\(track.keyPrefix).refiner")
+
         // Every text/vision engine frees us before it builds its own Metal
         // context (see ComputeCoordinator). The coordinator calls this on the
         // main thread, which is why assumeIsolated is safe here.
@@ -294,6 +398,20 @@ final class SdEngine: ObservableObject {
         }
         guard !mainModel.isEmpty || !textEncoder.isEmpty else {
             phase = .failed("先選擇主要模型（或文字編碼器）")
+            return
+        }
+
+        // Refuse a mismatched slot here rather than letting stable-diffusion.cpp
+        // abort inside new_sd_ctx. The engine merges `taesd_path` and `vae_path`
+        // into the model it is building and calls ggml_new_tensor on the shapes
+        // it expected, so a Wan 3D decoder under a 2D checkpoint is a SIGABRT,
+        // not a returned NULL — there is no error for Swift to throw after that
+        // point, which is why this check has to come first.
+        let verdict = SlotCompat.validate(main: mainModel, vae: vae, tae: tae)
+        lastSlotVerdict = verdict
+        if let problem = verdict.problem {
+            phase = .failed(problem)
+            appLog("sd: refused mismatched slots — main=\(verdict.mainFamily) vae=\(verdict.vaeFamily) tae=\(verdict.taeFamily)", source: "sd")
             return
         }
         phase = .loading
@@ -559,8 +677,15 @@ final class SdEngine: ObservableObject {
         let negativeText = negative
         let (w, h, n) = (width, height, steps)
         let (c, s0) = (cfg, seed)
-        let (frames, fps) = (videoFrames, videoFps)
-        let flow = videoFlowShift
+        // 4n+1 is a property of the model, not of the picker: the UI only
+        // offers valid counts, but a value restored from a preset or set in code
+        // still has to be normalised before it reaches the graph.
+        let frames = SdEngine.normalizeFrameCount(videoFrames)
+        if frames != videoFrames {
+            appLog("sd: frames \(videoFrames) is not 4n+1; using \(frames) for this run", source: "sd")
+            videoFrames = frames
+        }
+        let (fps, flow) = (videoFps, videoFlowShift)
         let strengthValue = strength
         let initSpec = initImage.flatMap { SdEngine.imageSpec(from: $0, width: w, height: h) }
         let modelName = URL(fileURLWithPath: mainModel).lastPathComponent

@@ -33,6 +33,21 @@ packages:
   swift-transformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.0.0
+  # Phonon TTS (on-device speech, Neural Engine) — OPTIONAL, not enabled.
+  #
+  # Uncommenting this adds `import PhononTTS` and switches PhononTTSEngine from
+  # the AVSpeechSynthesizer fallback to the real model. It cannot be enabled as
+  # things stand, because the package declares iOS 18 and this app targets iOS
+  # 17: SwiftPM refuses to link a package whose minimum platform is above the
+  # app's. Enabling it means raising `deploymentTarget.iOS` to 18.0 below and
+  # adding the Core ML bundle as a `Models` folder reference.
+  #
+  # The compiled core is arm64 only, so EXCLUDED_ARCHS must keep x86_64 out of
+  # the simulator build (it already does, for MLX).
+  #
+  # ptts:
+  #   url: https://github.com/gradium-ai/xn-ptts.git
+  #   from: 0.6.0
 targets:
   PocketLLM:
     type: application

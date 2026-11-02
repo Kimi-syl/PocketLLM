@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// the distilled ones (4-8 steps, CFG 1), and it costs minutes and most of the
 /// device's memory per run. Mixing them in one screen made both worse.
 struct VideoGenView: View {
-    @StateObject private var engine = SdEngine()
+    @StateObject private var engine = SdEngine(track: .video)
     @State private var picking: Slot?
     @State private var isPickerPresented = false
     @State private var photoItem: PhotosPickerItem?
@@ -65,6 +65,16 @@ struct VideoGenView: View {
                 .padding()
             }
             .navigationTitle("影片")
+            // This tab only ever runs video checkpoints, and the distilled Wan
+            // parameters are the ones it was trained for. Applying them on first
+            // entry means a tab opened for the first time is not sitting on the
+            // Images tab's 20-step / CFG 7 defaults.
+            .onAppear {
+                if !engine.videoMode {
+                    engine.videoMode = true
+                    engine.applyWanTurboDefaults()
+                }
+            }
             .fileImporter(isPresented: $isPickerPresented,
                           allowedContentTypes: [.data, .folder],
                           allowsMultipleSelection: false) { result in
@@ -184,12 +194,10 @@ struct VideoGenView: View {
             if let path = ModelDownload.installed(file, in: WanBundle.directory) { install(URL(fileURLWithPath: path), for: file.id) }
         }
         engine.videoMode = true
-        engine.width = 480
-        engine.height = 832
-        engine.videoFrames = 13
-        engine.steps = 8
-        engine.cfg = 1
-        engine.videoFlowShift = 3
+        // One source of truth for the distilled parameters: the engine owns the
+        // constants, so the UI cannot drift to a 20-step CFG 7 default that
+        // renders this checkpoint as noise.
+        engine.applyWanTurboDefaults()
     }
 
     // MARK: - Slots

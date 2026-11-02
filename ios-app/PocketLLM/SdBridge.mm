@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <ctime>
 #include <string>
@@ -18,6 +19,196 @@ static std::atomic<int32_t> g_steps{0};
 static void progress_cb(int step, int steps, float /*time*/, void * /*data*/) {
     g_step.store(step);
     g_steps.store(steps);
+}
+
+// MARK: - Slot architecture validation
+//
+// stable-diffusion.cpp merges `vae_path` and `taesd_path` into the model it is
+// building (model_loader.init_from_file(vae, "vae.") / (taesd, "tae.")) and then
+// creates the tensors its architecture expects. A file from another family
+// therefore reaches ggml_new_tensor with the wrong shape, which is a GGML_ABORT:
+// the process dies inside new_sd_ctx and no NSError is ever produced. The check
+// has to run before the context is created.
+//
+// The discriminator is tensor rank. Every 3D architecture (Wan's DiT, Wan's VAE,
+// taew2_2) carries 5-D convolution weights [out, in, kt, kh, kw]; every 2D one
+// (SD1.5, SDXL, Flux, Z-Image) tops out at 4. Rank comes from the file header
+// only, so this neither opens the weights nor trusts a filename or arch tag.
+
+typedef NS_ENUM(NSInteger, SdSlotFamily) {
+    SdSlotFamilyUnknown = 0,
+    SdSlotFamily2D,
+    SdSlotFamily3D,
+};
+
+namespace {
+
+/// Minimal sequential reader over the header prefix. Every length is
+/// bounds-checked against the bytes actually read, so a truncated or hostile
+/// file ends in "unknown" rather than a crash inside the validator.
+struct HeaderReader {
+    const uint8_t *data;
+    size_t size;
+    size_t offset = 0;
+
+    bool has(size_t n) const { return offset + n <= size; }
+
+    bool skip(size_t n) {
+        if (!has(n)) return false;
+        offset += n;
+        return true;
+    }
+
+    bool u32(uint32_t &out) {
+        if (!has(4)) return false;
+        std::memcpy(&out, data + offset, 4);
+        offset += 4;
+        return true;
+    }
+
+    bool u64(uint64_t &out) {
+        if (!has(8)) return false;
+        std::memcpy(&out, data + offset, 8);
+        offset += 8;
+        return true;
+    }
+
+    bool skipString() {
+        uint64_t len = 0;
+        if (!u64(len)) return false;
+        return skip(static_cast<size_t>(len));
+    }
+};
+
+// GGUF value types, in the order the format defines them.
+enum GgufType : uint32_t {
+    GGUF_UINT8 = 0, GGUF_INT8, GGUF_UINT16, GGUF_INT16,
+    GGUF_UINT32, GGUF_INT32, GGUF_FLOAT32, GGUF_BOOL,
+    GGUF_STRING, GGUF_ARRAY, GGUF_UINT64, GGUF_INT64, GGUF_FLOAT64,
+};
+
+size_t ggufScalarSize(uint32_t type) {
+    switch (type) {
+        case GGUF_UINT8: case GGUF_INT8: case GGUF_BOOL: return 1;
+        case GGUF_UINT16: case GGUF_INT16: return 2;
+        case GGUF_UINT32: case GGUF_INT32: case GGUF_FLOAT32: return 4;
+        case GGUF_UINT64: case GGUF_INT64: case GGUF_FLOAT64: return 8;
+        default: return 0;
+    }
+}
+
+/// Skips one metadata value. Depth is capped so a malformed array cannot
+/// recurse without bound.
+bool ggufSkipValue(HeaderReader &r, uint32_t type, int depth = 0) {
+    if (depth > 4) return false;
+    if (type == GGUF_STRING) return r.skipString();
+    if (type == GGUF_ARRAY) {
+        uint32_t inner = 0;
+        uint64_t count = 0;
+        if (!r.u32(inner) || !r.u64(count)) return false;
+        size_t elem = ggufScalarSize(inner);
+        if (elem > 0) return r.skip(static_cast<size_t>(count) * elem);
+        if (inner == GGUF_STRING) {
+            for (uint64_t i = 0; i < count; i++) {
+                if (!r.skipString()) return false;
+            }
+            return true;
+        }
+        return false;                                   // nested arrays: not emitted
+    }
+    size_t elem = ggufScalarSize(type);
+    return elem > 0 && r.skip(elem);
+}
+
+/// Highest tensor rank in a GGUF header, or 0 when it could not be read.
+uint32_t ggufMaxTensorRank(const void *bytes, size_t size) {
+    HeaderReader r{static_cast<const uint8_t *>(bytes), size};
+    if (!r.has(4) || std::memcmp(r.data, "GGUF", 4) != 0) return 0;
+    r.skip(4);
+    uint32_t version = 0;
+    uint64_t tensorCount = 0, kvCount = 0;
+    if (!r.u32(version) || !r.u64(tensorCount) || !r.u64(kvCount)) return 0;
+    if (tensorCount > 10000000ULL || kvCount > 100000ULL) return 0;
+
+    for (uint64_t i = 0; i < kvCount; i++) {
+        uint32_t type = 0;
+        if (!r.skipString() || !r.u32(type)) return 0;
+        if (!ggufSkipValue(r, type)) return 0;
+    }
+
+    uint32_t maxRank = 0;
+    for (uint64_t i = 0; i < tensorCount; i++) {
+        uint32_t dims = 0;
+        if (!r.skipString() || !r.u32(dims)) break;      // only a prefix is needed
+        if (dims > maxRank) maxRank = dims;
+        if (maxRank >= 5) return maxRank;                // decisive; stop early
+        if (!r.skip(static_cast<size_t>(dims) * 8 + 4 + 8)) break;
+    }
+    return maxRank;
+}
+
+}  // namespace
+
+/// Rank of the highest-dimensional tensor in a safetensors file. The header is
+/// an 8-byte little-endian length followed by a JSON object whose entries are
+/// {"dtype":…,"shape":[…],"data_offsets":[…]}.
+static uint32_t safetensorsMaxTensorRank(NSString *path) {
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (handle == nil) return 0;
+    NSData *lengthBytes = [handle readDataOfLength:8];
+    if (lengthBytes.length != 8) { [handle closeFile]; return 0; }
+    uint64_t length = 0;
+    std::memcpy(&length, lengthBytes.bytes, 8);
+    if (length < 2 || length > 64 * 1024 * 1024) { [handle closeFile]; return 0; }
+    NSData *json = [handle readDataOfLength:(NSUInteger)length];
+    [handle closeFile];
+    if (json.length != length) return 0;
+
+    NSDictionary *object = [NSJSONSerialization JSONObjectWithData:json options:0 error:nil];
+    if (![object isKindOfClass:[NSDictionary class]]) return 0;
+
+    uint32_t maxRank = 0;
+    for (NSString *key in object) {
+        if ([key isEqualToString:@"__metadata__"]) continue;
+        id entry = object[key];
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        id shape = entry[@"shape"];
+        if (![shape isKindOfClass:[NSArray class]]) continue;
+        uint32_t rank = (uint32_t)[shape count];
+        if (rank > maxRank) maxRank = rank;
+    }
+    return maxRank;
+}
+
+/// Reads only as much of the file as the header needs: 64 MB covers a GGUF with
+/// a full tokenizer vocabulary plus its tensor table, and a safetensors header
+/// is a few hundred KB at most.
+static SdSlotFamily sd_family_of_path(NSString *path) {
+    if (path.length == 0) return SdSlotFamilyUnknown;
+
+    NSString *ext = [path.pathExtension lowercaseString];
+    uint32_t rank = 0;
+    if ([ext isEqualToString:@"gguf"]) {
+        NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+        if (handle == nil) return SdSlotFamilyUnknown;
+        NSData *head = [handle readDataOfLength:64 * 1024 * 1024];
+        [handle closeFile];
+        rank = ggufMaxTensorRank(head.bytes, head.length);
+    } else if ([ext isEqualToString:@"safetensors"] || [ext isEqualToString:@"sft"]) {
+        rank = safetensorsMaxTensorRank(path);
+    }
+
+    if (rank >= 5) return SdSlotFamily3D;
+    if (rank == 4) return SdSlotFamily2D;
+    return SdSlotFamilyUnknown;
+}
+
+static NSString *sd_family_name(SdSlotFamily family) {
+    switch (family) {
+        case SdSlotFamily3D: return @"3D（影片）";
+        case SdSlotFamily2D: return @"2D（圖片）";
+        default:             return @"未知";
+    }
 }
 
 /// ggml reports why it is aborting through the log callback, and then the
@@ -109,6 +300,40 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
     sd_ctx_t *_ctx;
 }
 
+/// See SdBridge.h. Runs before new_sd_ctx, because a mismatched TAE reaches
+/// ggml_new_tensor and aborts the process — there is no NSError to build after
+/// that point.
++ (nullable NSString *)validateSlotsWithModel:(nullable NSString *)model
+                                          vae:(nullable NSString *)vae
+                                        taesd:(nullable NSString *)taesd {
+    SdSlotFamily mainFamily = sd_family_of_path(model);
+    SdSlotFamily vaeFamily  = sd_family_of_path(vae);
+    SdSlotFamily taeFamily  = sd_family_of_path(taesd);
+
+    // Unknown means the header could not be read. Stay out of the way: the
+    // engine reports an unreadable file clearly, and refusing on a guess would
+    // block formats this check has never seen.
+    NSString *(^mismatch)(NSString *, NSString *, SdSlotFamily) =
+        ^NSString *(NSString *slotLabel, NSString *slotPath, SdSlotFamily slotFamily) {
+            if (slotFamily == SdSlotFamilyUnknown ||
+                mainFamily == SdSlotFamilyUnknown ||
+                slotFamily == mainFamily) {
+                return (NSString *)nil;
+            }
+            return [NSString stringWithFormat:
+                    @"%@ 插槽與主模型架構不符，載入會在 C++ 引擎內中止（wrong shape in model metadata），所以先擋下來。\n\n"
+                     "%@：「%@」是 %@ 模型\n主模型：「%@」是 %@ 模型\n\n"
+                     "圖片模型需要 2D 的 VAE / TAESD；Wan 影片模型需要 3D 的 taew2_2 與 wan VAE。請換掉 %@ 插槽再試一次。",
+                    slotLabel, slotLabel, slotPath.lastPathComponent, sd_family_name(slotFamily),
+                    model.lastPathComponent, sd_family_name(mainFamily), slotLabel];
+        };
+
+    // The TAE is the slot that actually crashed, so its message wins.
+    NSString *problem = mismatch(@"微型解碼器 (TAE)", taesd, taeFamily);
+    if (problem != nil) return problem;
+    return mismatch(@"VAE", vae, vaeFamily);
+}
+
 + (void)setLogPath:(NSString *)path {
     if (g_log_file != nullptr) {
         fclose(g_log_file);
@@ -191,6 +416,26 @@ static void sd_log_cb(enum sd_log_level_t level, const char * text, void * /*dat
                                  error:(NSError * _Nullable * _Nullable)error {
     self = [super init];
     if (!self) return nil;
+
+    // Last line of defence, and it belongs here rather than only in Swift: the
+    // engine merges the TAE and VAE into the model it is building and then
+    // aborts the process on a shape mismatch, so a caller that skipped the
+    // checks would take the app down instead of getting an error back. The
+    // architecture to compare against is the one the engine will actually load.
+    NSString *slotProblem = [SdContext validateSlotsWithModel:(model.length > 0 ? model : diffusion)
+                                                           vae:vae
+                                                         taesd:taesd];
+    if (slotProblem != nil) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"SdContext"
+                                         code:2
+                                     userInfo:@{NSLocalizedDescriptionKey: slotProblem,
+                                                NSLocalizedFailureReasonErrorKey:
+                                                    @"model slots describe different architectures"}];
+        }
+        return nil;
+    }
+
 
     // Input paths are copied into local strings so the UTF-8 pointers stay
     // valid for the whole new_sd_ctx call.

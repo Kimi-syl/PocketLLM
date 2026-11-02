@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// VAE, upscaler and LoRAs — and the engine needs each in its own field; that
 /// list is folded away as "advanced" to keep it out of the way.
 struct ImageGenView: View {
-    @StateObject private var engine = SdEngine()
+    @StateObject private var engine = SdEngine(track: .image)
     @EnvironmentObject private var store: ModelStore
     @State private var picking: Slot?
     @State private var isPickerPresented = false
