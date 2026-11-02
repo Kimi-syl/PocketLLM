@@ -260,13 +260,19 @@ final class SdEngine: ObservableObject {
     private static func migrateLegacySlots() {
         let defaults = UserDefaults.standard
         guard let legacy = defaults.string(forKey: "sd.tae"), !legacy.isEmpty else { return }
+
+        // A 2D tiny decoder under `sd.tae` is exactly what the image track wants:
+        // `image` keeps the historic `sd` prefix, so the slot is already correct
+        // and must be left alone. Only a 3D file is out of place here.
+        guard SlotCompat.family(ofPath: legacy) == .video3D else { return }
+
         let destination = "\(Track.video.keyPrefix).tae"
-        // Only act once: after the move the legacy key is empty.
-        if SlotCompat.family(ofPath: legacy) == .video3D,
-           defaults.string(forKey: destination)?.isEmpty ?? true {
+        if defaults.string(forKey: destination)?.isEmpty ?? true {
             appLog("sd: moving the Wan tiny decoder out of the image TAE slot (\(legacy))", source: "sd")
             defaults.set(legacy, forKey: destination)
         }
+        // Clearing the legacy key is what stops the image engine from restoring
+        // it, and what makes this migration run only once.
         defaults.set("", forKey: "sd.tae")
     }
 
