@@ -36,11 +36,21 @@ slice into `ios-app/PhononCore/` (git-ignored). This matches how the repository
 already treats llama.cpp and stable-diffusion.cpp: heavy native dependencies are
 fetched and pinned, not stored in git.
 
-Static linking is what makes the two-OS build safe. The archive contains objects
-built for iOS 18, so the linker emits *"object file was built for newer iOS
-version (18.0) than being linked (17.0)"* — expected, and harmless: a static
-archive carries no load-time version check, and no symbol in it is reachable
-below iOS 18 because every entry point is behind the availability check.
+Static linking is what makes the two-OS build safe: a static archive carries no
+load-time version check, so nothing in it can fail to load on iOS 17, and no
+symbol in it is reachable below iOS 18 because every entry point is behind the
+availability check.
+
+Verified on the CI-built binary (run `41418863241`): `LC_BUILD_VERSION minos` is
+still **17.0**, and the 1,667 `ptts_*` symbols are linked in. The archive's
+objects are individually stamped iOS 18, but the final link does not inherit
+that, so the app installs on 17 and speaks on 18.
+
+The one thing that cannot be proven from CI: that no Core ML symbol the archive
+references unconditionally is iOS 18-only. The link resolves cleanly and the
+frameworks used (CoreML, CoreVideo, Accelerate, AVFoundation) are all far older
+than 17, but a launch on a real iOS 17 device is the check that would settle it —
+it costs one install.
 
 ```bash
 cd ios-app && ./fetch-phonon-core.sh   # once per checkout; CI runs it too
