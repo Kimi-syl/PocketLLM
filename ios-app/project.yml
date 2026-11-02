@@ -96,8 +96,13 @@ targets:
         # runner from trying.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
         SWIFT_OBJC_BRIDGING_HEADER: PocketLLM/bridging.h
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers $(SRCROOT)/sd-headers"
-        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/llama-libs $(SRCROOT)/sd-libs"
+        # PhononCore contributes its own include (module.modulemap + ptts.h) and
+        # lib directory; the llama/sd paths stay first because those headers are
+        # on the hot path for every native bridge file.
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/llama-headers $(SRCROOT)/sd-headers $(SRCROOT)/PhononCore/include"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/llama-libs $(SRCROOT)/sd-libs $(SRCROOT)/PhononCore/lib"
+        # So `import PhononCore` finds the C module map.
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/PhononCore/include"
         # Metal/MetalKit are linked by the app, not propagated by the static
         # ggml-metal library (its CMake links them PRIVATE), so they belong here.
         # Harmless when the CPU-only simulator slice is linked instead.
@@ -110,14 +115,4 @@ targets:
         # expected and safe here: no symbol from it is reachable below iOS 18,
         # because every entry point is behind @available(iOS 18, *). Static
         # linking means there is no load-time version check to fail on 17.
-        LIBRARY_SEARCH_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/PhononCore/lib
-        # module.modulemap + ptts.h, so `import PhononCore` resolves.
-        SWIFT_INCLUDE_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/PhononCore/include
-        HEADER_SEARCH_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/PhononCore/include
         OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -lptts_ffi -framework Accelerate -framework Metal -framework MetalKit -framework CoreML -framework CoreVideo -framework AVFoundation"
