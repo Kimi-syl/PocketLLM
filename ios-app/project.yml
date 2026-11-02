@@ -33,27 +33,18 @@ packages:
   swift-transformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.0.0
-  # Phonon TTS (on-device speech, Neural Engine) — OPTIONAL, not enabled.
-  #
-  # Uncommenting this adds `import PhononTTS` and switches PhononTTSEngine from
-  # the AVSpeechSynthesizer fallback to the real model. It cannot be enabled as
-  # things stand, because the package declares iOS 18 and this app targets iOS
-  # 17: SwiftPM refuses to link a package whose minimum platform is above the
-  # app's. Enabling it means raising `deploymentTarget.iOS` to 18.0 below and
-  # adding the Core ML bundle as a `Models` folder reference.
-  #
-  # The compiled core is arm64 only, so EXCLUDED_ARCHS must keep x86_64 out of
-  # the simulator build (it already does, for MLX).
-  #
-  # ptts:
-  #   url: https://github.com/gradium-ai/xn-ptts.git
-  #   from: 0.6.0
 targets:
   PocketLLM:
     type: application
     platform: iOS
     sources:
       - PocketLLM
+      # Vendored Phonon TTS (MIT OR Apache-2.0). The upstream package declares
+      # iOS 18 and this app targets 17, which SwiftPM refuses to resolve, so the
+      # sources are compiled into the app instead and every public type is
+      # annotated @available(iOS 18, *). PhononTTSEngine gates on the same check
+      # and falls back to AVSpeechSynthesizer below it.
+      - PhononTTS
       # Kept outside the source folder so xcodegen does not also compile them.
       # The ESRGAN weights are a bundled fallback: upscaling works on first run
       # without a download. Real-ESRGAN's BSD-3 text ships alongside them.
@@ -114,4 +105,19 @@ targets:
         # (ggml_sage_attn, ggml_prec_set_acc, ggml_mul_mat_i8_tensorwise,
         # ggml_quantize_i8_convrot) cannot collide with llama.cpp ggml, which was
         # linked into the same binary and resolved silently, corrupting tensors.
-        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -framework Accelerate -framework Metal -framework MetalKit"
+        # PhononCore is a static Rust library. It carries objects built for
+        # iOS 18, so the linker warns "built for newer iOS version" — that is
+        # expected and safe here: no symbol from it is reachable below iOS 18,
+        # because every entry point is behind @available(iOS 18, *). Static
+        # linking means there is no load-time version check to fail on 17.
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/PhononCore/lib
+        # module.modulemap + ptts.h, so `import PhononCore` resolves.
+        SWIFT_INCLUDE_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/PhononCore/include
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/PhononCore/include
+        OTHER_LDFLAGS: "-lpocketllm_ios -lsdcpp_ios -lptts_ffi -framework Accelerate -framework Metal -framework MetalKit -framework CoreML -framework CoreVideo -framework AVFoundation"

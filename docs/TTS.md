@@ -11,42 +11,40 @@ the transformer on the Neural Engine.
 |---|---|
 | `PhononTTSEngine` | Done — load, speak, stop, voice switch, download, latency metrics |
 | Settings UI | Done — engine state, voice picker, sample/stop, measured first-audio time |
-| System-voice fallback | Done — `AVSpeechSynthesizer` on iOS 17 or with no model |
-| Chat auto-speak | Not wired — the engine is callable, but no reply currently speaks itself |
-| Phonon package | **Not enabled** — see below |
+| Phonon runtime | Done — vendored sources + fetched `PhononCore` static library, **iOS 18+** |
+| System-voice fallback | Done — `AVSpeechSynthesizer` on iOS 17, same UI |
+| Chat auto-speak | Not wired — the engine is callable, but no reply speaks itself yet |
 
-## The blocker: iOS 18
+## Why it is vendored instead of a SwiftPM dependency
 
-The `ptts` Swift package declares **iOS 18 / macOS 15**, and this app targets
-**iOS 17**. SwiftPM refuses to link a package whose minimum platform is above the
-app's, so the dependency cannot simply be added; the build fails at resolution
-rather than at runtime.
+Upstream's `ptts` package declares `platforms: [.iOS(.v18), .macOS(.v15)]`,
+because the model bundles are Core ML **mlprogram** and need the iOS 18 runtime.
+SwiftPM refuses to resolve a package whose platform floor is above the app's, so
+adding it to an iOS 17 app is a resolution error, not a runtime surprise.
 
-Three ways forward, in order of how much they cost:
+Rather than drop iOS 17 — the app supports it today, and most of what it does has
+nothing to do with speech — the three Swift sources are **vendored** into the app
+target (`ios-app/PhononTTS/`) with every public type annotated
+`@available(iOS 18.0, *)`. That compiles into one binary that runs on 17 and
+lights the feature up on 18. Below 18 the compiler will not even let the engine be
+called, which is the guarantee we want: the models cannot run there anyway.
 
-1. **Raise the deployment target to iOS 18.** Cleanest, and matches what
-   upstream supports. It drops iOS 17 devices. `deploymentTarget.iOS: "18.0"`
-   in `ios-app/project.yml`, then uncomment the `ptts` package there.
-2. **Keep iOS 17 and ship the system voice there.** What the code does today:
-   `#if canImport(PhononTTS)` compiles the fallback when the package is absent,
-   and the same source lights up the real engine on an iOS 18 build.
-3. **Vendor the runtime as a binary target.** A separate iOS 18 slice would still
-   need runtime gating and two build paths; not worth it for one feature.
+The compiled runtime (`PhononCore`, a ~50 MB static Rust library) is **not
+committed**. `ios-app/fetch-phonon-core.sh` downloads it, checks it against the
+exact SHA-256 upstream's `Package.swift` pins for v0.6.0, and installs the iOS
+slice into `ios-app/PhononCore/` (git-ignored). This matches how the repository
+already treats llama.cpp and stable-diffusion.cpp: heavy native dependencies are
+fetched and pinned, not stored in git.
 
-## Enabling it
+Static linking is what makes the two-OS build safe. The archive contains objects
+built for iOS 18, so the linker emits *"object file was built for newer iOS
+version (18.0) than being linked (17.0)"* — expected, and harmless: a static
+archive carries no load-time version check, and no symbol in it is reachable
+below iOS 18 because every entry point is behind the availability check.
 
-```yaml
-# ios-app/project.yml
-options:
-  deploymentTarget:
-    iOS: "18.0"
-packages:
-  ptts:
-    url: https://github.com/gradium-ai/xn-ptts.git
-    from: 0.6.0
+```bash
+cd ios-app && ./fetch-phonon-core.sh   # once per checkout; CI runs it too
 ```
-
-Then add the library product `ptts` (module `PhononTTS`) to the app target.
 
 ## The model bundle
 

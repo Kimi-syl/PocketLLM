@@ -1,8 +1,5 @@
 import AVFoundation
 import Foundation
-#if canImport(PhononTTS)
-import PhononTTS
-#endif
 
 /// On-device text to speech through Gradium's Phonon.
 ///
@@ -64,10 +61,8 @@ final class PhononTTSEngine: ObservableObject {
     /// Realtime factor of the last utterance, from the runtime's own stats.
     @Published private(set) var lastRealtimeFactor: Double?
 
-    #if canImport(PhononTTS)
     private var phonon: Phonon?
     private var player: PhononPlayer?
-    #endif
 
     /// Fallback voice, used on iOS 17 or when no model is installed.
     private var synthesizer: AVSpeechSynthesizer?
@@ -78,17 +73,13 @@ final class PhononTTSEngine: ObservableObject {
     private var playback: Task<Void, Never>?
 
     nonisolated static var isSupported: Bool {
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *) { return true }
-        #endif
         return false
     }
 
     /// Where a downloaded bundle lives, or nil when the package is absent.
     nonisolated static var installDirectory: URL? {
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *) { return PhononModels.defaultDirectory }
-        #endif
         return nil
     }
 
@@ -102,7 +93,6 @@ final class PhononTTSEngine: ObservableObject {
     /// a paid build, and either way it is tens of megabytes of derived weights
     /// that belong in a release asset rather than in git.
     func prepare() async {
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *) {
             // A bundle copied out of the app on a previous launch is current.
             if PhononModels.isInstalled() {
@@ -123,7 +113,6 @@ final class PhononTTSEngine: ObservableObject {
             }
             return
         }
-        #endif
         state = .systemFallback
     }
 
@@ -133,7 +122,6 @@ final class PhononTTSEngine: ObservableObject {
     /// file is verified against its size and SHA-256 and an interrupted download
     /// resumes, so a flaky connection costs time rather than the whole fetch.
     func downloadModels(from base: URL) async {
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *) {
             state = .downloading(fraction: 0)
             do {
@@ -148,11 +136,9 @@ final class PhononTTSEngine: ObservableObject {
             }
             return
         }
-        #endif
         state = .systemFallback
     }
 
-    #if canImport(PhononTTS)
     @available(iOS 18.0, *)
     private func load(at directory: URL) async {
         state = .loading
@@ -178,7 +164,6 @@ final class PhononTTSEngine: ObservableObject {
             appLog("tts: phonon load failed — \(error.localizedDescription)", source: "tts")
         }
     }
-    #endif
 
     // MARK: - Speaking
 
@@ -188,7 +173,6 @@ final class PhononTTSEngine: ObservableObject {
         guard !trimmed.isEmpty else { return }
         stop()
 
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *), let engine = phonon, let player {
             playback = Task { [weak self] in
                 do {
@@ -219,7 +203,6 @@ final class PhononTTSEngine: ObservableObject {
             }
             return
         }
-        #endif
 
         // iOS 17, or no model installed: the system voice keeps the feature
         // working, just without the local model's quality.
@@ -238,18 +221,15 @@ final class PhononTTSEngine: ObservableObject {
     func stop() {
         playback?.cancel()
         playback = nil
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *) {
             player?.stop()
         }
-        #endif
         synthesizer?.stopSpeaking(at: .immediate)
     }
 
     /// Switches voice. The runtime re-conditions the model (~0.6 s), so this
     /// applies to the next utterance rather than mid-sentence.
     func setVoice(_ name: String) {
-        #if canImport(PhononTTS)
         if #available(iOS 18.0, *), let engine = phonon {
             Task {
                 do {
@@ -263,7 +243,6 @@ final class PhononTTSEngine: ObservableObject {
             }
             return
         }
-        #endif
         selectedVoice = name
     }
 }
