@@ -147,6 +147,40 @@ $BIN agent --model /path/to/model.gguf "What is 23*7+4?"
 
 `serve` speaks the same OpenAI wire format as the Android app.
 
+### Reaching the server from outside the machine
+
+`serve` binds to `127.0.0.1` and has no auth by default, so a remote client
+cannot reach it. Rather than bolting self-signed TLS onto it — which every
+client rejects until it is told to trust the certificate — the CLI can put
+Cloudflare's edge in front of it and get a real, publicly trusted certificate:
+
+```bash
+$BIN serve --model /path/to/model.gguf --tunnel
+```
+
+With `cloudflared` on `PATH` this prints something like
+
+```
+Generated API key for the tunnel: sk-pocketllm-…   (pass --api-key to reuse a fixed one)
+PocketLLM serving on http://127.0.0.1:8080 (local)
+Public endpoint: https://calm-river-1234.trycloudflare.com/v1
+```
+
+and `https://calm-river-1234.trycloudflare.com/v1/chat/completions` then works
+from any OpenAI client — no `-k`, no trust store, no ATS exception.
+
+`--tunnel` implies an API key, because a quick tunnel is a **public** URL: it is
+reachable by anyone who learns the hostname, not just by devices on your LAN.
+`--tunnel-name <name>` runs an already-configured named tunnel
+(`cloudflared tunnel run`) instead, e.g. for a stable hostname on your own
+domain. `--api-key <key>` works with or without a tunnel and turns on
+`Authorization: Bearer` checking for `/v1/*`; `/health` stays open.
+
+On Android the same trick is possible but not shipped: since API 29 the platform
+refuses to execute a binary from the app's data directory, so `cloudflared`
+would have to be repackaged as a `jniLibs` payload, adding ~40 MB to an APK that
+is already ~120 MB. The tunnel path is a CLI feature for that reason.
+
 ## Quick start
 
 1. Download the latest APK from **Releases**: https://github.com/Kimi-syl/PocketLLM/releases/latest
@@ -220,3 +254,17 @@ JAVA_HOME=/opt/jdk17 ./gradlew --no-daemon :cli:installDist
 - Move iOS image generation fully off the main actor with per-step progress
 - Bump the pinned llama.cpp (currently `b10615`, ~814 commits behind `v0.6.0`)
 - Service discovery (mDNS) and expanded per-key analytics
+
+## License
+
+PocketLLM's own source is **MIT** — see [LICENSE](LICENSE).
+
+That covers the code written for this project, not everything in the tree:
+llama.cpp and stable-diffusion.cpp are MIT, sherpa-onnx is Apache-2.0, and the
+bundled Live2D Cubism SDK and its sample models are under Live2D's own terms,
+which do not permit redistributing them as assets. The prebuilt PRoot binaries
+are GPL-2.0 with no source in-tree. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+lists every component, its licence, and what has to ship with a build.
+
+Model weights are not part of this repository and carry whatever licence their
+publisher set.
