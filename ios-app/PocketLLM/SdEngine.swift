@@ -399,6 +399,27 @@ final class SdEngine: ObservableObject {
         }
     }
 
+
+    /// Empties every slot the video path does not use.
+    ///
+    /// The video tab's model is a DiT plus its umt5 encoder plus a tiny decoder.
+    /// A VAE, CLIP-L/G, a tokenizer, a refiner checkpoint or a LoRA in the same
+    /// context is at best ignored and at worst merged with the wrong shapes, so
+    /// the video path drops them instead of forwarding whatever happened to be
+    /// left in the engine.
+    private func clearSlotsNotUsedByVideo() {
+        var cleared: [String] = []
+        if !vae.isEmpty { vae = ""; cleared.append("VAE") }
+        if !clipL.isEmpty { clipL = ""; cleared.append("CLIP-L") }
+        if !clipG.isEmpty { clipG = ""; cleared.append("CLIP-G") }
+        if !tokenizer.isEmpty { tokenizer = ""; cleared.append("tokenizer") }
+        if !refinerModel.isEmpty { refinerModel = ""; cleared.append("refiner") }
+        if !loras.isEmpty { loras = ""; cleared.append("LoRA") }
+        if !cleared.isEmpty {
+            appLog("sd: video mode ignores \(cleared.joined(separator: ", ")) — only DiT + encoder + TAE are loaded", source: "sd")
+        }
+    }
+
     func load() {
         // A video checkpoint is refused in image mode because the picture path
         // cannot decode multiple frames and the weights plus a multi-frame graph
@@ -423,11 +444,21 @@ final class SdEngine: ObservableObject {
         // it expected, so a Wan 3D decoder under a 2D checkpoint is a SIGABRT,
         // not a returned NULL — there is no error for Swift to throw after that
         // point, which is why this check has to come first.
+        // The video tab configures three files - DiT, umt5 encoder, tiny decoder -
+        // and nothing else. Anything still set in the other slots (a VAE left
+        // over from an image model, a LoRA, a tokenizer, a refiner) gets merged
+        // into the same context and is exactly how a mismatch reaches ggml. So
+        // they are cleared rather than passed on and hoped about: no guessing and
+        // no silent carry-over.
+        if track == .video || videoMode {
+            clearSlotsNotUsedByVideo()
+        }
+
         let verdict = SlotCompat.validate(main: mainModel, vae: vae, tae: tae)
         lastSlotVerdict = verdict
         if let problem = verdict.problem {
             phase = .failed(problem)
-            appLog("sd: refused mismatched slots — main=\(verdict.mainFamily) vae=\(verdict.vaeFamily) tae=\(verdict.taeFamily)", source: "sd")
+            appLog("sd: refused mismatched slots — main=\(verdict.mainFamily) tae=\(verdict.taeKind) vae=\(verdict.vaeKind)", source: "sd")
             return
         }
         phase = .loading

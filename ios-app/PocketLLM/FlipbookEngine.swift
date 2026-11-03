@@ -62,20 +62,17 @@ final class FlipbookEngine: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var previewFrames: [UIImage] = []
 
-    /// The engine that renders the frames. Owned here rather than passed in so a
-    /// clip cannot be rendered through a tab whose slots the user is editing.
-    private let engine: SdEngine
-
-    init(engine: SdEngine) {
-        self.engine = engine
-    }
 
     /// Renders the clip and returns the file URL.
     ///
     /// Cancelling the calling task stops the loop at the next frame boundary —
     /// not mid-generation, because the sampler runs inside the engine and
     /// tearing it down mid-run is what the reload path exists to recover from.
-    func render(_ config: Config) async throws -> URL {
+    /// - Parameter engine: the tab's engine, passed in per call. The clipboard
+    ///   must use the engine that already holds the loaded model — constructing
+    ///   its own would mean loading several GB of weights a second time, and a
+    ///   `@StateObject` cannot hold a reference to another view's `@StateObject`.
+    func render(_ config: Config, using engine: SdEngine) async throws -> URL {
         guard config.frames >= 2 else {
             throw FlipbookError.invalid("至少需要 2 個影格")
         }
