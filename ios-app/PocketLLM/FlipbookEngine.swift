@@ -98,7 +98,7 @@ final class FlipbookEngine: ObservableObject {
             phase = .generating(frame: index, of: config.frames)
             engine.initImage = current
             engine.generate()
-            let produced = try await awaitGeneration()
+            let produced = try await awaitGeneration(engine)
             guard let next = produced.first else {
                 throw FlipbookError.invalid("第 \(index) 個影格沒有產生任何圖片")
             }
@@ -127,7 +127,7 @@ final class FlipbookEngine: ObservableObject {
     /// `SdEngine.generate()` is fire-and-forget by design — it publishes `phase`
     /// and lets the UI observe it — so the loop polls that published state
     /// rather than reaching into the sampler.
-    private func awaitGeneration() async throws -> [UIImage] {
+    private func awaitGeneration(_ engine: SdEngine) async throws -> [UIImage] {
         while true {
             try Task.checkCancellation()
             switch engine.phase {

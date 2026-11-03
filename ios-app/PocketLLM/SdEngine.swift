@@ -274,7 +274,7 @@ final class SdEngine: ObservableObject {
         // A 2D tiny decoder under `sd.tae` is exactly what the image track wants:
         // `image` keeps the historic `sd` prefix, so the slot is already correct
         // and must be left alone. Only a 3D file is out of place here.
-        guard SlotCompat.family(ofPath: legacy) == .video3D else { return }
+        guard SlotCompat.family(ofPath: legacy) == .video else { return }
 
         let destination = "\(Track.video.keyPrefix).tae"
         if defaults.string(forKey: destination)?.isEmpty ?? true {

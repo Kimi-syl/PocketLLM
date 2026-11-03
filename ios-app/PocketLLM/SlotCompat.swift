@@ -85,7 +85,7 @@ enum SlotCompat {
         "zimage", "qwen_image", "qwen-image", "hunyuan", "chroma", "moss", "iris", "pid",
     ]
 
-    static func family(of file: Facts) -> Family {
+    static func family(of file: ModelAudit.Facts) -> Family {
         if let arch = file.architecture?.lowercased() {
             if videoArchitectures.contains(arch) { return .video }
             if imageArchitectures.contains(arch) { return .image }
@@ -100,7 +100,7 @@ enum SlotCompat {
 
     /// Classifies a decoder by its tensor names — the only signal that separates
     /// Wan's 4-D tiny decoder from a 4-D TAESD.
-    static func decoderKind(of file: Facts) -> DecoderKind {
+    static func decoderKind(of file: ModelAudit.Facts) -> DecoderKind {
         let names = file.tensorNames
         guard !names.isEmpty else { return .other }
 
@@ -126,9 +126,9 @@ enum SlotCompat {
 
     static func validate(main: String, vae: String, tae: String) -> Verdict {
         var verdict = Verdict()
-        let mainFacts = main.isEmpty ? Facts() : ModelAudit.facts(of: URL(fileURLWithPath: main))
-        let vaeFacts = vae.isEmpty ? Facts() : ModelAudit.facts(of: URL(fileURLWithPath: vae))
-        let taeFacts = tae.isEmpty ? Facts() : ModelAudit.facts(of: URL(fileURLWithPath: tae))
+        let mainFacts = main.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: main))
+        let vaeFacts = vae.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: vae))
+        let taeFacts = tae.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: tae))
 
         verdict.mainFamily = family(of: mainFacts)
         verdict.taeKind = tae.isEmpty ? .other : decoderKind(of: taeFacts)
