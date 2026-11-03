@@ -259,6 +259,16 @@ final class SdEngine: ObservableObject {
     /// image engine's own key.
     private static func migrateLegacySlots() {
         let defaults = UserDefaults.standard
+        // Once per install. The check below has to read the TAE file's header to
+        // tell a 2D tiny decoder from a 3D one, and this runs from init — which
+        // is view construction, on the main thread, for both tabs. Re-reading a
+        // 24 MB header on every launch to answer a question whose answer cannot
+        // change is the kind of cost that shows up as a slow start and gets
+        // blamed on something else.
+        let doneKey = "sd.slotMigration.v2"
+        guard !defaults.bool(forKey: doneKey) else { return }
+        defer { defaults.set(true, forKey: doneKey) }
+
         guard let legacy = defaults.string(forKey: "sd.tae"), !legacy.isEmpty else { return }
 
         // A 2D tiny decoder under `sd.tae` is exactly what the image track wants:
