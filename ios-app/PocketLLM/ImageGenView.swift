@@ -12,6 +12,10 @@ import UniformTypeIdentifiers
 struct ImageGenView: View {
     @StateObject private var engine = SdEngine(track: .image)
     @EnvironmentObject private var store: ModelStore
+    /// Flipbook: the clip renderer, plus the last clip it produced for sharing.
+    @StateObject private var flipbook = FlipbookEngine()
+    @State private var flipbookClip: URL?
+    @State private var flipbookError: String?
     @State private var picking: Slot?
     @State private var isPickerPresented = false
     @State private var importNote: String?
@@ -75,6 +79,7 @@ struct ImageGenView: View {
                     hiresCard
                     paramsCard
                     generateButton
+                    flipbookCard
                     upscaleCard
                     resultSection
                 }
@@ -722,6 +727,93 @@ struct ImageGenView: View {
     private func stepper(_ label: String, value: Binding<Int>,
                          range: ClosedRange<Int>, step: Int) -> some View {
         Stepper("\(label)：\(value.wrappedValue)", value: value, in: range, step: step)
+    }
+
+
+    /// Flipbook: turns the current picture into a short clip.
+    ///
+    /// It re-runs img2img over its own previous frame at low strength, so it needs
+    /// a loaded model and a prompt exactly like a normal generation — the only
+    /// extra decisions are how many passes and whether to interpolate. The base
+    /// image is the last result (or the img2img source if none yet).
+    private var flipbookCard: some View {
+        GroupBox("Flipbook（實驗）") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("用目前的圖片連續做低強度 img2img，再用光流補幀，輸出 .mp4。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let progress = flipbookPhaseText {
+                    Text(progress).font(.caption).foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Button("生成 Flipbook") {
+                        startFlipbook()
+                    }
+                    .disabled(flipbookBaseImage == nil || isFlipbookRunning)
+                    Spacer()
+                    if let clip = flipbookClip {
+                        ShareLink(item: clip) { Label("分享 .mp4", systemImage: "square.and.arrow.up") }
+                    }
+                }
+
+                if let error = flipbookError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    /// The still the clip starts from: the most recent result, else the img2img source.
+    private var flipbookBaseImage: UIImage? {
+        engine.images.last ?? engine.initImage
+    }
+
+    private var isFlipbookRunning: Bool {
+        switch flipbook.phase {
+        case .idle, .finished, .failed: return false
+        default: return true
+        }
+    }
+
+    private var flipbookPhaseText: String? {
+        switch flipbook.phase {
+        case .idle:                       return nil
+        case .generating(let f, let of):  return "產生影格 \(f) / \(of)…"
+        case .interpolating(let f, let of): return "光流補幀 \(f) / \(of)…"
+        case .writing:                    return "寫入影片…"
+        case .finished(let url):          return "完成：\(url.lastPathComponent)"
+        case .failed(let message):        return "失敗：\(message)"
+        }
+    }
+
+    private func startFlipbook() {
+        guard let base = flipbookBaseImage else { return }
+        flipbookError = nil
+        flipbookClip = nil
+        // 12 passes is a few minutes on a phone at these settings; the strength
+        // stays low so the picture drifts instead of being re-imagined each time.
+        let config = FlipbookEngine.Config(
+            base: base,
+            prompt: engine.prompt,
+            negative: engine.negative,
+            frames: 12,
+            strength: 0.2,
+            seed: engine.seed >= 0 ? engine.seed : 42,
+            steps: engine.steps,
+            cfg: engine.cfg,
+            width: engine.width,
+            height: engine.height,
+            fps: 12,
+            interpolate: true)
+        Task {
+            do {
+                flipbookClip = try await flipbook.render(config, using: engine)
+            } catch {
+                flipbookError = error.localizedDescription
+            }
+        }
     }
 
     private var generateButton: some View {

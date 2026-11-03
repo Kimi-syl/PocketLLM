@@ -269,6 +269,11 @@ enum ModelAudit {
         /// This is `SlotCompat`'s only input, and it is deliberately a property
         /// of the bytes rather than of the filename or the architecture tag.
         var maxTensorRank: UInt32 = 0
+        /// Tensor names actually read from the header (lowercased, capped).
+        /// `SlotCompat` needs them: rank alone cannot tell Wan's 3-D DiT (which
+        /// has one 5-D patch-embedding weight) from a 2-D model, nor Wan's tiny
+        /// decoder from TAESD - taew2_2 is 4-D convolutions throughout.
+        var tensorNames: [String] = []
     }
 
     /// Architectures whose decode step is a rescale, not a VAE pass:
@@ -388,6 +393,7 @@ enum ModelAudit {
             return facts
         }
 
+        facts.tensorNames = Array(names.prefix(4000))
         facts.hasVAE = hasPrefix(names, vaeTensorPrefixes)
         facts.isTAE = !facts.hasVAE && looksLikeTinyDecoder(names)
         facts.hasConditioner = hasPrefix(names, conditionerPrefixes)

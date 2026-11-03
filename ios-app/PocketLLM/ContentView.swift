@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject var speech: PhononTTSEngine
+
     var body: some View {
         TabView {
             ChatView()
@@ -20,5 +22,11 @@ struct ContentView: View {
             LogView()
                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
         }
+        // Load the speech model once, at launch: the first load compiles the
+        // Core ML bundle (~10 s) and every later load is ~0.6 s, so doing it here
+        // means the first reply that speaks is not the one that pays for it. It
+        // also logs why speech is unavailable when it is, instead of leaving the
+        // Settings row on "system voice" with no explanation.
+        .task { await speech.prepare() }
     }
 }

@@ -62,20 +62,17 @@ final class FlipbookEngine: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var previewFrames: [UIImage] = []
 
-    /// The engine that renders the frames. Owned here rather than passed in so a
-    /// clip cannot be rendered through a tab whose slots the user is editing.
-    private let engine: SdEngine
-
-    init(engine: SdEngine) {
-        self.engine = engine
-    }
 
     /// Renders the clip and returns the file URL.
     ///
     /// Cancelling the calling task stops the loop at the next frame boundary —
     /// not mid-generation, because the sampler runs inside the engine and
     /// tearing it down mid-run is what the reload path exists to recover from.
-    func render(_ config: Config) async throws -> URL {
+    /// - Parameter engine: the tab's engine, passed in per call. The clipboard
+    ///   must use the engine that already holds the loaded model — constructing
+    ///   its own would mean loading several GB of weights a second time, and a
+    ///   `@StateObject` cannot hold a reference to another view's `@StateObject`.
+    func render(_ config: Config, using engine: SdEngine) async throws -> URL {
         guard config.frames >= 2 else {
             throw FlipbookError.invalid("至少需要 2 個影格")
         }
@@ -101,7 +98,7 @@ final class FlipbookEngine: ObservableObject {
             phase = .generating(frame: index, of: config.frames)
             engine.initImage = current
             engine.generate()
-            let produced = try await awaitGeneration()
+            let produced = try await awaitGeneration(engine)
             guard let next = produced.first else {
                 throw FlipbookError.invalid("第 \(index) 個影格沒有產生任何圖片")
             }
@@ -130,7 +127,7 @@ final class FlipbookEngine: ObservableObject {
     /// `SdEngine.generate()` is fire-and-forget by design — it publishes `phase`
     /// and lets the UI observe it — so the loop polls that published state
     /// rather than reaching into the sampler.
-    private func awaitGeneration() async throws -> [UIImage] {
+    private func awaitGeneration(_ engine: SdEngine) async throws -> [UIImage] {
         while true {
             try Task.checkCancellation()
             switch engine.phase {

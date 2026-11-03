@@ -1,43 +1,61 @@
 import Foundation
 
-/// Decides whether the files in a model's slots can actually be loaded together.
+/// Decides whether the files in a model's slots can be loaded together.
 ///
-/// The crash this exists to prevent: `taesd_path` is a slot on `new_sd_ctx`
-/// like any other, and stable-diffusion.cpp merges whatever is in it into the
-/// model it is already building (`model_loader.init_from_file(taesd, "tae.")`).
-/// Handing it Wan 2.2's `taew2_2.safetensors` while the main model is SDXL does
-/// not fail cleanly — the loader matches tensor *names* and then calls
-/// `ggml_new_tensor` on the shapes it expected, which trips a `GGML_ABORT`
-/// ("wrong shape in model metadata"). An abort is not an exception: it takes
-/// the process down before any Swift error can be thrown, and the log line the
-/// user sees is the crash report.
+/// The crash this originally existed to prevent: `taesd_path` is merged into the
+/// model stable-diffusion.cpp is already building (`init_from_file(taesd, "tae.")`),
+/// and a file from another family reaches `ggml_new_tensor` with the wrong shape
+/// and hits `GGML_ABORT`. That is a process abort, not a NULL return, so nothing
+/// downstream can recover — the check has to run before `new_sd_ctx`.
 ///
-/// So the check has to happen before `new_sd_ctx`, and it has to be based on
-/// what the files contain rather than what they are called. Two slots are
-/// checked, because both are merged the same way and both can poison a load:
+/// ## What the first version got wrong
 ///
-/// - `taesd`: the tiny decoder. Wan 2.2's is 3D (`encoder.<N>`/`decoder.<N>`
-///   with 5-D convs); TAESD for SD/Flux is 2D.
-/// - `vae`: a Wan VAE is 3D, every image VAE is 2D. Putting `wan_2.1_vae` in
-///   the VAE slot of an SD1.5 model fails the same way.
+/// It classified files by tensor *rank*: 5-D convolution meant "3D/video", 4-D
+/// meant "2D/image". That is wrong for the very bundle it needed to protect, and
+/// it rejected it on device with a "mismatched" error. The real Wan 2.2 tiny
+/// decoder, `taew2_2.safetensors`, is **4-D convolutions throughout**
+/// (`decoder.1.weight = [256, 48, 3, 3]`, 128 tensors, max rank 4); only the DiT
+/// carries a single 5-D `patch_embedding` weight. Rank therefore separates
+/// nothing here.
 ///
-/// The family signal is tensor *rank*, not names or architecture tags: a 3D
-/// model's convolutions are 5-D, a 2D model's are 4-D. That holds for Wan,
-/// Qwen-Image's 3D VAE, and every 2D checkpoint, and it cannot be fooled by a
-/// renamed file or a missing `general.architecture`.
+/// ## What it uses instead
+///
+/// Two signals that are actually in the files, both checked against the real
+/// Wan bundle from `jc-builds/Wan2.2-TI2V-5B-Turbo-iOS`:
+///
+/// - **`general.architecture`** from the GGUF header. The real DiT says `wan`.
+///   No guessing: when the tag is absent or unrecognised the family is
+///   `.unknown` and nothing is blocked.
+/// - **Tensor naming** for tiny decoders: Wan's is `decoder.<N>.…` with a
+///   numeric top-level block (`decoder.10.conv.0.weight`), TAESD's is
+///   `decoder.layers.<N>.…`, and a full VAE says `up_blocks`/`conv_in`. Those
+///   three are distinguishable without a device.
+///
+/// The rule is deliberately conservative: reject only a pair that is certainly
+/// wrong, and stay out of the way otherwise. A false rejection breaks a working
+/// configuration, which is worse than the crash it is trying to prevent.
 enum SlotCompat {
 
-    /// What a weight file is shaped to decode.
+    /// What a weight file is, as far as its own header says.
     enum Family: String {
-        /// 2D: SD1.5, SDXL, SD3, Flux, Z-Image and friends. Top tensor rank 4.
-        case image2D
-        /// 3D: Wan 2.x and the other video architectures. 5-D convolutions.
-        case video3D
-        /// Header unreadable, or no tensor of a decisive rank was sampled. Treated
-        /// as "do not block": a file we cannot read is a load error the engine
-        /// already reports clearly, and refusing to start on a guess would break
-        /// formats that have not been seen yet.
+        /// A video architecture: Wan, LTX-V, AnimateDiff.
+        case video
+        /// A 2D image architecture.
+        case image
+        /// The header did not say, or said something unrecognised. Never blocks.
         case unknown
+    }
+
+    /// What a decoder file is, by tensor naming.
+    enum DecoderKind: String {
+        /// Wan 2.2's tiny decoder: `decoder.<N>.…` with numeric top-level blocks.
+        case wanTiny
+        /// TAESD for SD/SDXL/Flux: `decoder.layers.<N>.…`.
+        case taesd
+        /// A full VAE (`up_blocks`, `conv_in`, `first_stage_model.`).
+        case fullVAE
+        /// Not recognisable as any decoder.
+        case other
     }
 
     enum Slot: String {
@@ -45,97 +63,107 @@ enum SlotCompat {
         case tae = "微型解碼器 (TAE)"
     }
 
-    /// The verdict for one load attempt.
     struct Verdict {
-        /// Nil when the slots can be loaded together.
         var problem: String?
         var mainFamily: Family = .unknown
-        var vaeFamily: Family = .unknown
-        var taeFamily: Family = .unknown
+        var taeKind: DecoderKind = .other
+        var vaeKind: DecoderKind = .other
         var isOK: Bool { problem == nil }
     }
 
-    // MARK: - Family detection
+    // MARK: - Facts
 
-    /// Classifies a weight file by the highest tensor rank in its header.
-    ///
-    /// Cached by path + size + mtime inside `ModelAudit`, so a slot edit cannot
-    /// pick up stale facts after the file at that path is replaced.
-    static func family(of url: URL) -> Family {
-        let facts = ModelAudit.facts(of: url)
-        switch facts.maxTensorRank {
-        case 5...: return .video3D
-        case 4: return .image2D
-        default: return .unknown
+    /// Architectures the engine treats as video.
+    private static let videoArchitectures: Set<String> = [
+        "wan", "wan21", "wan22", "wan2.1", "wan2.2", "ltxv", "ltx", "animatediff", "lingbot",
+    ]
+
+    /// Architectures that are 2D image models. Anything not listed stays unknown
+    /// rather than being assumed 2D.
+    private static let imageArchitectures: Set<String> = [
+        "flux", "sd1", "sd2", "sdxl", "sd3", "stable-diffusion", "z-image",
+        "zimage", "qwen_image", "qwen-image", "hunyuan", "chroma", "moss", "iris", "pid",
+    ]
+
+    static func family(of file: ModelAudit.Facts) -> Family {
+        if let arch = file.architecture?.lowercased() {
+            if videoArchitectures.contains(arch) { return .video }
+            if imageArchitectures.contains(arch) { return .image }
         }
+        return .unknown
     }
 
     static func family(ofPath path: String) -> Family {
         guard !path.isEmpty else { return .unknown }
-        return family(of: URL(fileURLWithPath: path))
+        return family(of: ModelAudit.facts(of: URL(fileURLWithPath: path)))
+    }
+
+    /// Classifies a decoder by its tensor names — the only signal that separates
+    /// Wan's 4-D tiny decoder from a 4-D TAESD.
+    static func decoderKind(of file: ModelAudit.Facts) -> DecoderKind {
+        let names = file.tensorNames
+        guard !names.isEmpty else { return .other }
+
+        if file.hasVAE { return .fullVAE }
+
+        // Wan's tiny decoder: a numeric block directly under decoder./encoder.
+        var numericBlocks = 0
+        var layerBlocks = 0
+        for name in names {
+            for stem in ["decoder.", "encoder."] where name.hasPrefix(stem) {
+                let rest = name.dropFirst(stem.count)
+                if let first = rest.first, first.isNumber { numericBlocks += 1 }
+                if rest.hasPrefix("layers.") { layerBlocks += 1 }
+                break
+            }
+        }
+        if numericBlocks >= 8 { return .wanTiny }
+        if layerBlocks >= 4 { return .taesd }
+        return .other
     }
 
     // MARK: - Validation
 
-    /// Checks every slot that gets merged into the main model.
-    ///
-    /// - Parameters:
-    ///   - main: the diffusion model, or the all-in-one checkpoint.
-    ///   - vae: `vae_path`; may be empty.
-    ///   - tae: `taesd_path`; may be empty.
     static func validate(main: String, vae: String, tae: String) -> Verdict {
         var verdict = Verdict()
+        let mainFacts = main.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: main))
+        let vaeFacts = vae.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: vae))
+        let taeFacts = tae.isEmpty ? ModelAudit.Facts() : ModelAudit.facts(of: URL(fileURLWithPath: tae))
 
-        verdict.mainFamily = family(ofPath: main)
-        verdict.vaeFamily = family(ofPath: vae)
-        verdict.taeFamily = family(ofPath: tae)
+        verdict.mainFamily = family(of: mainFacts)
+        verdict.taeKind = tae.isEmpty ? .other : decoderKind(of: taeFacts)
+        verdict.vaeKind = vae.isEmpty ? .other : decoderKind(of: vaeFacts)
 
-        // The TAE is the slot that actually crashed. Compare it first so its
-        // message wins over the VAE's when both are wrong.
-        if let problem = mismatch(slot: .tae, slotPath: tae, slotFamily: verdict.taeFamily,
-                                  mainPath: main, mainFamily: verdict.mainFamily) {
-            verdict.problem = problem
+        // A full VAE in the tiny-decoder slot is wrong whatever the architecture:
+        // the engine merges it as "tae." and the shapes cannot match. This one is
+        // decidable from the file alone.
+        if !tae.isEmpty, verdict.taeKind == .fullVAE {
+            verdict.problem = """
+            「\(fileName(tae))」放進了微型解碼器 (TAE) 插槽，但它是一個完整 VAE（有 up_blocks / conv_in）。
+            請把它移到 VAE 插槽，或改放真正的 TAE。
+            """
             return verdict
         }
-        if let problem = mismatch(slot: .vae, slotPath: vae, slotFamily: verdict.vaeFamily,
-                                  mainPath: main, mainFamily: verdict.mainFamily) {
-            verdict.problem = problem
-            return verdict
-        }
 
-        // A tiny decoder in the VAE slot (or the reverse) is the same mistake
-        // wearing the other label, and the engine accepts both silently until a
-        // shape check fails. Say what the file actually is.
-        if !tae.isEmpty, ModelAudit.facts(of: URL(fileURLWithPath: tae)).hasVAE {
-            verdict.problem =
-                "「\(fileName(tae))」放進了微型解碼器 (TAE) 插槽，但它是一個完整 VAE。"
-                + "請把它移到 VAE 插槽，或改放真正的 TAE（例如 taew2_2.safetensors）。"
+        // Cross-architecture checks only when the main model's tag is known.
+        switch (verdict.mainFamily, verdict.taeKind) {
+        case (.image, .wanTiny):
+            verdict.problem = """
+            主模型「\(fileName(main))」是圖片模型，但 TAE 插槽放的是 Wan 的 3D 微型解碼器「\(fileName(tae))」。
+            兩者形狀不合，載入會在引擎內中止，所以先擋下來。
+            """
             return verdict
+        case (.video, .taesd):
+            verdict.problem = """
+            主模型「\(fileName(main))」是影片模型，但 TAE 插槽放的是 SD/Flux 的 TAESD「\(fileName(tae))」。
+            請改用 Wan 的 taew2_2.safetensors。
+            """
+            return verdict
+        default:
+            break
         }
 
         return verdict
-    }
-
-    private static func mismatch(slot: Slot,
-                                 slotPath: String,
-                                 slotFamily: Family,
-                                 mainPath: String,
-                                 mainFamily: Family) -> String? {
-        guard slotFamily != .unknown, mainFamily != .unknown, slotFamily != mainFamily else {
-            return nil
-        }
-        let slotKind = slotFamily == .video3D ? "3D（影片）" : "2D（圖片）"
-        let mainKind = mainFamily == .video3D ? "3D（影片）" : "2D（圖片）"
-        let replacement = slot == .tae ? "taew2_2.safetensors 等 3D 版本" : "3D 的 wan VAE"
-        let imageNote = "2D 的 VAE / TAESD（SD1.5、SDXL、Flux 等）"
-        return """
-        \(slot.rawValue) 插槽與主模型架構不符：載入會在 C++ 引擎內中止（wrong shape in model metadata），所以先擋下來。
-
-        \(slot.rawValue)：「\(fileName(slotPath))」是 \(slotKind) 模型
-        主模型：「\(fileName(mainPath))」是 \(mainKind) 模型
-
-        圖片模型需要 \(imageNote)；Wan 影片模型需要 \(replacement)。請換掉 \(slot.rawValue) 插槽再試一次。
-        """
     }
 
     private static func fileName(_ path: String) -> String {

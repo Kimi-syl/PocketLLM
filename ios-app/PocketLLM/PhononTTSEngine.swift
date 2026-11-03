@@ -108,27 +108,68 @@ final class PhononTTSEngine: ObservableObject {
     /// a paid build, and either way it is tens of megabytes of derived weights
     /// that belong in a release asset rather than in git.
     func prepare() async {
-        if #available(iOS 18.0, *) {
-            // A bundle copied out of the app on a previous launch is current.
-            if PhononModels.isInstalled() {
-                await load(at: PhononModels.defaultDirectory)
-                return
-            }
-            guard let bundled = Bundle.main.url(forResource: "Models", withExtension: nil) else {
-                state = .notInstalled
-                return
-            }
-            state = .loading
-            do {
-                let directory = try PhononModels.install(bundled: bundled)
-                await load(at: directory)
-            } catch {
-                state = .failed(error.localizedDescription)
-                appLog("tts: phonon install failed — \(error.localizedDescription)", source: "tts")
-            }
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        guard #available(iOS 18.0, *) else {
+            // Say so once, with the version, instead of leaving the UI on
+            // "system voice" and letting it look like the feature is missing.
+            state = .systemFallback
+            appLog("tts: Phonon needs iOS 18; this device reports \(os) — using the system voice", source: "tts")
             return
         }
-        state = .systemFallback
+        appLog("tts: \(os) supports Phonon; looking for a model bundle", source: "tts")
+
+        // A bundle installed on a previous launch wins: it is already compiled.
+        if PhononModels.isInstalled() {
+            appLog("tts: using the installed bundle at \(PhononModels.defaultDirectory.path)", source: "tts")
+            await load(at: PhononModels.defaultDirectory)
+            return
+        }
+
+        guard let found = Self.findBundledModelDirectory() else {
+            state = .notInstalled
+            appLog("tts: no model bundle found. Add a folder containing bundle.json to the app as "
+                   + "\"Models\", or download one. Looked in the app bundle and Documents/Models.", source: "tts")
+            return
+        }
+        appLog("tts: found a model folder at \(found.path)", source: "tts")
+        state = .loading
+        do {
+            let directory = try PhononModels.install(bundled: found)
+            await load(at: directory)
+        } catch {
+            state = .failed(error.localizedDescription)
+            appLog("tts: phonon install failed — \(error.localizedDescription)", source: "tts")
+        }
+    }
+
+    /// Finds a model folder wherever it was actually put.
+    ///
+    /// Upstream ships the bundle as `phonon-31m-en/` and asks you to rename it to
+    /// `Models`. Requiring exactly that name means a correctly downloaded folder
+    /// that kept its original name is invisible, which reads as "the model is not
+    /// there". So any folder containing a `bundle.json` is accepted: the app
+    /// bundle first (a folder reference), then Documents/Models, which is where
+    /// a user can drop one through the Files app without rebuilding.
+    nonisolated static func findBundledModelDirectory() -> URL? {
+        var candidates: [URL] = []
+        for name in ["Models", "phonon-31m-en", "phonon-31m-en-coreml"] {
+            if let url = Bundle.main.url(forResource: name, withExtension: nil) {
+                candidates.append(url)
+            }
+        }
+        // Anything the user dropped into Documents/Models (or Documents itself).
+        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            candidates.append(docs)
+            let models = docs.appendingPathComponent("Models", isDirectory: true)
+            candidates.append(models)
+            if let inner = try? FileManager.default.contentsOfDirectory(
+                at: models, includingPropertiesForKeys: [.isDirectoryKey]) {
+                candidates.append(contentsOf: inner)
+            }
+        }
+        return candidates.first { url in
+            FileManager.default.fileExists(atPath: url.appendingPathComponent("bundle.json").path)
+        }
     }
 
     /// Downloads the model folder on first run instead of bundling it.
