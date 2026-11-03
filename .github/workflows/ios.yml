@@ -211,6 +211,13 @@ jobs:
           mkdir -p ios-app/Frameworks
           cp -R core/build/XCFrameworks/Release/PocketLLMKit.xcframework ios-app/Frameworks/
 
+      # The Phonon runtime is a ~50 MB prebuilt static library, kept out of git
+      # for the same reason llama.cpp and stable-diffusion.cpp are. It is pinned
+      # by the checksum upstream's Package.swift uses for this release.
+      - name: Fetch Phonon Core ML runtime
+        run: |
+          cd ios-app && ./fetch-phonon-core.sh
+
       - name: Generate Xcode project
         run: |
           # brew is a no-op when the formula is already present (cached bottles).

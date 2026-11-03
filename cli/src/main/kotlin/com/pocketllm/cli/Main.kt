@@ -44,6 +44,7 @@ import kotlinx.serialization.json.Json
 import com.pocketllm.util.WebSearch
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import kotlin.system.exitProcess
 
 private val json = Json {
@@ -69,16 +70,28 @@ private fun usage(exitCode: Int): Nothing {
         Usage:
           pocketllm chat  --model <path.gguf> [--ctx N] [--threads N] [--temp F]
           pocketllm serve [--port N] [--host H] [--model <path.gguf>]
+                          [--api-key <key>] [--tunnel | --tunnel-name <name>]
           pocketllm agent --model <path.gguf> [--ctx N] [--threads N] <question>
 
         REPL commands in chat: /exit /reset /state
 
+        Serving:
+          --api-key      require "Authorization: Bearer <key>" on /v1/*.
+                         Generated automatically when --tunnel is used.
+          --tunnel       expose the server through a Cloudflare quick tunnel,
+                         i.e. a trusted https://<name>.trycloudflare.com URL.
+                         Needs cloudflared on PATH.
+          --tunnel-name  run an already-configured named tunnel instead
+                         (cloudflared tunnel run <name>).
+
         Environment:
-          POCKETLLM_NATIVE_LIB  path to libpocketllm.so (desktop native build)
+          POCKETLLM_NATIVE_LIB     path to libpocketllm.so (desktop native build)
+          POCKETLLM_CLOUDFLARED    path to the cloudflared binary
 
         Examples:
           pocketllm chat --model ~/.models/qwen2.5-1.5b-q4_k_m.gguf
           pocketllm serve --port 8080 --model ~/.models/qwen2.5-1.5b-q4_k_m.gguf
+          pocketllm serve --model m.gguf --tunnel
         """.trimIndent()
     )
     exitProcess(exitCode)
@@ -245,25 +258,121 @@ private fun serve(args: List<String>) {
     val port = opts["port"]?.toIntOrNull() ?: 8080
     val host = opts["host"] ?: "127.0.0.1"
 
+    val namedTunnel = opts["tunnel-name"]?.takeIf { it.isNotBlank() }
+    val wantsTunnel = opts.containsKey("tunnel") || namedTunnel != null
+
+    // A tunnel turns a loopback-only server into a public one, so it must never
+    // run without auth. With a tunnel and no explicit key, mint one and print it.
+    val explicitKey = opts["api-key"]?.takeIf { it.isNotBlank() }
+    val apiKey = explicitKey ?: if (wantsTunnel) generateApiKey() else null
+    if (wantsTunnel && explicitKey == null) {
+        println("Generated API key for the tunnel: $apiKey")
+        println("  (pass --api-key to reuse a fixed one)")
+    }
+
     opts["model"]?.let { loadModelOrExit(it, opts) }
 
-    val server = embeddedServer(Netty, port = port, host = host) { routingApi() }
-    println("PocketLLM serving on http://$host:$port (no auth, local only)")
-    server.start(wait = true)
+    val server = embeddedServer(Netty, port = port, host = host) { routingApi(apiKey) }
+
+    if (!wantsTunnel) {
+        val authNote = if (apiKey != null) "api key required" else "no auth, local only"
+        println("PocketLLM serving on http://$host:$port ($authNote)")
+        server.start(wait = true)
+        return
+    }
+
+    server.start(wait = false)
+    println("PocketLLM serving on http://$host:$port (local)")
+
+    val tunnel = try {
+        CloudflareTunnel.start("http://127.0.0.1:$port", namedTunnel) { println("  cloudflared | $it") }
+    } catch (e: Exception) {
+        System.err.println("Tunnel failed: ${e.message}")
+        System.err.println("Exiting. Run without --tunnel to serve on the local network only.")
+        server.stop(0, 0)
+        exitProcess(1)
+    }
+
+    println()
+    println("Public endpoint: ${tunnel.url}/v1")
+    println("  curl ${tunnel.url}/v1/chat/completions \\")
+    println("    -H \"Authorization: Bearer $apiKey\" \\")
+    println("    -H \"Content-Type: application/json\" \\")
+    println("    -d '{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'")
+    if (namedTunnel == null) {
+        println()
+        println("Note: a quick tunnel is a public, randomly named, ephemeral URL. Anyone")
+        println("who learns the hostname reaches this server, so keep the API key on and")
+        println("stop the process when you are done.")
+    }
+
+    val stop = CountDownLatch(1)
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            runCatching { tunnel.close() }
+            runCatching { server.stop(1_000, 3_000) }
+            stop.countDown()
+        }
+    )
+    stop.await()
 }
 
-private fun Application.routingApi() {
+/** 32 hex chars from a CSPRNG — same shape as the keys the Android app issues. */
+private fun generateApiKey(): String {
+    val bytes = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+    return "sk-pocketllm-" + bytes.joinToString("") { "%02x".format(it) }
+}
+
+private fun Application.routingApi(apiKey: String?) {
     routing {
+        // /health stays open: it is what a tunnel or uptime probe checks, and it
+        // leaks nothing beyond liveness.
         get("/health") {
             call.respondText("""{"status":"ok"}""", ContentType.Application.Json)
         }
         get("/v1/models") {
+            if (!call.authorized(apiKey)) return@get call.unauthorized()
             val modelId = (LlamaEngine.state.value as? EngineState.Ready)?.modelName
             val data = if (modelId != null) listOf(ModelInfo(id = modelId)) else emptyList()
             call.respondText(json.encodeToString(ModelListResponse(data = data)), ContentType.Application.Json)
         }
-        post("/v1/chat/completions") { handleChat(call) }
+        post("/v1/chat/completions") {
+            if (!call.authorized(apiKey)) return@post call.unauthorized()
+            handleChat(call)
+        }
     }
+}
+
+/** True when [apiKey] is null (auth off) or the request carries it as a Bearer token. */
+private fun ApplicationCall.authorized(apiKey: String?): Boolean {
+    if (apiKey == null) return true
+    val presented = request.headers["Authorization"]
+        ?.removePrefix("Bearer ")
+        ?.trim()
+        ?: return false
+    return constantTimeEquals(presented, apiKey)
+}
+
+private suspend fun ApplicationCall.unauthorized() {
+    response.headers.append("WWW-Authenticate", "Bearer")
+    respondText(
+        json.encodeToString(ErrorResponse(error = ErrorBody(message = "invalid api key"))),
+        ContentType.Application.Json,
+        HttpStatusCode.Unauthorized,
+    )
+}
+
+/**
+ * Compares without an early exit, so a wrong key cannot be recovered byte by
+ * byte from response timing. Length still leaks, which is fine: it is fixed.
+ */
+private fun constantTimeEquals(a: String, b: String): Boolean {
+    val ab = a.toByteArray()
+    val bb = b.toByteArray()
+    if (ab.size != bb.size) return false
+    var diff = 0
+    for (i in ab.indices) diff = diff or (ab[i].toInt() xor bb[i].toInt())
+    return diff == 0
 }
 
 private suspend fun ApplicationCall.respondError(status: HttpStatusCode, message: String) {

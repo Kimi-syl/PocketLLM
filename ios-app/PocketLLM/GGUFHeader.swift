@@ -19,6 +19,15 @@ enum GGUFHeader {
         /// text encoder (`cond_stage_model.*`) inside the same file; a bare
         /// diffusion transformer carries neither.
         var tensorNames: [String] = []
+        /// The rank (`n_dims`) of each sampled tensor, in the same order as
+        /// `tensorNames`. This is what separates a video weight file from an
+        /// image one without trusting either the filename or the architecture
+        /// tag: Wan's DiT, its VAE and its tiny decoder all carry 5-D
+        /// convolution weights `[out, in, kt, kh, kw]`, while every 2D
+        /// architecture (SD1.5, SDXL, Flux, …) tops out at 4.
+        var tensorRanks: [UInt32] = []
+        /// Highest tensor rank seen in the sample; 0 when nothing was sampled.
+        var maxTensorRank: UInt32 { tensorRanks.max() ?? 0 }
     }
 
     private enum ValueType: UInt32 {
@@ -70,6 +79,7 @@ enum GGUFHeader {
                   let dims = try? cursor.uint32() else { return info }
             guard (try? cursor.skipBytes(Int(dims) * 8 + 4 + 8)) != nil else { return info }
             info.tensorNames.append(name)
+            info.tensorRanks.append(dims)
         }
         return info
     }

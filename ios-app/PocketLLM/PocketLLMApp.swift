@@ -9,6 +9,10 @@ struct PocketLLMApp: App {
     /// Also a singleton: the image tab writes into it from `SdEngine`, which has
     /// no environment of its own.
     @StateObject private var gallery = GalleryStore.shared
+    /// One TTS engine for the whole app: the Phonon model takes ~0.6 s to load
+    /// and ~10 s to compile the first time, so it must not be re-created per view.
+    /// It falls back to the system voice when the Phonon package is absent.
+    @StateObject private var speech = PhononTTSEngine()
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +20,7 @@ struct PocketLLMApp: App {
                 .environmentObject(store)
                 .environmentObject(settings)
                 .environmentObject(gallery)
+                .environmentObject(speech)
         }
     }
 }

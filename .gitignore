@@ -67,3 +67,6 @@ build-sd-x86_64/
 build-x64/
 *.apk
 *.apk.sha256
+
+# Phonon runtime: fetched by ios-app/fetch-phonon-core.sh, not committed.
+ios-app/PhononCore/
